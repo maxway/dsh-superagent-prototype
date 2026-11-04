@@ -12,6 +12,17 @@ const read = (path: string): string => readFileSync(join(ROOT, path), 'utf8')
 function links(file: string): string[] {
   return [...readFileSync(file, 'utf8').matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!.split('#')[0]!).filter(target => target && !/^[a-z]+:/.test(target))
 }
+const translation = (path: string): string => path.startsWith('docs/') ? path.replace(/^docs\//, 'docs/zh/') : path.replace(/\.md$/, '.zh-CN.md')
+const translations = [...entries, ...numbered.map(name => `docs/${name}`)].map(path => [path, translation(path)] as const)
+/** Removes fenced code so structural checks compare prose, not code samples. */
+const withoutCode = (text: string): string => text.replace(/^[ \t]*```[^\n]*\n[\s\S]*?^[ \t]*```[ \t]*$/gm, '')
+const shape = (text: string) => {
+  const body = withoutCode(text)
+  return {
+    headings: [...body.matchAll(/^(#{1,6}) /gm)].map(match => match[1]!.length),
+    tableRows: body.split('\n').filter(line => line.startsWith('|')).length,
+  }
+}
 const files = (directory: string): string[] => readdirSync(join(ROOT, directory), { recursive: true, withFileTypes: true })
   .filter(entry => entry.isFile()).map(entry => relative(ROOT, join(entry.parentPath, entry.name)))
 /**
@@ -64,5 +75,29 @@ describe('documentation', () => {
     const tests = listed('Tests')
     expect(files('tests').filter(path => /\.spec\.tsx?$/.test(path) && !tests.includes(path))).toEqual([])
     expect(tests.filter(path => !existsSync(join(ROOT, path)))).toEqual([])
+  })
+})
+
+describe('Chinese translations', () => {
+  it('exists for every document', () => {
+    expect(translations.filter(([, path]) => !existsSync(join(ROOT, path))).map(([, path]) => path)).toEqual([])
+  })
+  it('resolves every local link', () => {
+    const present = translations.filter(([, path]) => existsSync(join(ROOT, path)))
+    const missing = present.flatMap(([, path]) => links(join(ROOT, path))
+      .filter(target => !existsSync(resolve(ROOT, dirname(path), target)))
+      .map(target => `${path} → ${target}`))
+    expect(missing).toEqual([])
+  })
+  it('keeps the headings and table rows of its original', () => {
+    const diverged = translations
+      .filter(([source, path]) => existsSync(join(ROOT, path)))
+      .filter(([source, path]) => JSON.stringify(shape(read(source))) !== JSON.stringify(shape(read(path))))
+      .map(([source]) => source)
+    expect(diverged).toEqual([])
+  })
+  it('leaves no merge conflict markers in any translation', () => {
+    const present = translations.filter(([, path]) => existsSync(join(ROOT, path)))
+    expect(present.filter(([, path]) => /^(<{7}|>{7}) /m.test(read(path))).map(([, path]) => path)).toEqual([])
   })
 })
