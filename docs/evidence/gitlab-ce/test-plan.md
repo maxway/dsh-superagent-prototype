@@ -161,7 +161,7 @@ GIT_CONFIG_GLOBAL="$TMP/gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
 
 本次复用既有 GitLab 项目 `ngd/dsh-superagent-prototype`（ID `4569`）和隔离 profile `superagent-gitlab-test`；结果不代表第 1–12 节的全量验收。
 
-- **隔离环境**：复用项目 `ngd/dsh-superagent-prototype`（ID `4569`）和 profile `superagent-gitlab-test`（端口 `52853`）。初始代码为 `e2d4e9d`；为实测 MR detail 修复，将 profile 实际链接的 package checkout 更新到 `5fc859b` 并重建 bundle。原 `3082` 服务及工作区未改动，最终仍 healthy。`glab` 版本为 `1.36.0`，测试账号 `project_4569_bot` 具有项目 Maintainer 权限。
+- **隔离环境与版本**：复用项目 `ngd/dsh-superagent-prototype`（ID `4569`）和 profile `superagent-gitlab-test`（端口 `52853`）。初始 Issue、MR 触发、游标和 Sources 截图证据使用 `e2d4e9d`；profile 包链接当时仍指向旧 clone。发现后将实际链接 checkout 更新到 `5fc859b`（含 `111b412`）并重建 bundle，再复测 MR-head pipeline detail/ID 变化路径；前述 Issue/MR/游标结论不依赖该修复。原 `3082` 服务及工作区未改动，最终仍 healthy。`glab` 版本为 `1.36.0`，测试账号 `project_4569_bot` 具有项目 Maintainer 权限。
 - **接入检查**：账号与项目 API 检查通过；GitLab Source health 为 `ready`。credential helper 和隔离配置下的 `git ls-remote` 经手动验证成功。
 - **Issue 流程**：Issue `#1` 请求评论触发 `accept` 决策，Ticket `cfb32838e0dfd5d1dc935a22d4b72696` 进入 `ready` 并结束。Superagent 发布确认 note `122026` 和摘要 note `122027`；摘要读回内容符合预期。
 - **MR**：临时 bot 作者 MR `!1`（`project_4569_bot`）被 Source 正确抑制自触发。随后 `jun.mei` 从 `test/superagent-human-mr-20261105` 创建人类作者 MR `!2`；Source 收到 MR Trigger `b7ba6053ef0a6da584c2e1cb9558b3df`，验证人类作者 MR 触发路径。
