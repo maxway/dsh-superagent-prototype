@@ -57,7 +57,7 @@ GLAB="$GLAB" scripts/gitlab-smoke.sh "$HOST" "$PROJECT" "$ISSUE" "$MR"
 只验证 helper 输出，不打印密码：
 
 ```sh
-printf 'protocol=https\nhost=%s\n\n' "$HOST" | "$GLAB" auth git-credential >/tmp/glab-cred
+printf 'protocol=https\nhost=%s\n\n' "$HOST" | "$GLAB" auth git-credential get >/tmp/glab-cred
 test -s /tmp/glab-cred && echo "credential ok"
 ```
 
@@ -155,7 +155,7 @@ GIT_CONFIG_GLOBAL="$TMP/gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
 - 幂等检查只读最近 100 条 note。
 - `gitlab/.../checks` 只到 pipeline，不到单个 job。
 - 404 note POST 会重试；目标被删除时可能持续重试。
-- 没有真实 CE 冒烟前，PR 保持 draft。
+- 真实 CE 只完成 Issue 评论→回复和 CLI smoke；MR、CI、重启/游标、UI 证据未完成，PR 保持 draft。
 
 ## 13. 本次实测记录
 
@@ -166,3 +166,5 @@ GIT_CONFIG_GLOBAL="$TMP/gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
 - **Issue 流程**：在测试 Issue `#1` 添加评论后，Source 收到 1 个 Trigger，策略创建 `accept` 决策，Ticket `cfb32838e0dfd5d1dc935a22d4b72696` 进入 `ready`。Superagent 发布确认 note `122026` 和摘要 note `122027`；摘要读回内容符合预期。
 - **执行与代码验证**：模型服务返回 HTTP `200`，worker checkout 干净，位于提交 `c5d1ebe`。`pnpm check` 通过：58 个测试文件、1194 个测试，以及类型检查和构建均通过。
 - **注意事项与范围**：冒烟脚本本身因调用 `glab auth git-credential` 时遗漏 `get` 参数而返回非零；此脚本结果不算通过，credential helper 和 `git ls-remote` 是单独验证通过的。MR、CI、服务重启/游标恢复及其他 CE 部署形态本次未测试。
+- **后续修正（2026-11-04）**：冒烟脚本已补上 `glab auth git-credential get`；需要重跑脚本，成功后才能把这一项标为通过。
+- **修复后复跑（2026-11-04）**：补上 `get` 后，`GLAB=/home/max/.local/bin/glab-agent-test scripts/gitlab-smoke.sh gitlab.diandian.info ngd/dsh-superagent-prototype 1` 通过（account 为 project bot、project readable、`updated_at` 从 `14:51:16` 变为 `15:43:27`、note read back、credential helper get ok）。这是 HTTPS 自建 CE 的 Issue/credential 路径；MR、CI、重启/游标和 UI 仍未覆盖。

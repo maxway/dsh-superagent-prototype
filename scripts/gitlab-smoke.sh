@@ -14,7 +14,7 @@ api() { "$glab" api "$@"; }
 field() { sed -n "s/.*\"$1\":\"\\([^\"]*\\)\".*/\\1/p" | head -1; }
 
 echo "account:"
-api user | field username | sed 's/^/  /'
+printf '  %s\n' "$(api user | field username)"
 echo "project:"
 api "projects/$encoded" >/dev/null
 echo "  readable"
@@ -33,7 +33,7 @@ api "projects/$encoded/issues/$issue/notes?sort=desc&order_by=created_at&per_pag
 echo "  note read back"
 
 echo "credential helper:"
-if printf 'protocol=https\nhost=%s\n\n' "$host" | "$glab" auth git-credential >/dev/null; then
+if printf 'protocol=https\nhost=%s\n\n' "$host" | "$glab" auth git-credential get >/dev/null; then
   echo "  ok"
 else
   echo "  failed" >&2
