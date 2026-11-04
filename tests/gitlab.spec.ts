@@ -240,6 +240,24 @@ describe('gitlab polling', () => {
     const triggers = (h.ctx.receive as ReturnType<typeof vi.fn>).mock.calls.map(([trigger]) => trigger as Trigger)
     expect(triggers.some(trigger => trigger.meta.ci === true && trigger.meta.revision === 1)).toBe(true)
   })
+  it('fetches a merge request detail when the list omits its head pipeline', async () => {
+    const h = context({ config: (() => config({ observeCi: true })) as SourceContext['config'] })
+    h.state.set(KV.gitlab.since, new Date(Date.now() - 3_600_000).toISOString())
+    let detail = mr({ head_pipeline: { id: 1, status: 'pending', web_url: 'https://gitlab.com/p/1' } })
+    glab(h.commands, {
+      'projects/42/issues': [],
+      'projects/42/merge_requests': [mr({ head_pipeline: null, updated_at: now() })],
+      'projects/42/merge_requests/7': () => detail,
+      'projects/42/merge_requests/7/notes': [],
+      'projects/42/pipelines': [],
+    })
+    await pollRound(h.ctx)
+    expect((h.ctx.receive as ReturnType<typeof vi.fn>).mock.calls.some(([trigger]) => (trigger as Trigger).meta.ci === true)).toBe(false)
+    detail = mr({ head_pipeline: { id: 2, status: 'pending', web_url: 'https://gitlab.com/p/2' } })
+    await pollRound(h.ctx)
+    const triggers = (h.ctx.receive as ReturnType<typeof vi.fn>).mock.calls.map(([trigger]) => trigger as Trigger)
+    expect(triggers.some(trigger => trigger.meta.ci === true && trigger.meta.revision === 1)).toBe(true)
+  })
   it('reads a subscribed merge request\'s new notes even when the project scan has no update', async () => {
     const h = context()
     const followed = { key: 'gitlab:mr:7', ref: { source: 'gitlab', id: 'mr:7' }, subscriptions: ['t1'], createdAt: now(), lastAt: now(),

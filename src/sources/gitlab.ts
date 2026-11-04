@@ -9,7 +9,7 @@ import type { Localized, SourceKind } from './kind.ts'
 import { health, sourceContext, type Health } from './host.ts'
 import { cursorAt, pause, POLL_HORIZON_MS, pollThreads as pollEach } from './poll.ts'
 import { gitlabThreadContext, pipelineFact } from './gitlab-read.ts'
-import { observeMergeRequest } from './gitlab-pull.ts'
+import { observeMergeRequest, readMergeRequest } from './gitlab-pull.ts'
 import { branchPipelineTrigger, gitlabThread, issueTrigger, mentions, mergeRequestPipelineTrigger, MergeRequestSchema,
   mergeRequestTrigger, noteTrigger, NoteSchema, SOURCE, type GitlabKind, type GitlabMergeRequest, IssueSchema } from './gitlab-trigger.ts'
 import { gitlabLink, sendGitlab } from './gitlab-channel.ts'
@@ -222,11 +222,14 @@ async function pollMergeRequests(ctx: SourceContext, round: Round, config: Gitla
       round.mrs += 1
     }
     nameThread(ctx, 'mr', mr.iid, mr.title, mr.web_url)
-    const ended = await observeMergeRequest(ctx, mr)
+    // GitLab's merge request list can omit head_pipeline; the single-MR read carries it.
+    const ended = mr.state === 'closed' || mr.state === 'merged' || !!mr.merged_at
+    const observed = config.observeCi && !ended && mr.head_pipeline == null ? await readMergeRequest(ctx, mr.iid, round.signal) : mr
+    const closed = await observeMergeRequest(ctx, observed)
     round.read.add(`mr:${mr.iid}:change`)
-    const done = !ended ? await intakeNotes(ctx, round, config, project, 'mr', mr.iid, mr.web_url, mr.author.username, false) : true
+    const done = !closed ? await intakeNotes(ctx, round, config, project, 'mr', mr.iid, mr.web_url, mr.author.username, false) : true
     if (!done) return
-    if (config.observeCi) await intakeMergeRequestCi(ctx, round, mr)
+    if (config.observeCi) await intakeMergeRequestCi(ctx, round, observed)
     if (stopped(ctx, round)) return
     ctx.state.set(KV.gitlab.cursor('mr', mr.iid), cursorAt(round.started))
   }
