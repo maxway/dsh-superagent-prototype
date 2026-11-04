@@ -70,14 +70,18 @@ prepare 命令和执行器指令收到相同的执行变量。命令读取环境
 | --- | --- | --- |
 | `DSH_SUPERAGENT_DIR`、`DSH_SUPERAGENT_NAME`、`DSH_SUPERAGENT_TICKET` | 执行器 | 工单的目录、短名和 id |
 | `DSH_SUPERAGENT_BLOCKED_COMMANDS` | 执行器 | 执行器不得运行的命令 |
+| `DSH_SUPERAGENT_GIT_PROVIDER` | 执行器 | 当前生效的 Git 宿主，`github` 或 `gitlab` |
 | `DSH_SUPERAGENT_GITHUB_REPOSITORY` | GitHub | 来源监视的仓库，`owner/name` |
 | `DSH_SUPERAGENT_GITHUB_ACCOUNT`、`DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL` | GitHub | 智能体账号及其 commit 邮箱 |
 | `DSH_SUPERAGENT_GITHUB_NUMBER`、`DSH_SUPERAGENT_GITHUB_PR_HEAD` | GitHub | 启动该工单的 Issue 或 pull request，以及当它是 pull request 时的 head ref |
+| `DSH_SUPERAGENT_GITLAB_HOST`、`DSH_SUPERAGENT_GITLAB_PROJECT` | GitLab | 来源监视的 GitLab 地址和项目 |
+| `DSH_SUPERAGENT_GITLAB_ACCOUNT`、`DSH_SUPERAGENT_GITLAB_COMMIT_EMAIL` | GitLab | 智能体账号及其 commit 邮箱 |
+| `DSH_SUPERAGENT_GITLAB_NUMBER`、`DSH_SUPERAGENT_GITLAB_MR_HEAD` | GitLab | 启动该工单的 Issue 或合并请求，以及当它是合并请求时的 head ref |
 | `DSH_SUPERAGENT_FEISHU_BOT`、`DSH_SUPERAGENT_FEISHU_CHAT` | 飞书 | 机器人，以及启动该工单的群 |
 
 工单专属的值来自其目录和起始触发。其他值来自当前的部署设置。只有面板可以更改执行环境设置；发送给主 Session 的文本不能更改已配置的 shell 命令。
 
-执行器通过智能体账号的 `gh` 访问 GitHub，通过机器人的 `lark-cli` 访问飞书。被阻止的命令在按名称调用时会失败。
+执行器通过智能体账号的 `gh` 访问 GitHub，通过 `glab` 访问 GitLab，通过机器人的 `lark-cli` 访问飞书；`DSH_SUPERAGENT_GIT_PROVIDER` 指明当前生效的 Git 宿主。被阻止的命令在按名称调用时会失败。
 
 这些包装脚本和目录建立的是默认行为，而不是安全边界。执行器仍然可以通过绝对路径执行程序。
 

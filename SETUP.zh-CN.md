@@ -4,6 +4,8 @@
 
 供智能体与其运营者一起安装配置 dsh-superagent 的说明。如果你是真人，请让你的编码智能体阅读本文件并照做。
 
+下面的步骤以 GitHub 为例。GitLab 部署请把 GitHub 读作 GitLab、`gh` 读作 `glab`、pull request 读作合并请求；[docs/zh/006-deployment.md](docs/zh/006-deployment.md) 有 GitLab 账号的步骤，并且只启用 GitLab 来源。
+
 ## 如何执行安装配置
 
 安装配置遵循 [000 理念](docs/zh/000-philosophy.md)：尽可能少占用运营者的注意力。

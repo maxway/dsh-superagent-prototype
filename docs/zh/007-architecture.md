@@ -276,16 +276,16 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 - **固定的拒绝。** 人或智能体能引发的拒绝，是 `src/core/errors.ts` 中 `USER_ERRORS` 里的 `UserError(code, values)`。管理 API 对 `missing` 代码返回 404，其他代码返回 400，面板用其语言为每个代码配词。安装配置问题是 `SetupError` 代码（`src/setup.ts`），固定健康文本是 `HealthCode`（`src/sources/host.ts`），也以同样方式配词。
 ### 来源特有的依赖
 
-一些通用模块仍然直接引用 GitHub 或飞书：
+一些通用模块仍需要按宿主区分行为：
 
 - Outbox 应用飞书聊天的字数限制。
 - `src/app/links.ts` 使用触发自带的 URL 并解析 `repliedTo`；飞书机器人无法查询消息链接。
-- `src/app/resources.ts` 读取 `github/` 的原始记录；`src/app/cards.ts` 为工单卡片使用 `pullOf`。
-- Runtime 为 merged 或 closed 的工单发送 `pullEndNotices`。
-- 执行器工具用 `readPull` 和 `claimPull` 绑定报告中的 pull request，使用 Runtime 暴露的 GitHub 上下文。
-- MasterAssessor 用 `readRepositoryPath` 读取仓库文件。
-- Sessions 和 Prompts 只为 GitHub 和飞书注册内置技能。迁移会转换它们的 schema 10 记录。
-- Setup 只探测 GitHub 和飞书的账号字段（`SETUP_FIELDS`）。只有这些来源会通过 `SourceContext.problem` 收到账号的安装配置问题。
+- `src/app/resources.ts` 读取 `github/` 和 `gitlab/` 的原始记录；`src/app/cards.ts` 用 `changeNumber` 读取变更编号。
+- Runtime 为 merged 或 closed 的工单发送 `changeEndNotices`，由它分派到当前 Git 宿主。
+- 执行器工具通过当前 Git 来源上下文，用 `readChange` 和 `claimChange` 绑定报告中的变更请求。
+- MasterAssessor 通过当前宿主读取仓库文件（`readRepositoryPath` 或 `readGitlabRepositoryPath`）。
+- Sessions 和 Prompts 为 GitHub、GitLab 和飞书注册内置技能。迁移会转换它们的 schema 10 记录。
+- Setup 探测 GitHub、GitLab 和飞书的账号字段（`SETUP_FIELDS`）。只有这些来源会通过 `SourceContext.problem` 收到账号的安装配置问题；同一时间只能启用一个 Git 来源。
 
 
 ## 模块
@@ -369,6 +369,12 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/sources/github-pull.ts` | pull request 规则：工单跟随哪些 pull request（`claimPull`、`observePull`）、它向 Engine 报告的关闭，以及 `pullEndNotices`——工单以 merged 或 closed 结束时的聊天通知 |
 | `src/sources/github-channel.ts` | GitHub 渠道：评论和评审线程回复，`sent` 或 `gone` |
 | `src/sources/github-read.ts` | CI 快照、仓库读取、`github/` 资源，以及 `githubThreadContext`：按页读取 Issue 或 pull request 的对话 |
+| `src/sources/gitlab.ts` | GitLab 种类和插件入口，导出为 `./gitlab-watch`：一轮项目 Issue、合并请求、note 和流水线的轮询 |
+| `src/sources/gitlab-trigger.ts` | 作为触发的 GitLab Issue、合并请求、note 和流水线变化，以及 GitLab 地址 |
+| `src/sources/gitlab-pull.ts` | 合并请求规则：工单跟随哪些合并请求（`claimMergeRequest`、`observeMergeRequest`）、它向 Engine 报告的关闭，以及 `mergeRequestEndNotices` |
+| `src/sources/gitlab-channel.ts` | GitLab 渠道：Issue 和合并请求 note，`sent` 或 `gone` |
+| `src/sources/gitlab-read.ts` | GitLab 流水线快照、仓库读取、`gitlab/` 资源，以及 `gitlabThreadContext` |
+| `src/sources/git-change.ts` | 与宿主无关的变更请求辅助函数：`changeOf`、`readChange`、`claimChange` 和 `changeEndNotices`，供 GitHub 与 GitLab 使用 |
 | `src/sources/feishu.ts` | 飞书种类和插件入口，导出为 `./feishu-watch` |
 | `src/sources/feishu-trigger.ts` | 把发给机器人的飞书实时消息作为触发 |
 | `src/sources/feishu-loops.ts` | 飞书事件消费者、其健康状态和重启退避 |
@@ -397,7 +403,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/client/locales.ts` | 两种语言的全部文案，以及 [001 领域模型](001-domain.md) 的术语表 |
 | `src/client/client.css`, `css.d.ts` | 面板的样式表，以文本加载 |
 
-`src/sources/github.ts` 和 `src/sources/feishu.ts` 也是两个来源插件的入口，由 `tsdown.config.ts` 构建，并在 `package.json` 中导出为 `./github-watch` 和 `./feishu-watch`。打包产物的 `cordis.patch.yml` 插入这三个插件，其中飞书处于禁用状态。
+`src/sources/github.ts`、`src/sources/gitlab.ts` 和 `src/sources/feishu.ts` 也是来源插件的入口，由 `tsdown.config.ts` 构建，并在 `package.json` 中导出为 `./github-watch`、`./gitlab-watch` 和 `./feishu-watch`。打包产物的 `cordis.patch.yml` 插入这四个插件，其中 GitLab 和飞书处于禁用状态。
 
 ## 测试
 
@@ -408,6 +414,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/policy.spec.ts` | 来源范围、准入、准入表、授权重新校验、策略版本、设置迁移和研判结论 |
 | `tests/registry.spec.ts` | `SourceRegistry`：实例、校验、策略部分、渠道和线程上下文 |
 | `tests/sources.spec.ts` | `SourceContext` 上的飞书和 GitHub 来源：转换、飞书事件消费者、GitHub 轮询和读取位置、pull request 规则、健康 |
+| `tests/gitlab.spec.ts` | `SourceContext` 上的 GitLab 来源：转换、项目轮询和游标、渠道、合并请求规则和结束通知 |
 | `tests/commands.spec.ts` | 以部署账号执行的 CLI 调用、渠道的回答，以及限定在仓库范围内的 GitHub 调用 |
 | `tests/github-read.spec.ts` | GitHub 读取 |
 | `tests/admission-context.spec.ts` | 研判的线程窗口 |

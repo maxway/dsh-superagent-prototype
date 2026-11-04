@@ -1,7 +1,7 @@
 /** Probes repository and account CLIs, configures the worker execution environment and command shims, and tracks setup readiness. */
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
-import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
+import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, resolveGitlabDeployment, workerProbe, type Deployment, type Machine } from '../deployment.ts'
 import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import type { Settings, SettingsBlock } from '../policy.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
@@ -61,6 +61,7 @@ export class Setup {
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
     const { machine } = this.host
     const check = block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
+      : block === 'source:gitlab' ? resolveGitlabDeployment(machine, settings.sources.gitlab?.config, this.probe())
       : resolveDeployment(machine, settings.sources.github?.config, this.probe())
     await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
   }
@@ -76,7 +77,23 @@ export class Setup {
   private async resolve(settings: Settings): Promise<Deployment> {
     const { context, machine, lifetime } = this.host
     const probe = this.probe()
-    const deployment = await resolveDeployment(machine, settings.sources.github?.config, probe)
+    // One Git Source is active at a time: a Ticket always works against one remote. When both are enabled,
+    // the one whose repository is configured wins; configuring both is ambiguous.
+    const gitlabEnabled = settings.sources.gitlab?.enabled === true
+    const githubEnabled = settings.sources.github?.enabled === true
+    const configured = (source: 'github' | 'gitlab') => {
+      const repository = settings.sources[source]?.config.repository
+      return typeof repository === 'string' && repository !== ''
+    }
+    let provider: 'github' | 'gitlab' = gitlabEnabled ? 'gitlab' : 'github'
+    if (gitlabEnabled && githubEnabled) {
+      if (configured('gitlab') === configured('github')) throw new SetupError('multipleGitSources')
+      provider = configured('gitlab') ? 'gitlab' : 'github'
+    }
+    this.feishuProblem = undefined
+    const deployment = provider === 'gitlab'
+      ? await resolveGitlabDeployment(machine, settings.sources.gitlab?.config, probe)
+      : await resolveDeployment(machine, settings.sources.github?.config, probe)
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.feishuProblem = error.problem

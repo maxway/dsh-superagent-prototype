@@ -274,16 +274,16 @@ Each model request binds the Session to the current prompt revision. The revisio
 - **Fixed refusals.** A refusal a person or an agent can cause is a `UserError(code, values)` from `USER_ERRORS` in `src/core/errors.ts`. The management API answers a `missing` code with 404 and the others with 400, and the panel words each code in its language. Setup problems are `SetupError` codes (`src/setup.ts`) and fixed health texts `HealthCode`s (`src/sources/host.ts`), worded the same way.
 ### Source-specific dependencies
 
-Some generic modules still refer directly to GitHub or Feishu:
+Some generic modules still need provider-specific behavior:
 
 - Outbox applies the Feishu chat word limit.
 - `src/app/links.ts` uses the URL a Trigger delivered and resolves `repliedTo`; a Feishu bot cannot look a message link up.
-- `src/app/resources.ts` reads the `github/` originals; `src/app/cards.ts` uses `pullOf` for Ticket cards.
-- Runtime sends `pullEndNotices` for merged or closed Tickets.
-- Executor tools bind reported pull requests with `readPull` and `claimPull`, using the GitHub context exposed by Runtime.
-- MasterAssessor reads repository files with `readRepositoryPath`.
-- Sessions and Prompts register built-in skills only for GitHub and Feishu. Migration converts their schema-10 records.
-- Setup probes only GitHub and Feishu account fields (`SETUP_FIELDS`). Only those Sources receive account setup problems through `SourceContext.problem`.
+- `src/app/resources.ts` reads the `github/` and `gitlab/` originals; `src/app/cards.ts` reads the change number through `changeNumber`.
+- Runtime sends `changeEndNotices` for merged or closed Tickets, which dispatches to the active Git host.
+- Executor tools bind reported change requests with `readChange` and `claimChange` through the active Git Source context.
+- MasterAssessor reads repository files through the active provider (`readRepositoryPath` or `readGitlabRepositoryPath`).
+- Sessions and Prompts register built-in skills for GitHub, GitLab and Feishu. Migration converts their schema-10 records.
+- Setup probes GitHub, GitLab and Feishu account fields (`SETUP_FIELDS`). Only those Sources receive account setup problems through `SourceContext.problem`; exactly one Git Source may be enabled.
 
 
 ## Modules
@@ -367,6 +367,12 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/github-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
 | `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
 | `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
+| `src/sources/gitlab.ts` | The GitLab kind and plugin entry, exported as `./gitlab-watch`: a poll round of project Issues, merge requests, notes and pipelines |
+| `src/sources/gitlab-trigger.ts` | GitLab Issues, merge requests, notes and pipeline changes as Triggers, and GitLab addresses |
+| `src/sources/gitlab-pull.ts` | The merge request rules: which merge requests a Ticket follows (`claimMergeRequest`, `observeMergeRequest`), the closes it reports to the Engine, and `mergeRequestEndNotices` |
+| `src/sources/gitlab-channel.ts` | The GitLab Channel: issue and merge request notes, `sent` or `gone` |
+| `src/sources/gitlab-read.ts` | GitLab pipeline snapshots, repository reads, the `gitlab/` resources, and `gitlabThreadContext` |
+| `src/sources/git-change.ts` | Provider-neutral change request helpers: `changeOf`, `readChange`, `claimChange` and `changeEndNotices` for GitHub and GitLab |
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
 | `src/sources/feishu-trigger.ts` | Feishu live messages to the bot as Triggers |
 | `src/sources/feishu-loops.ts` | The Feishu event consumer, its health and its restart backoff |
@@ -395,7 +401,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
+`src/sources/github.ts`, `src/sources/gitlab.ts` and `src/sources/feishu.ts` are also the entries of the Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./gitlab-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the four plugins, with GitLab and Feishu disabled.
 
 ## Tests
 
@@ -406,6 +412,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, the Feishu event consumer, GitHub polls and read positions, the pull request rules, health |
+| `tests/gitlab.spec.ts` | The GitLab Source on a `SourceContext`: translation, project polling and cursors, the Channel, merge request rules and terminal notices |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/github-read.spec.ts` | GitHub reads |
 | `tests/admission-context.spec.ts` | The Thread window of assessments |
