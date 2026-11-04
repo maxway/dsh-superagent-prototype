@@ -155,7 +155,7 @@ GIT_CONFIG_GLOBAL="$TMP/gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
 - 幂等检查只读最近 100 条 note。
 - `gitlab/.../checks` 只到 pipeline，不到单个 job。
 - 404 note POST 会重试；目标被删除时可能持续重试。
-- 真实 CE 已验证 Issue 评论→回复、CLI smoke、默认分支 pipeline ID 变化触发及停服后游标恢复；人类作者 MR、MR-head CI/job 结果、运行中重启和 Sources UI 截图仍未完成，PR 保持 draft。
+- 真实 CE 已验证 Issue 评论→回复、CLI smoke、默认分支 pipeline ID 变化触发、停服后游标恢复及 Sources 启用前后截图；人类作者 MR Trigger、MR-head CI/job 结果和运行中重启补读仍未完成，PR 保持 draft。
 
 ## 13. 本次实测记录
 
@@ -167,8 +167,8 @@ GIT_CONFIG_GLOBAL="$TMP/gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
 - **MR**：在既有项目创建临时分支 `test/superagent-gitlab-ce-20261105` 和 MR `!1`。MR 作者是智能体账号 `project_4569_bot`，Source 按设计跳过自身创建的 MR；因此验证了自触发抑制，但尚未验证人类作者 MR 的 Trigger。
 - **CI**：GitLab 项目没有注册 Runner。MR pipelines `148266`、`148268`、`148271` 及默认分支 pipelines `148272`、`148273`、`148279` 均为 `pending`，job 无法执行。Source 在 `gitlab:ci:main` 收到 pipeline `148273` 和 `148279` 的 CI Trigger，均被策略记为 `admission_ignored`，没有派发 worker；说明默认分支 pipeline ID 变化可被检测，但未覆盖 job 完成或成功/失败状态。MR 列表 API 的 `head_pipeline` 为 `null`，而单 MR 详情能返回 pipeline；本次未观察到 MR 专属 CI 状态记录，不能据此判定 MR-head CI 通过。`gitlab/mrs/<iid>/checks` 的失败流水线读取也未验证。
 - **服务重启/游标恢复**：在 profile 停止期间由 `jun.mei` 分别向 Issue `#1` 和 MR `!1` 添加测试 note `122049`、`122050`。重启同一 profile 后，Source `received` 从 `3` 增至 `5`，两条 note 各被读取一次；策略未派发 worker（running/queued 均为 `0`），GitLab 未出现重复回复。重启后 runtime 与 GitLab health 均为 `ready`。因此仅验证了“停服期间新评论可恢复且无重复”，运行中重启补读仍未测试。
-- **后续修正（2026-11-05）**：项目扫描发现 MR 列表的 `head_pipeline` 为空时，会改读单 MR 详情再判断 MR-head CI；已加测试。可在测试项目新建/重试 MR pipeline，观察 Source 是否收到 CI Trigger（无 Runner 时状态仍为 pending，但 pipeline ID 变化应可见）。
-- **Sources 截图**：现有 CDP Chrome 会话没有已认证的 DSH 页面；裸地址 `http://127.0.0.1:52852` 会要求认证。尚未取得 Sources 启用前/后的截图；需由维护者在现有浏览器新标签打开 DSH 提供的认证地址（无需在聊天中粘贴凭据）后再截取。
+- **后续修正（2026-11-05）**：提交 `111b412` 已处理 MR 列表 `head_pipeline` 为空的情形，改读单 MR 详情并添加自动化测试；此修正晚于本次 CE 实测代码版本，本次 profile 尚未用它复测。项目无 Runner，MR pipeline/job 最终状态仍无法从真实执行结果确认。
+- **Sources 截图**：在 DSH Superagent「设置 → 来源」页采集启用前后的裁切截图：[`sources-before.png`](sources-before.png)（GitLab Source 关闭）和 [`sources-after.png`](sources-after.png)（GitLab Source 启用，显示项目 `ngd/dsh-superagent-prototype` 与账号 `project_4569_bot`；其他观察开关关闭）。截图避开工作区侧栏，未包含凭据。
 - **执行与代码验证**：模型服务返回 HTTP `200`，worker checkout 干净，位于提交 `c5d1ebe`。`pnpm check` 通过：58 个测试文件、1194 个测试，以及类型检查和构建均通过。
 - **CLI smoke 历史**：在功能分支 `e2d4e9d` 上的初次运行因 `glab auth git-credential` 漏掉 `get` 参数而失败；后续提交 `051b9b6` 修复后复跑通过（账号、项目、`updated_at` 从 `14:51:16` 更新到 `15:43:27`、note 读回及 credential helper 均通过）。该次复跑是 HTTPS 自建 CE 的 Issue/credential 路径；本次 profile 的 credential helper 和隔离配置 `git ls-remote` 也单独通过。
 - **清理**：测试后已取消六条测试 pipeline、关闭临时 MR `!1`、删除分支 `test/superagent-gitlab-ce-20261105`；Source 的 MR/评论/CI 观察开关已复位为 `false`，GitLab Source 仍启用，Issue `#1` 保留。其他 CE 部署形态仍未测试。
