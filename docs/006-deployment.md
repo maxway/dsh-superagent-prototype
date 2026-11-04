@@ -64,6 +64,8 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 3. A deployment has one active Git Source. In the profile's `cordis.patch.yml`, enable `dsh-superagent-gitlab` and disable `dsh-superagent-github`; enable exactly one of them. In **Sources**, set the GitLab URL, the project (`group/project`) and the wrapper path.
 
+Switching a deployment from one Git host to the other leaves existing Tickets on the old host: finish or stop them first. The state directory keeps both hosts' records, and switching back reuses them.
+
 ### Feishu bot (optional)
 
 1. Create a self-built app with the bot capability. Grant it the permissions to receive message events and to send messages as the bot, then publish the app version. It needs no permission to read messages, chat history, chats or chat members: the Source works from the event payload and replies only. The removed read paths called APIs that require `im:message`, `im:message:readonly` and `im:message.history:readonly` for messages, and `im:chat`, `im:chat:readonly`, `im:chat.group_info:readonly`, `im:chat:read` and `im:chat.members:read` for chats and members; this build does not call them. It therefore cannot recover messages sent while dsh-superagent was offline, cannot read a message or Thread by ID, cannot list chats or sync members, and cannot read images. Enter chat IDs and the allowed list by hand. Choosing **All** for a group additionally needs Feishu's permission to receive every group message; without it only messages that mention the bot arrive.
@@ -242,12 +244,12 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 Setup uses the DeepSeek Harness subprocess service, as worker shells do. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
 
-Setup verifies the GitHub repository and the agent's push access, writes the worker environment, and checks that git uses only the agent credentials for github.com. A Feishu setup failure disables only the Feishu Source.
+Setup verifies the active Git Source's repository or project and the agent's push access, writes the worker environment, and checks that git uses only the agent credentials for that host. A Feishu setup failure disables only the Feishu Source.
 
 The process environment that setup writes:
 
 - **Command shims** in `<stateDir>/worker-bin`, first on `PATH`: `gh` runs the agent's CLI; `lark-cli` runs the bot's CLI; blocked commands fail. A shim removes its own directory from `PATH` before it runs its target.
-- **git configuration** in `<stateDir>/worker-gitconfig`: replaces the operator's global and system git configuration. It selects the agent CLI as the github.com credential helper, rewrites GitHub SSH addresses to HTTPS and defines Git LFS filters. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN` and `GITHUB_TOKEN` are removed.
+- **git configuration** in `<stateDir>/worker-gitconfig`: replaces the operator's global and system git configuration. It selects the agent CLI as the active host's credential helper, rewrites that host's SSH addresses to HTTPS and defines Git LFS filters. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN`, `GITHUB_TOKEN`, `GLAB_TOKEN` and `GITLAB_TOKEN` are removed.
 
 A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write stops setup. A Ticket directory inside a git repository whose own configuration adds credentials fails the Ticket.
 
@@ -282,7 +284,7 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `@… cannot read …` or `@… cannot push to …` | Give the agent account write access to the repository |
 | `The GitHub Source names no repository.` | Set the repository, `owner/name`, on the GitHub card |
 | A Ticket fails with `The prepare command failed: …` | The output names the cause, such as a wrong clone path; fix the command, then retry the Ticket |
-| `git does not read the github.com credential configuration dsh-superagent writes` | Install git 2.32 or later |
+| `git does not read the credential configuration dsh-superagent writes` | Install git 2.32 or later |
 | A Ticket fails with `The git configuration of the repository in … sets …` | Remove the named credential or `http.*.extraheader` settings from the clone's `.git/config` |
 | `… was not written by dsh-superagent` | Move the named file out of `<stateDir>/worker-bin` or `<stateDir>/worker-gitconfig`, or choose another `stateDir` |
 | `The bot lark-cli allows user identities` | Point the Feishu Source at a bot-only configuration, as in Feishu bot above |

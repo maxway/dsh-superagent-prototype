@@ -66,6 +66,8 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
 
 3. 一个部署只有一个生效的 Git 来源。在 profile 的 `cordis.patch.yml` 中启用 `dsh-superagent-gitlab` 并禁用 `dsh-superagent-github`；两者只能启用一个。在 **来源** 中设置 GitLab 地址、项目（`group/project`）和包装脚本路径。
 
+从一个 Git 宿主切换到另一个时，旧宿主上已有的工单会保留：请先完成或停止它们。状态目录会保留两个宿主的记录，切回时可以继续使用。
+
 ### 飞书机器人（可选）
 
 1. 创建一个带机器人能力的自建应用。授予它接收消息事件和以机器人身份发送消息的权限，然后发布应用版本。它不需要读取消息、聊天历史、群或群成员的权限：来源只使用事件携带的内容并回复。被移除的读取路径会调用需要 `im:message`、`im:message:readonly`、`im:message.history:readonly`（消息）以及 `im:chat`、`im:chat:readonly`、`im:chat.group_info:readonly`、`im:chat:read`、`im:chat.members:read`（群和成员）的接口；当前版本不再调用它们。因此它无法补收 dsh-superagent 离线期间的消息，无法按 ID 读取消息或话题，无法列出群或同步成员，也无法读取图片。群 chat_id 和允许名单需要手工填写。为群选择**全部消息**还需要飞书“接收群内全部消息”的权限；没有该权限时只会收到 @ 机器人的消息。
@@ -244,12 +246,12 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 安装配置使用 DeepSeek Harness 的子进程服务，和执行器的 shell 一样。它会移除名称包含 KEY、PASSWORD、SECRET 或 TOKEN 的环境变量。
 
-安装配置会验证 GitHub 仓库和智能体的推送权限，写入执行器环境，并检查 git 对 github.com 只使用智能体凭据。飞书安装配置失败只会停用飞书来源。
+安装配置会验证当前 Git 宿主的仓库或项目和智能体的推送权限，写入执行器环境，并检查 git 对该宿主只使用智能体凭据。飞书安装配置失败只会停用飞书来源。
 
 安装配置写入的进程环境：
 
 - **命令 shim** 位于 `<stateDir>/worker-bin`，在 `PATH` 中排在最前：`gh` 运行智能体的 CLI；`lark-cli` 运行机器人的 CLI；被禁止的命令会失败。shim 在运行目标之前会把自身目录从 `PATH` 中移除。
-- **git 配置**位于 `<stateDir>/worker-gitconfig`：替换运营者的全局和系统 git 配置。它选择智能体 CLI 作为 github.com 的凭据助手，把 GitHub SSH 地址改写为 HTTPS，并定义 Git LFS 过滤器。个人 git 设置（例如 HTTP 代理）不生效。这里不设置提交身份，git 绝不会提示输入凭据，`GH_TOKEN` 和 `GITHUB_TOKEN` 会被移除。
+- **git 配置**位于 `<stateDir>/worker-gitconfig`：替换运营者的全局和系统 git 配置。它选择智能体 CLI 作为当前宿主的凭据助手，把该宿主的 SSH 地址改写为 HTTPS，并定义 Git LFS 过滤器。个人 git 设置（例如 HTTP 代理）不生效。这里不设置提交身份，git 绝不会提示输入凭据，`GH_TOKEN`、`GITHUB_TOKEN`、`GLAB_TOKEN` 和 `GITLAB_TOKEN` 会被移除。
 
 `worker-bin` 或 `worker-gitconfig` 中不是 dsh-superagent 写入的文件会阻止安装配置。如果工单目录位于一个自身配置添加了凭据的 git 仓库中，该工单会失败。
 
@@ -284,7 +286,7 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 | `@… cannot read …` 或 `@… cannot push to …` | 给智能体账号授予仓库写权限 |
 | `The GitHub Source names no repository.` | 在 GitHub 卡片上设置仓库，`owner/name` |
 | 工单失败并报 `The prepare command failed: …` | 输出会指出原因，例如错误的克隆路径；修正命令，然后重试该工单 |
-| `git does not read the github.com credential configuration dsh-superagent writes` | 安装 git 2.32 或更高版本 |
+| `git does not read the credential configuration dsh-superagent writes` | 安装 git 2.32 或更高版本 |
 | 工单失败并报 `The git configuration of the repository in … sets …` | 从克隆的 `.git/config` 中移除所指的凭据或 `http.*.extraheader` 设置 |
 | `… was not written by dsh-superagent` | 把所指的文件移出 `<stateDir>/worker-bin` 或 `<stateDir>/worker-gitconfig`，或选择另一个 `stateDir` |
 | `The bot lark-cli allows user identities` | 让飞书来源指向一个仅机器人配置，如上面的飞书机器人所述 |

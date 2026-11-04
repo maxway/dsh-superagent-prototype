@@ -16,6 +16,28 @@ export interface SetupHost {
 const setupFields = (settings: Settings) =>
   JSON.stringify(Object.entries(SETUP_FIELDS).map(([id, keys]) => keys.map(key => settings.sources[id]?.config[key] ?? '')))
 export const setupChanged = (before: Settings, after: Settings): boolean => setupFields(before) !== setupFields(after)
+/** Whether a Source's on/off switch changed; a switch also needs a fresh setup even when its fields stay the same. */
+const sourceEnabled = (settings: Settings) => JSON.stringify(Object.keys(SETUP_FIELDS).map(id => settings.sources[id]?.enabled ?? true))
+export const sourceSwitched = (before: Settings, after: Settings): boolean => sourceEnabled(before) !== sourceEnabled(after)
+
+/**
+ * The one Git Source a deployment uses: an enabled GitHub or GitLab Source. When both are enabled, the one whose
+ * repository is configured wins; configuring both or neither is ambiguous and refused.
+ */
+export function gitProvider(settings: Pick<Settings, 'sources'>): 'github' | 'gitlab' {
+  const gitlab = settings.sources.gitlab, github = settings.sources.github
+  const gitlabOn = gitlab?.enabled === true, githubOn = github?.enabled === true
+  const configured = (source: { config: Record<string, unknown> }): boolean => {
+    const repository = source.config.repository
+    return typeof repository === 'string' && repository !== ''
+  }
+  if (gitlabOn && githubOn) {
+    if (configured(gitlab!) === configured(github!)) throw new SetupError('multipleGitSources')
+    return configured(gitlab!) ? 'gitlab' : 'github'
+  }
+  if (!gitlabOn && github?.enabled === false) throw new SetupError('gitSourceUnset')
+  return gitlabOn ? 'gitlab' : 'github'
+}
 
 /**
  * Resolves the target repository, GitHub account, and optional Feishu bot by probing CLIs, then writes and applies the isolated git and shim environment used by worker processes.
@@ -59,6 +81,8 @@ export class Setup {
   restart(): void { setTimeout(this.host.restart, 0) }
   /** Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks. */
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
+    // A Source being switched off needs no working account; switching away from a broken host must stay possible.
+    if (block.startsWith('source:') && settings.sources[block.slice(7)]?.enabled === false) return
     const { machine } = this.host
     const check = block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
       : block === 'source:gitlab' ? resolveGitlabDeployment(machine, settings.sources.gitlab?.config, this.probe())
@@ -77,20 +101,9 @@ export class Setup {
   private async resolve(settings: Settings): Promise<Deployment> {
     const { context, machine, lifetime } = this.host
     const probe = this.probe()
-    // One Git Source is active at a time: a Ticket always works against one remote. When both are enabled,
-    // the one whose repository is configured wins; configuring both is ambiguous.
-    const gitlabEnabled = settings.sources.gitlab?.enabled === true
-    const githubEnabled = settings.sources.github?.enabled === true
-    const configured = (source: 'github' | 'gitlab') => {
-      const repository = settings.sources[source]?.config.repository
-      return typeof repository === 'string' && repository !== ''
-    }
-    let provider: 'github' | 'gitlab' = gitlabEnabled ? 'gitlab' : 'github'
-    if (gitlabEnabled && githubEnabled) {
-      if (configured('gitlab') === configured('github')) throw new SetupError('multipleGitSources')
-      provider = configured('gitlab') ? 'gitlab' : 'github'
-    }
+    // One Git Source is active at a time: a Ticket always works against one remote.
     this.feishuProblem = undefined
+    const provider = gitProvider(settings)
     const deployment = provider === 'gitlab'
       ? await resolveGitlabDeployment(machine, settings.sources.gitlab?.config, probe)
       : await resolveDeployment(machine, settings.sources.github?.config, probe)

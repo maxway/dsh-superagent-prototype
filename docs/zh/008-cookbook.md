@@ -77,7 +77,7 @@ export const webhookKind: SourceKind<WebhookConfig> = {
 - `kind` 是稳定的来源 id。它出现在触发的 `source`、线程键前缀、`source:webhook` 设置块和来源策略中。
 - `schema` 校验存储的配置并提供默认值。在运营者保存实例之前，注册表会用这些默认值创建一个已启用的实例。让默认值什么都不接收；本示例默认不包含任何对话。
 - `fields` 无需自定义面板代码就生成来源设置表单。`rows` 字段编辑以其第一列为键的条目；`advanced` 隐藏不常用的设置。如果来源能把 id 解析为显示名，就实现 `refreshLabels`。把这些名字保存在 `KV.sources.labels(kind)` 下。之后带 `choose` 和 `refresh` 的列就可以提供它们。
-- 可选的 `facts(deployment)` 显示由安装配置（setup）推导出的值，例如某个 CLI 背后的账号。安装配置目前只检查 `SETUP_FIELDS` 中列出的 GitHub 和飞书字段，因此本示例不提供 facts。
+- 可选的 `facts(deployment)` 显示由安装配置（setup）推导出的值，例如某个 CLI 背后的账号。安装配置目前只检查 `SETUP_FIELDS` 中列出的 GitHub、GitLab 和飞书字段，因此本示例不提供 facts。
 - `health` 声明来源的健康条目，初始为 `starting`。注册会占用每个名字，并拒绝与 `runtime`、`reply`、`worker` 或 effect 类型等条目冲突。使用该类型的名字，并把 `sync:<id>` 留给策略同步。`error` 会让状态脚本以退出码 2 结束，并让每小时检查通知运营者，所以只在可能需要人工操作时才报告它。
 
 ### 3. 把消息转换成触发

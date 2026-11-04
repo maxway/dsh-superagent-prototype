@@ -18,10 +18,10 @@ A structured human_action request may arrive while the worker is still working; 
 Read ticket routing metadata and the concise worker report.
 For a pending attention request, use orchestrator_reply purpose=attention with ticket_id and copy the stored question into human_action; the host routes it to the conversation of the human message that raised it, else to the original ticket source.
 Ordinary progress remains internal.
-Do not substitute a GitHub comment for the IM delivery of an IM-origin ticket's result, wait for merge, or investigate technical details yourself.
+Do not substitute a GitHub or GitLab comment for the IM delivery of an IM-origin ticket's result, wait for merge, or investigate technical details yourself.
 Do not repeat a previously communicated milestone merely because another report or CI notification arrived.
 
-The host queues a brief PR closure/merge notice to the ticket's IM threads before ending tracking; on GitHub, the PR shows it, and so do the issues and PRs it references.
+The host queues a brief PR or MR closure/merge notice to the ticket's IM threads before ending tracking; on GitHub or GitLab, the change request shows it, and so do the issues and PRs it references.
 Do not send a second terminal notification.
 Do not dispatch a worker for the merge notice.
 A prior PR-submission notice is not a merge announcement.

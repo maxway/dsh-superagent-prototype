@@ -251,7 +251,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/tools/main.ts`, `src/app/tools/executor.ts` | 把主 Session 与执行器 Session 的工具参数转换为核心类的调用，把结果转换为卡片 |
 | `src/app/http.ts`, `src/app/views/`, `src/app/api.ts` | 把 HTTP 请求转换为调用，把 Store 读取转换为面板的视图；`api.ts` 为面板给每条路由标注类型 |
 | `src/app/resources.ts`, `src/app/links.ts`, `src/app/cards.ts` | 把资源名称转换为读取、把来源消息转换为链接、把记录转换为给模型的紧凑卡片 |
-| `src/sources/github*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | 把 GitHub 和飞书负载转换为触发和线程事实，把消息转换为 CLI 调用 |
+| `src/sources/github*.ts`, `src/sources/gitlab*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | 把 GitHub、GitLab 和飞书负载转换为触发和线程事实，把消息转换为 CLI 调用 |
 | `src/deployment.ts`, `src/setup.ts`, `src/infra/` | 安装配置探测与问题、CLI 传输、智能体的进程环境 |
 
 ## 依赖规则
@@ -616,7 +616,7 @@ worker 以内联方式收到派工和输入。第一条消息包括标题、最�
 
 ## 用真实数据审查改动
 
-把 `DSH_HOME` 指向一个临时目录，并在那里创建一个新的 profile。从备份复制数据库、禁用每个来源、暂停处理并移除主 Session id。给 GitHub 和飞书 CLI 提供只读的替身。
+把 `DSH_HOME` 指向一个临时目录，并在那里创建一个新的 profile。从备份复制数据库、禁用每个来源、暂停处理并移除主 Session id。给 GitHub、GitLab 和飞书 CLI 提供只读的替身。
 
 ## 开放问题
 

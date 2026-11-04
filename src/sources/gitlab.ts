@@ -34,7 +34,7 @@ function scopeOf(meta: Record<string, unknown>): Scope | undefined {
 export const gitlabKind: SourceKind<GitlabConfig> = {
   kind: SOURCE,
   title: { zh: 'GitLab', en: 'GitLab' },
-  description: { zh: '智能体的 GitLab 账号；接收项目中发给它的 Issue、合并请求、评论与 CI 状态变化，并在原讨论里回复。', en: 'The agent\'s GitLab account; receives Issues, merge requests, comments and pipeline changes addressed to it in the project, and replies in the original discussion.' },
+  description: { zh: '智能体的 GitLab 账号；接收项目中发给它的 Issue、合并请求、评论与 CI 状态变化，并用 note 回复。', en: 'The agent\'s GitLab account; receives Issues, merge requests, comments and pipeline changes addressed to it in the project, and replies with notes.' },
   schema: GitlabConfigSchema,
   fields: [
     { key: 'host', type: 'text', label: { zh: 'GitLab 地址', en: 'GitLab URL' },
@@ -62,8 +62,8 @@ export const gitlabKind: SourceKind<GitlabConfig> = {
   channel: { send: sendGitlab, link: gitlabLink },
   threadContext: gitlabThreadContext,
   find: query => {
-    const issue = /(?:gitlab\.[^/]+(?:\/[^/]+)+\/-\/issues\/(\d+)|^#(\d+)$)/.exec(query.trim())
-    const mr = /(?:gitlab\.[^/]+(?:\/[^/]+)+\/-\/merge_requests\/(\d+)|^!(\d+)$)/.exec(query.trim())
+    const issue = /(?:https?:\/\/[^/\s]+(?:\/[^/\s]+)+\/-\/issues\/(\d+)|^#(\d+)$)/.exec(query.trim())
+    const mr = /(?:https?:\/\/[^/\s]+(?:\/[^/\s]+)+\/-\/merge_requests\/(\d+)|^!(\d+)$)/.exec(query.trim())
     return { threads: [...issue ? [`${SOURCE}:issue:${issue[1] ?? issue[2]}`] : [], ...mr ? [`${SOURCE}:mr:${mr[1] ?? mr[2]}`] : []], terms: [] }
   },
   policy: {
@@ -176,7 +176,9 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   const config = ctx.config<GitlabConfig>(SOURCE)
   if (!config) return 60
   const { path, defaultBranch } = projectOf(ctx)
-  const since = ctx.state.get(KV.gitlab.since) ?? round.started
+  // Persist the start of the first poll before reading, so a failed first round retries the same interval instead of losing it.
+  let since = ctx.state.get(KV.gitlab.since)
+  if (since === undefined) { since = round.started; ctx.state.set(KV.gitlab.since, since) }
   const horizon = Math.floor((Date.parse(round.started) - POLL_HORIZON_MS) / 3_600_000) * 3_600_000
   const sinceAt = new Date(Math.max(Date.parse(since), horizon)).toISOString()
   try { await pollIssues(ctx, round, config, path, sinceAt) } catch (error) { if (!stopped(ctx, round)) round.failures.push(`issues: ${String(error)}`) }
@@ -187,7 +189,7 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   if (round.failures.length) throw new Error(`${round.failures.length} GitLab reads failed: ${round.failures.slice(0, 3).join('; ')}`)
   ctx.atomic(() => ctx.state.set(KV.gitlab.since, cursorAt(round.started)))
   const skipped = round.tally.skipped ? `; ${round.tally.skipped} unreadable items skipped` : ''
-  ctx.report('gitlab', { state: 'ready', detail: `${round.issues} issues, ${round.mrs} merge requests, ${round.notes} notes; next poll ≥ 60s${skipped}`, at: round.started })
+  ctx.report('gitlab', { state: 'ready', detail: `${round.issues} issues, ${round.mrs} merge requests, ${round.notes} notes; next poll ≥ ${config.pollSeconds}s${skipped}`, at: round.started })
   return 60
 }
 async function pollIssues(ctx: SourceContext, round: Round, config: GitlabConfig, project: string, since: string): Promise<void> {
@@ -196,9 +198,9 @@ async function pollIssues(ctx: SourceContext, round: Round, config: GitlabConfig
     `${project}/issues?updated_after=${encodeURIComponent(since)}&order_by=updated_at&sort=asc&scope=all&state=all`, round.tally)
   for (const issue of issues) {
     if (stopped(ctx, round)) return
-    if (sameName(issue.author.username, login)) continue
+    // The Agent's own Issue body is not a request from someone else, but its notes still carry other people's follow-ups.
     const fresh = Date.parse(issue.created_at) >= Date.parse(since)
-    if (fresh && (config.observeIssues || mentions(issue.description ?? '', login))) {
+    if (!sameName(issue.author.username, login) && fresh && (config.observeIssues || mentions(issue.description ?? '', login))) {
       await ctx.receive(issueTrigger(issue, login))
       round.issues += 1
     }
@@ -247,18 +249,21 @@ async function intakeNotes(ctx: SourceContext, round: Round, config: GitlabConfi
 async function intakeMergeRequestCi(ctx: SourceContext, round: Round, mr: GitlabMergeRequest): Promise<void> {
   const status = mr.head_pipeline?.status
   if (!status) return
+  const id = mr.head_pipeline?.id ?? undefined
   const previous = ctx.state.get(KV.gitlab.ci('mr', mr.iid))
   const revision = previous ? previous.revision + 1 : 0
-  if (previous && previous.status !== status) {
+  // A retried pipeline can keep its status; the new pipeline id is still a change worth reporting.
+  if (previous && (previous.status !== status || previous.id !== id)) {
     await ctx.receive(mergeRequestPipelineTrigger(mr, revision, status, mr.head_pipeline?.web_url ?? mr.web_url))
   }
-  ctx.state.set(KV.gitlab.ci('mr', mr.iid), { status, revision })
+  ctx.state.set(KV.gitlab.ci('mr', mr.iid), { status, revision, ...(id === undefined ? {} : { id }) })
   ctx.threads.describe(gitlabThread('mr', mr.iid), { facts: { ci: pipelineFact(status) } })
 }
 async function pollDefaultBranchCi(ctx: SourceContext, round: Round, config: GitlabConfig, project: string, branch: string): Promise<void> {
   if (!config.observeCi) {
+    // Forget the observed pipeline so switching CI back on baselines afresh instead of reporting the gap.
     const seen = ctx.state.get(KV.gitlab.ci('branch', 0))
-    if (seen) ctx.state.set(KV.gitlab.ci('branch', 0), { ...seen })
+    if (seen) ctx.state.set(KV.gitlab.ci('branch', 0), { revision: seen.revision })
     return
   }
   const pipelines = await ctx.commands.withSignal(round.signal).glabApi(z.array(z.looseObject({ id: z.number(), status: z.string(),
@@ -267,11 +272,11 @@ async function pollDefaultBranchCi(ctx: SourceContext, round: Round, config: Git
   if (!latest) return
   const previous = ctx.state.get(KV.gitlab.ci('branch', 0))
   const revision = previous ? previous.revision + 1 : 0
-  if (previous && previous.status !== latest.status) {
+  if (previous && (previous.status !== latest.status || previous.id !== latest.id)) {
     await ctx.receive(branchPipelineTrigger(ctx.deployment.gitlab?.host ?? `https://${ctx.deployment.git.host}`, ctx.deployment.repository,
       branch, latest.sha, revision, latest.status, latest.web_url ?? ''))
   }
-  ctx.state.set(KV.gitlab.ci('branch', 0), { status: latest.status, revision })
+  ctx.state.set(KV.gitlab.ci('branch', 0), { status: latest.status, revision, id: latest.id })
   ctx.threads.describe(`gitlab:ci:${branch}`, { label: `CI on ${branch}`, facts: { ci: pipelineFact(latest.status) } })
 }
 async function pollThreads(ctx: SourceContext, round: Round): Promise<void> {

@@ -7,6 +7,7 @@ export const SETUP_PROBLEMS = {
   gitTooOld: ['deployment', 'git does not read the credential configuration dsh-superagent writes for the active Git host; dsh-superagent needs git 2.32 or later.'],
   environmentFailed: ['deployment', 'Preparing the agent environment failed.'],
   multipleGitSources: ['deployment', 'Both the GitHub and GitLab Sources are enabled. Enable exactly one Git Source and disable the other.'],
+  gitSourceUnset: ['deployment', 'No Git Source is enabled. Enable exactly one of the GitHub and GitLab Sources.'],
   repositoryUnset: ['github', 'The GitHub Source names no repository.'],
   agentCliUnset: ['github', 'The agent GitHub CLI is not set.'],
   agentCliMissing: ['github', 'The agent GitHub CLI was not found.'],

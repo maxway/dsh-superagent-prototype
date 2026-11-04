@@ -6,10 +6,10 @@ import { claimPull, pullEndNotices, readPull, type Pull } from './github-pull.ts
 import { claimMergeRequest, mergeRequestEndNotices, readMergeRequest, type MergeRequest } from './gitlab-pull.ts'
 
 export interface ChangeRef { provider: 'github' | 'gitlab'; number: number }
-/** The change request a ticket follows, preferring its last own thread; `undefined` when it follows none. */
+/** The change request a ticket follows, preferring its own thread and then the newest; `undefined` when it follows none. */
 export function changeOf(ticket: Pick<Ticket, 'follows'>): ChangeRef | undefined {
-  const follows = [...(ticket.follows ?? [])]
-  for (const follow of follows.reverse()) {
+  const follows = [...(ticket.follows ?? [])].sort((a, b) => Number(!!b.own) - Number(!!a.own))
+  for (const follow of follows) {
     const github = /^github:(\d+)$/.exec(follow.thread)
     if (github) return { provider: 'github', number: Number(github[1]) }
     const gitlab = /^gitlab:mr:(\d+)$/.exec(follow.thread)

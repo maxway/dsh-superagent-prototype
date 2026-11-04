@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, resolveGitlabDeployment, type Machine, type Probe } from '../src/deployment.ts'
+import { gitProvider, setupChanged, sourceSwitched } from '../src/app/setup.ts'
+import { SettingsSchema } from '../src/policy.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 const exec = promisify(execFile)
@@ -99,6 +101,28 @@ describe('setup', () => {
     await refuses('feishuNoBot')
     program(join(dir, 'bin', 'lark-cli'), 'echo "not configured" >&2; exit 1')
     await refuses('feishuCliFailed', { output: expect.stringContaining('not configured') })
+  })
+  it('restarts setup when a Git Source is switched on or off, even when its fields stay the same', () => {
+    const base = SettingsSchema.parse({ sources: { github: { enabled: true, config: { repository: 'acme/widgets', cli: 'gh' } },
+      gitlab: { enabled: false, config: { repository: 'acme/widgets', cli: 'glab' } } } })
+    const switched = SettingsSchema.parse({ sources: { ...base.sources, github: { enabled: false, config: base.sources.github!.config },
+      gitlab: { enabled: true, config: base.sources.gitlab!.config } } })
+    expect(sourceSwitched(base, switched)).toBe(true)
+    expect(setupChanged(base, switched)).toBe(false)
+    const moved = SettingsSchema.parse({ sources: { ...base.sources, gitlab: { enabled: false, config: { ...base.sources.gitlab!.config, host: 'https://gitlab.example.com' } } } })
+    expect(setupChanged(base, moved)).toBe(true)
+    expect(sourceSwitched(base, moved)).toBe(false)
+  })
+  it('uses the one enabled Git Source, and refuses none or an ambiguous pair', () => {
+    const settings = (sources: Record<string, unknown>) => SettingsSchema.parse({ sources })
+    expect(gitProvider(settings({}))).toBe('github')
+    expect(gitProvider(settings({ gitlab: { enabled: true, config: { repository: 'acme/widgets', cli: 'glab' } } }))).toBe('gitlab')
+    expect(gitProvider(settings({ github: { enabled: false, config: {} }, gitlab: { enabled: true, config: {} } }))).toBe('gitlab')
+    expect(() => gitProvider(settings({ github: { enabled: false, config: {} }, gitlab: { enabled: false, config: {} } }))).toThrow('No Git Source')
+    expect(() => gitProvider(settings({ github: { enabled: true, config: {} }, gitlab: { enabled: true, config: {} } }))).toThrow('Both the GitHub and GitLab')
+    expect(gitProvider(settings({ github: { enabled: true, config: {} }, gitlab: { enabled: true, config: { repository: 'acme/widgets', cli: 'glab' } } }))).toBe('gitlab')
+    expect(() => gitProvider(settings({ github: { enabled: true, config: { repository: 'acme/gadgets', cli: 'gh' } },
+      gitlab: { enabled: true, config: { repository: 'acme/widgets', cli: 'glab' } } }))).toThrow('Both the GitHub and GitLab')
   })
   it('reads the GitLab project and account from glab, including a self-managed host and a renamed project', async () => {
     const glab = (file: string, access = 30): string => program(file, `case "$*" in\n  "api user") echo '{"id":7,"username":"agent-bot","email":null}' ;;\n  "api projects/"*) echo '{"id":42,"path_with_namespace":"acme/widgets","default_branch":"main","permissions":{"project_access":{"access_level":${access}}}}' ;;\n  *) exit 1 ;;\nesac`)

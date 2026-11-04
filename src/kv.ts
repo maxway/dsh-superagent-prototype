@@ -54,7 +54,7 @@ export const KV = {
    */
   gitlab: { since: record<string>('gitlab-since'),
     cursor: family<string, [kind: string, iid: number]>('gitlab-cursor:'),
-    ci: family<{ status: string; revision: number }, [kind: string, iid: number]>('gitlab-ci:') },
+    ci: family<{ status?: string; revision: number; id?: number }, [kind: string, iid: number]>('gitlab-ci:') },
   /**
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
    * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.

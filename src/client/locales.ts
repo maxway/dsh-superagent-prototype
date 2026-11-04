@@ -730,6 +730,7 @@ const TEXT = {
   // Setup problems and health codes; English reuses the host's own text read by the log and main Session
   'setup.repositoryUnset': ['GitHub 来源没有设置监听的仓库。', SETUP_PROBLEMS.repositoryUnset[1]],
   'setup.multipleGitSources': ['GitHub 和 GitLab 来源都启用了。请只启用一个 Git 来源，并关闭另一个。', SETUP_PROBLEMS.multipleGitSources[1]],
+  'setup.gitSourceUnset': ['没有启用任何 Git 来源。请启用 GitHub 或 GitLab 来源中的一个。', SETUP_PROBLEMS.gitSourceUnset[1]],
   'setup.foreignFile': ['{file} 不是 dsh-superagent 写入的文件；移走它，或换一个状态目录。', SETUP_PROBLEMS.foreignFile[1]],
   'setup.gitTooOld': ['git 没有读取 dsh-superagent 为当前 Git 宿主写的凭据配置；需要 git 2.32 或更新版本。', SETUP_PROBLEMS.gitTooOld[1]],
   'setup.environmentFailed': ['准备智能体的运行环境失败。', SETUP_PROBLEMS.environmentFailed[1]],

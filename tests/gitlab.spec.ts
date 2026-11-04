@@ -82,6 +82,8 @@ describe('gitlab triggers', () => {
     expect(gitlabKind.scope!({ meta: { ci: true } }, policyConfig)).toEqual({ listened: true, observed: false, row: 'ci' })
     expect(gitlabKind.policy!.rows!(policyConfig as unknown as Record<string, unknown>)).toMatchObject([{ id: 'issues', cells: { listedUnaddressed: true } },
       { id: 'mrs', cells: { listedUnaddressed: false } }, { id: 'comments', cells: { listedUnaddressed: true } }, { id: 'ci', cells: { unlistedUnaddressed: false } }])
+    expect(gitlabKind.find!('#5')).toEqual({ threads: ['gitlab:issue:5'], terms: [] })
+    expect(gitlabKind.find!('https://gitlab.example.com/group/sub/repo/-/merge_requests/7')).toEqual({ threads: ['gitlab:mr:7'], terms: [] })
   })
 })
 
@@ -115,6 +117,45 @@ describe('gitlab polling', () => {
     })
     await pollRound(h.ctx)
     expect(h.ctx.receive).not.toHaveBeenCalled()
+  })
+  it('still reads human notes on an Issue or merge request the agent opened', async () => {
+    const h = context()
+    h.state.set(KV.gitlab.since, new Date(Date.now() - 3_600_000).toISOString())
+    const review = note({ id: 21, body: 'Please adjust this.', author: { id: 2, username: 'alice' }, noteable_type: 'MergeRequest', noteable_iid: 7 })
+    glab(h.commands, {
+      'projects/42/issues': [issue({ author: { id: 9, username: 'agent-bot' }, description: 'Agent issue' })],
+      'projects/42/issues/5/notes': [note({ body: 'A human follow-up' })],
+      'projects/42/merge_requests': [mr({ author: { id: 9, username: 'agent-bot' }, source_branch: 'agent/gitlab-source' })],
+      'projects/42/merge_requests/7/notes': [review],
+      'projects/42/pipelines': [],
+    })
+    await pollRound(h.ctx)
+    const received = (h.ctx.receive as ReturnType<typeof vi.fn>).mock.calls.map(([trigger]) => trigger as Trigger)
+    expect(received.map(trigger => trigger.meta.noteId).sort()).toEqual([11, 21])
+    expect(received.map(trigger => trigger.id)).not.toEqual(expect.arrayContaining([key('gitlab-issue', '5'), key('gitlab-mr', '7')]))
+  })
+  it('persists the first poll start when that round fails, so the same interval is retried', async () => {
+    const h = context()
+    glab(h.commands, { 'projects/42/issues': () => { throw new Error('network down') } })
+    await expect(pollRound(h.ctx)).rejects.toThrow(/GitLab reads failed/)
+    expect(h.state.get(KV.gitlab.since)).toBeTruthy()
+  })
+  it('reports a retried head pipeline even when its status repeats', async () => {
+    const h = context({ config: (() => config({ observeCi: true })) as SourceContext['config'] })
+    h.state.set(KV.gitlab.since, new Date(Date.now() - 3_600_000).toISOString())
+    let current = mr({ author: { id: 9, username: 'agent-bot' }, head_pipeline: { id: 1, status: 'failed', web_url: 'https://gitlab.com/p/1' } })
+    glab(h.commands, {
+      'projects/42/issues': [],
+      'projects/42/merge_requests': () => [current],
+      'projects/42/merge_requests/7/notes': [],
+      'projects/42/pipelines': [],
+    })
+    await pollRound(h.ctx)
+    expect((h.ctx.receive as ReturnType<typeof vi.fn>).mock.calls.some(([trigger]) => (trigger as Trigger).meta.ci === true)).toBe(false)
+    current = mr({ author: { id: 9, username: 'agent-bot' }, updated_at: now(), head_pipeline: { id: 2, status: 'failed', web_url: 'https://gitlab.com/p/2' } })
+    await pollRound(h.ctx)
+    const triggers = (h.ctx.receive as ReturnType<typeof vi.fn>).mock.calls.map(([trigger]) => trigger as Trigger)
+    expect(triggers.some(trigger => trigger.meta.ci === true && trigger.meta.revision === 1)).toBe(true)
   })
 })
 
