@@ -155,20 +155,19 @@ GIT_CONFIG_GLOBAL="$TMP/gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
 - 幂等检查只读最近 100 条 note。
 - `gitlab/.../checks` 只到 pipeline，不到单个 job。
 - 404 note POST 会重试；目标被删除时可能持续重试。
-- 真实 CE 已验证 Issue 评论→回复、CLI smoke、默认分支 pipeline ID 变化触发、停服后游标恢复及 Sources 启用前后截图；人类作者 MR Trigger、MR-head CI/job 结果和运行中重启补读仍未完成，PR 保持 draft。
+- 真实 CE 已验证 Issue 评论→回复、CLI smoke、默认分支 CI 变化、人类作者 MR Trigger、MR-head pending pipeline detail/ID 变化、停服及运行中重启后的评论补读，以及 Sources 启用前后截图。由于项目无 Runner，job 成功/失败结果与失败 checks 仍未验证；其他 CE 形态未验证，PR 保持 draft。
 
 ## 13. 本次实测记录
 
 本次复用既有 GitLab 项目 `ngd/dsh-superagent-prototype`（ID `4569`）和隔离 profile `superagent-gitlab-test`；结果不代表第 1–12 节的全量验收。
 
-- **隔离环境**：在功能分支 `e2d4e9d` 上使用独立测试 profile（端口 `52853`），启用 GitLab、关闭 GitHub 和 Feishu；原有 `3082` 服务及工作区保持不变。`glab` 版本为 `1.36.0`，测试账号 `project_4569_bot` 具有项目 Maintainer 权限。
+- **隔离环境**：复用项目 `ngd/dsh-superagent-prototype`（ID `4569`）和 profile `superagent-gitlab-test`（端口 `52853`）。初始代码为 `e2d4e9d`；为实测 MR detail 修复，将 profile 实际链接的 package checkout 更新到 `5fc859b` 并重建 bundle。原 `3082` 服务及工作区未改动，最终仍 healthy。`glab` 版本为 `1.36.0`，测试账号 `project_4569_bot` 具有项目 Maintainer 权限。
 - **接入检查**：账号与项目 API 检查通过；GitLab Source health 为 `ready`。credential helper 和隔离配置下的 `git ls-remote` 经手动验证成功。
-- **Issue 流程**：在测试 Issue `#1` 添加评论后，Source 收到 1 个 Trigger，策略创建 `accept` 决策，Ticket `cfb32838e0dfd5d1dc935a22d4b72696` 进入 `ready` 并结束。Superagent 发布确认 note `122026` 和摘要 note `122027`；摘要读回内容符合预期。
-- **MR**：在既有项目创建临时分支 `test/superagent-gitlab-ce-20261105` 和 MR `!1`。MR 作者是智能体账号 `project_4569_bot`，Source 按设计跳过自身创建的 MR；因此验证了自触发抑制，但尚未验证人类作者 MR 的 Trigger。
-- **CI**：GitLab 项目没有注册 Runner。MR pipelines `148266`、`148268`、`148271` 及默认分支 pipelines `148272`、`148273`、`148279` 均为 `pending`，job 无法执行。Source 在 `gitlab:ci:main` 收到 pipeline `148273` 和 `148279` 的 CI Trigger，均被策略记为 `admission_ignored`，没有派发 worker；说明默认分支 pipeline ID 变化可被检测，但未覆盖 job 完成或成功/失败状态。MR 列表 API 的 `head_pipeline` 为 `null`，而单 MR 详情能返回 pipeline；本次未观察到 MR 专属 CI 状态记录，不能据此判定 MR-head CI 通过。`gitlab/mrs/<iid>/checks` 的失败流水线读取也未验证。
-- **服务重启/游标恢复**：在 profile 停止期间由 `jun.mei` 分别向 Issue `#1` 和 MR `!1` 添加测试 note `122049`、`122050`。重启同一 profile 后，Source `received` 从 `3` 增至 `5`，两条 note 各被读取一次；策略未派发 worker（running/queued 均为 `0`），GitLab 未出现重复回复。重启后 runtime 与 GitLab health 均为 `ready`。因此仅验证了“停服期间新评论可恢复且无重复”，运行中重启补读仍未测试。
-- **后续修正（2026-11-05）**：提交 `111b412` 已处理 MR 列表 `head_pipeline` 为空的情形，改读单 MR 详情并添加自动化测试；此修正晚于本次 CE 实测代码版本，本次 profile 尚未用它复测。项目无 Runner，MR pipeline/job 最终状态仍无法从真实执行结果确认。
+- **Issue 流程**：Issue `#1` 请求评论触发 `accept` 决策，Ticket `cfb32838e0dfd5d1dc935a22d4b72696` 进入 `ready` 并结束。Superagent 发布确认 note `122026` 和摘要 note `122027`；摘要读回内容符合预期。
+- **MR**：临时 bot 作者 MR `!1`（`project_4569_bot`）被 Source 正确抑制自触发。随后 `jun.mei` 从 `test/superagent-human-mr-20261105` 创建人类作者 MR `!2`；Source 收到 MR Trigger `b7ba6053ef0a6da584c2e1cb9558b3df`，验证人类作者 MR 触发路径。
+- **CI**：项目未注册 Runner。默认分支 pipelines `148272`、`148273`、`148279` 在测试时为 `pending`；Source 对 `148273`、`148279` 收到 CI Trigger，策略记为 `admission_ignored`。MR `!2` 列表 API 的 `head_pipeline` 为 `null`，单 MR 详情返回 pipeline `148310`（`pending`）。提交 `111b412` 的 detail fallback 在实际 profile bundle 中生效，Source 写入 `gitlab-ci:mr:2` baseline（ID `148310`）；创建第二条 pipeline `148319`（仍为 `pending`）并更新 MR 后，Source 收到 CI Trigger `fa249d83a80a549898d9f41cac783c36`（`revision=1`、`status=pending`），状态 cursor 更新至 ID `148319`。这验证了 MR-head pipeline 读取与 pipeline ID 变化检测；无 Runner，job 成功/失败结果及 `gitlab/mrs/<iid>/checks` 失败读取仍未验证。
+- **服务重启/游标恢复**：profile 停止期间由 `jun.mei` 向 Issue `#1` 和 MR `!1` 添加 note `122049`、`122050`；重启后 `received` 从 `3` 增至 `5`，两条各读一次且无重复回复。随后在服务运行、轮询间隔 `3600` 秒且执行器暂停时，`jun.mei` 添加 Issue note `122081` 并创建 MR `!2`；受控重启后 Source 收到 MR Trigger 与评论 Trigger，`received` 从 `5` 增至 `7`，worker running/queued 均为 `0`。MR pipeline ID 变化的第二次重启使 `received` 从 `7` 增至 `8`；已读事件没有重复派发。
 - **Sources 截图**：在 DSH Superagent「设置 → 来源」页采集启用前后的裁切截图：[`sources-before.png`](sources-before.png)（GitLab Source 关闭）和 [`sources-after.png`](sources-after.png)（GitLab Source 启用，显示项目 `ngd/dsh-superagent-prototype` 与账号 `project_4569_bot`；其他观察开关关闭）。截图避开工作区侧栏，未包含凭据。
-- **执行与代码验证**：模型服务返回 HTTP `200`，worker checkout 干净，位于提交 `c5d1ebe`。`pnpm check` 通过：58 个测试文件、1194 个测试，以及类型检查和构建均通过。
+- **执行与代码验证**：模型服务返回 HTTP `200`，worker checkout 干净，位于提交 `c5d1ebe`。初次 `pnpm check` 通过：58 个测试文件、1194 个测试、类型检查和构建；修复后 `tests/gitlab.spec.ts` 的 20 个测试通过，`pnpm run build` 成功。
 - **CLI smoke 历史**：在功能分支 `e2d4e9d` 上的初次运行因 `glab auth git-credential` 漏掉 `get` 参数而失败；后续提交 `051b9b6` 修复后复跑通过（账号、项目、`updated_at` 从 `14:51:16` 更新到 `15:43:27`、note 读回及 credential helper 均通过）。该次复跑是 HTTPS 自建 CE 的 Issue/credential 路径；本次 profile 的 credential helper 和隔离配置 `git ls-remote` 也单独通过。
-- **清理**：测试后已取消六条测试 pipeline、关闭临时 MR `!1`、删除分支 `test/superagent-gitlab-ce-20261105`；Source 的 MR/评论/CI 观察开关已复位为 `false`，GitLab Source 仍启用，Issue `#1` 保留。其他 CE 部署形态仍未测试。
+- **清理**：pipeline `148266`、`148268`、`148271`、`148272`、`148273`、`148279`、`148309`、`148310`、`148319` 均已取消；临时 MR `!1`、`!2` 均关闭，对应分支均删除。GitLab Source 仍启用，Issue/MR/评论/CI 观察开关已复位为 `false`，`pollSeconds=60`，执行器已恢复，Issue `#1` 保留；最终 test profile 和原 `3082` service 均 healthy。其他 CE 部署形态仍未测试。
