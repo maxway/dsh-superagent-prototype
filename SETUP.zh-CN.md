@@ -39,12 +39,12 @@ grep -l -E 'id: dsh-superagent\b' "${DSH_HOME:-$HOME/.dsh}"/profiles/*/cordis.pa
 1. **来源。** 智能体只接受来自 GitHub 的请求，还是也接受来自飞书群的请求？[只接 GitHub，除非团队在飞书里工作。]
 2. **仓库。** 智能体应该在哪个 github.com 仓库上工作，写成 `owner/name`？
 3. **智能体账号。** 智能体以哪个 GitHub 用户账号行动？[一个专用账号，绝不用运营者自己的账号：智能体写的一切都会以这个名字出现。] 它可能还不存在；创建它是运营者要做的步骤。
-4. 使用飞书时：**哪些群，** 按名称给出。机器人配置好后，智能体会查它们的 id。
+4. 使用飞书时：**哪些群，** 按 `oc_…` chat_id 给出？机器人无法列出群，请从群的设置或消息链接中取得每个 ID。
 
 **策略：谁可以请求工作。**
 
 5. **在 GitHub 上。** 哪些 GitHub 登录名可以向智能体请求工作？[只有 `<operator login>`：智能体只为名单上的人行动，短名单能在运营者了解智能体行为的过程中降低团队噪音。]
-6. 使用飞书时：**谁可以在飞书中提问？** [第一个群里的所有人，并与群成员保持同步。]
+6. 使用飞书时：**谁可以在飞书中提问？** [第一个群里的所有人，手工填写：机器人无法读取群成员，名单不会自动同步。]
 
 **执行：智能体如何处理工单。**
 
@@ -68,7 +68,7 @@ grep -l -E 'id: dsh-superagent\b' "${DSH_HOME:-$HOME/.dsh}"/profiles/*/cordis.pa
 
 1. **先做运营者步骤。** 阅读 `docs/zh/006-deployment.md` 的账号一节，自己写好 CLI 包装脚本，然后用一条消息说明只有运营者能做的事：创建智能体账号；如果启用自动合并，让负责启用自动合并的账号登录一个 CLI；以智能体账号接受仓库邀请；为每个包装脚本运行 `auth login`；使用飞书时，创建并发布机器人应用，并用其密钥运行 `config init` 命令。等运营者说完成后，用 `<wrapper> api user --jq .login` 检查每个登录。
 2. **安装并启动。** 遵循 `docs/zh/006-deployment.md` 的安装、机器配置以及启动和停止几节。跳过本仓库的 `git clone`：你就在它的检出目录中。如果第 7 个问题要求新克隆，克隆第 2 个问题中的仓库。如果已有 profile，跳过 `dsh superagent --from-default-profile` 命令，它会替换 profile 并删除其 `cordis.patch.yml`；改为编辑那个文件，而不是替换它。
-3. **设置。** 通过 `docs/zh/006-deployment.md` 的管理 API 保存，顺序如下：`github` 来源；如果使用飞书，`feishu` 来源；带允许名单的 `policy` 块（飞书要先通过机器人的 CLI 查找群 id）；以及带第 7 个问题答案中准备命令的 `executor` 块。然后保存提示词，在 Delivery requirements 中写入第 8 个问题的提交身份和第 9 个问题的自动合并答案。返回 `restarting: true` 的保存会重启 dsh-superagent：等到 `scripts/dsh-superagent status` 不再以退出码 1 结束，再进行下一个请求，并重新从 `GET settings` 读取修订版本。
+3. **设置。** 通过 `docs/zh/006-deployment.md` 的管理 API 保存，顺序如下：`github` 来源；如果使用飞书，`feishu` 来源；带允许名单的 `policy` 块（飞书的群 id 需要手工填写，机器人无法列出群）；以及带第 7 个问题答案中准备命令的 `executor` 块。然后保存提示词，在 Delivery requirements 中写入第 8 个问题的提交身份和第 9 个问题的自动合并答案。返回 `restarting: true` 的保存会重启 dsh-superagent：等到 `scripts/dsh-superagent status` 不再以退出码 1 结束，再进行下一个请求，并重新从 `GET settings` 读取修订版本。
 4. **失败。** 被拒绝的保存会在响应体中指明安装配置问题。在 `docs/zh/006-deployment.md` 的故障排查表中找到它，修复后继续。只向运营者询问你无法自行修复的内容。
 
 ## 5. 验证并交接

@@ -1,8 +1,5 @@
 /** Source message link resolution and candidate card assembly for the main Session. */
 import type { Candidate, Ticket, Trigger } from '../core/index.ts'
-import type { Commands } from '../infra/commands.ts'
-import { readFeishuLink } from '../sources/feishu-read.ts'
-import { feishuRef, feishuSettings } from '../sources/feishu.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import { triggerMessage } from '../executor/dsh.ts'
 import { relatedTickets, ticketCard, triggerCard } from './cards.ts'
@@ -12,31 +9,22 @@ import type { TextCache } from './cache.ts'
 export interface LinkHost {
   readonly store: Pick<Store, 'settings' | 'triggers' | 'threads' | 'tickets'>
   readonly links: TextCache
-  readonly commands: Commands
   readonly sources: SourceRegistry
-  readonly lifetime: AbortSignal
 }
 
-/** Resolves and caches a trigger's external message URL, falling back to a readable resource path when lookup fails. */
-export async function sourceLink(host: LinkHost, trigger: Trigger, signal?: AbortSignal): Promise<{ source_url?: string; source_url_read?: string }> {
-  if (trigger.url) return { source_url: trigger.url }
-  const ref = feishuRef(trigger)
-  if (!ref) return {}
-  const cacheKey = `${ref.chatId}:${ref.messageId}`
-  const cached = host.links.get(cacheKey)
-  if (cached) return { source_url: cached }
-  let url: string
-  try {
-    const timeout = AbortSignal.timeout(feishuSettings(host.sources).linkTimeoutMs)
-    url = await readFeishuLink(host.commands.withSignal(AbortSignal.any([signal ?? host.lifetime, timeout])), ref)
-  } catch {
-    host.lifetime.throwIfAborted()
-    signal?.throwIfAborted()
-    // Optional link enrichment may fail independently of the retained source message.
-    return { source_url_read: `feishu/${trigger.id}/message` }
+/**
+ * Resolves a trigger's external message URL. A Source either delivers one with the trigger or has no way to look it up
+ * with its current credentials; Feishu bots cannot read messages by ID, so a Feishu trigger without a delivered AppLink
+ * has none.
+ */
+export async function sourceLink(host: LinkHost, trigger: Trigger): Promise<{ source_url?: string }> {
+  if (!trigger.url) return {}
+  // Keep a delivered Feishu AppLink searchable by its chat and message ID for the lifetime of the process.
+  if (trigger.source === 'feishu') {
+    const { chatId, messageId } = trigger.meta as { chatId?: string; messageId?: string }
+    if (chatId && messageId) host.links.set(`${chatId}:${messageId}`, trigger.url)
   }
-  host.links.set(cacheKey, url)
-  return { source_url: url }
+  return { source_url: trigger.url }
 }
 
 export function repliedTo({ store, sources }: { store: Pick<Store, 'triggers'>; sources: Pick<SourceRegistry, 'repliesTo'> },

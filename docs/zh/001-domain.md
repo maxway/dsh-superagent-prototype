@@ -67,7 +67,7 @@ flowchart LR
 
 | 部分 | 在本仓库中 |
 | --- | --- |
-| Source | 飞书：实时事件、历史恢复、对已订阅话题的轮询。GitHub：通知、已订阅的 Issue 和 pull request、CI 变更、已合并或关闭的 pull request，以及在开启时，仓库中的每个新 Issue、pull request 和评论，以及默认分支的 CI |
+| Source | 飞书：发给机器人的实时消息事件和回复。GitHub：通知、已订阅的 Issue 和 pull request、CI 变更、已合并或关闭的 pull request，以及在开启时，仓库中的每个新 Issue、pull request 和评论，以及默认分支的 CI |
 | Policy | 研判规则，以及每个来源的允许名单、其同步、其机器人列表及其准入表 |
 | Executor | 一个 DSH 执行器 Session，以及每个工单一个目录，位于执行环境（Execution environment）中，其变量由执行器和来源注册 |
 | Channel | 飞书话题回复、GitHub 评论和评审线程回复 |

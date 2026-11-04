@@ -54,7 +54,7 @@ export function threadDetail(host: ViewHost, key: string, before: string | undef
 export type ThreadDetailView = NonNullable<ReturnType<typeof threadDetail>>
 /**
  * Searches triggers, threads, and tickets by text, ID, source-extracted references (e.g., `#N`, URLs), or cached Feishu AppLinks.
- * @param links - Feishu message AppLinks cached since startup, keyed by chat and message ID.
+ * @param links - Feishu message AppLinks delivered with Triggers, keyed by chat and message ID.
  */
 export function search(host: ViewHost, query: string, links: Pick<TextCache, 'entries'>) {
   const { store, sources } = host

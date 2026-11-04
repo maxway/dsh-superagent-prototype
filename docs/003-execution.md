@@ -169,7 +169,7 @@ A notified Issue or pull request whose reads keep failing is dropped a day after
 
 Its read position stays where it was, so a later notification or a poll of its Thread reads what the failed reads missed.
 
-The Feishu event consumer reports every failure, and polling of subscribed topics keeps each failure on its Thread.
+The Feishu event consumer reports every failure, and polling of subscribed GitHub threads keeps each failure on its Thread.
 
 A malformed item in a GitHub list or a Feishu page is skipped, and the Source's state counts it.
 ### Channel failure

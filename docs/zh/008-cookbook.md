@@ -199,9 +199,9 @@ export async function sendWebhook(host: Pick<SourceContext, 'commands'>, message
 
 主动研判需要触发周围的对话。`orchestrator_eval` 读取初始窗口；`orchestrator_eval_read` 展开分页、根消息或父消息。实现可选的 `threadContext` 接口来提供这些读取：
 
-- `read(commands, trigger, part, cursor, config)` 返回一个 `ContextPart`。它的 `messages` 使用 `ContextMessage`：`{id, from, at, text}` 加上适用的 `bot`、`deleted`、`reply_to`、`url`、`path` 和 `line` 字段。最后一页省略 `next`。`body` 是展示给研判 Session 的内容，这里是同一批消息。可选的 `status` 可以描述特殊结果，例如飞书的 `chat_neighbours`。`part` 是 `thread`、`root` 或 `parent`。
+- `read(commands, trigger, part, cursor, config)` 返回一个 `ContextPart`。它的 `messages` 使用 `ContextMessage`：`{id, from, at, text}` 加上适用的 `bot`、`deleted`、`reply_to`、`url`、`path` 和 `line` 字段。最后一页省略 `next`。`body` 是展示给研判 Session 的内容，这里是同一批消息。可选的 `status` 可以描述特殊结果，例如回退的读取模式。`part` 是 `thread`、`root` 或 `parent`。
 - `messageId(trigger)` 在其中找到触发自己的消息。
-- `images(text)` 和 `image(…)` 用于消息带图片的类型，例如飞书的消息那样；本示例省略了它们。
+- `images(text)` 和 `image(…)` 用于消息带图片的类型；本示例省略了它们。
 
 没有 `threadContext` 的类型不会给研判提供线程上下文；触发自己的文本仍然可读。
 
@@ -233,7 +233,7 @@ export async function sendWebhook(host: Pick<SourceContext, 'commands'>, message
 - `fields` 在 **评估 → 每个来源** 下生成表单，从 `allowed` 开始。`explicit` 解释如何点名智能体。可选的 `unnamed: {person, bot}` 为飞书 `ou_…` 这类不透明 id 提供显示标签；本示例省略了它，因为队列 id 本身就是可读的名字。
 - `rows(config)` 列出准入范围及其可用的单元。每个行 id 必须与 `scope` 返回的 `row` 匹配。未被点名消息的单元只在来源观察这些消息的地方可用。没有 `rows` 的类型使用默认单元。
 - 可选的 `bots` 列出有资格成为推断候选的机器人，条目形状与 `allowed` 相同。没有它，任何机器人都不被准入。
-- 可选的 `sync: {label, ready(part), run(host, part, signal)}` 在启动时以及 **Sync now** 时刷新成员关系。飞书使用会话成员。失败会出现在 `sync:<id>` 下，并在一分钟后重试，以倍数增长到一小时，直到成功。
+- 可选的 `sync: {label, ready(part), run(host, part, signal)}` 在启动时以及 **Sync now** 时刷新成员关系。失败会出现在 `sync:<id>` 下，并在一分钟后重试，以倍数增长到一小时，直到成功。
 
 ### 8. 给执行器的变量
 

@@ -1,26 +1,25 @@
-/** Feishu source kind definition, policy synchronization, and Cordis plugin entry. */
+/**
+ * Feishu source kind definition and Cordis plugin entry.
+ * The bot only receives live message events and replies to them: it has no permission to read messages by ID, chat
+ * history, chats or chat members, so this kind exposes no history recovery, thread polling, context reader, images or
+ * member synchronization.
+ */
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { FeishuBotSchema } from '../deployment.ts'
 import { feishuLink, sendFeishu } from './feishu-channel.ts'
-import { feishuThreadContext } from './feishu-read.ts'
-import { refreshChatNames, runFeishu } from './feishu-loops.ts'
+import { runFeishu } from './feishu-loops.ts'
 import { SOURCE, feishuTriggerId } from './feishu-trigger.ts'
 import { sourceContext } from './host.ts'
 import type { Localized, SourceKind } from './kind.ts'
-import type { SourceRegistry } from './registry.ts'
 
-export { SOURCE, feishuRef, feishuThreadId, feishuTime, feishuTrigger, feishuTriggerId, historyEvent, withMentionNames }
-  from './feishu-trigger.ts'
+export { SOURCE, feishuThreadId, feishuTime, feishuTrigger, feishuTriggerId, withMentionNames } from './feishu-trigger.ts'
 export type { FeishuEvent } from './feishu-trigger.ts'
-export { backfillChat, consumerRetry, pollThreads, refreshChatNames, threadRef } from './feishu-loops.ts'
-const MembersSchema = z.looseObject({
-  users: z.array(z.looseObject({ member_id: z.string(), name: z.string() })),
-  has_more: z.boolean(), truncations: z.array(z.unknown()).optional(),
-})
+export { consumerRetry } from './feishu-loops.ts'
 const FeishuConfigSchema = FeishuBotSchema.extend({
-  readPageSize: z.number().int().min(1).max(50).default(20),
-  linkTimeoutMs: z.number().int().min(1).max(90000).default(5000),
+  // Accepted so a configuration saved before context reads were removed still validates; neither field is used.
+  readPageSize: z.number().int().min(1).max(50).optional(),
+  linkTimeoutMs: z.number().int().min(1).max(90000).optional(),
   chats: z.array(z.object({ chatId: z.string().regex(/^oc_[a-zA-Z0-9]+$/), name: z.string().trim().max(60).optional(), listen: z.enum(['mentions', 'all']) }).strict())
     .refine(chats => new Set(chats.map(chat => chat.chatId)).size === chats.length, 'Duplicate chat IDs')
     .default([]),
@@ -30,27 +29,23 @@ const FeishuConfigSchema = FeishuBotSchema.extend({
 export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
 export const feishuKind: SourceKind<FeishuConfig> = {
   kind: SOURCE,
-  refreshLabels: (host, signal) => refreshChatNames(sourceContext(host, feishuKind), signal),
   title: { zh: '飞书', en: 'Feishu' },
-  description: { zh: '接收下列群和私聊中发给机器人的消息，补收群历史并轮询订阅的线程。', en: 'Receives messages to the bot in these chats and direct messages, recovers chat history and polls subscribed Threads.' },
+  description: { zh: '接收发给机器人的飞书消息并回复。', en: 'Receives Feishu messages to the bot and replies.' },
   schema: FeishuConfigSchema,
   fields: [
     { key: 'cli', type: 'text', label: { zh: '机器人的 lark-cli', en: 'Bot lark-cli' },
       hint: { zh: '命令名或绝对路径，指向只允许机器人身份（strict mode bot）的 lark-cli 配置；执行器以 lark-cli 调用它。保存时读取应用和机器人，然后重启 dsh-superagent。', en: 'A command name or absolute path of a lark-cli configuration that allows only the bot identity (strict mode bot); the Executor calls it as lark-cli. Saving reads the app and the bot, then restarts dsh-superagent.' } },
     { key: 'chats', type: 'rows', label: { zh: '接收的群', en: 'Chats' },
-      hint: { zh: '“仅 @”只接收 @ 机器人的消息和已有工单的线程；“全部消息”也接收其余消息，评估可以按规则从中推断工作，需要机器人有读取全部消息的权限。', en: '"@ only" receives messages that mention the bot and Threads that have Tickets; "All" also receives the rest, from which Eval may infer work under the rules; the bot needs permission to read all messages.' },
+      hint: { zh: '“仅 @”只接收 @ 机器人的消息和已有工单的线程；“全部消息”也接收其余消息，但还需要应用具备接收群内全部消息的权限，否则只会收到 @ 机器人的消息。', en: '"@ only" receives messages that mention the bot and Threads that have Tickets; "All" also receives the rest, which additionally needs the app\'s permission to receive every group message; without it only mentions arrive.' },
       columns: [
-        { key: 'chatId', type: 'text', label: { zh: '群', en: 'Chat' }, pattern: 'oc_[a-zA-Z0-9]+', choose: { zh: '选择机器人已加入的群', en: 'Choose a chat the bot has joined' }, refresh: { zh: '刷新群列表', en: 'Refresh chats' } },
+        { key: 'chatId', type: 'text', label: { zh: '群 chat_id', en: 'Chat chat_id' }, pattern: 'oc_[a-zA-Z0-9]+' },
         { key: 'listen', type: 'select', label: { zh: '接收', en: 'Receive' }, options: [{ value: 'mentions', label: { zh: '仅 @', en: '@ only' } }, { value: 'all', label: { zh: '全部消息', en: 'All' } }] },
       ] },
     { key: 'otherChats', type: 'select', label: { zh: '其他群', en: 'Other chats' }, options: [{ value: 'none', label: { zh: '不接收', en: 'Not received' } }, { value: 'mentions', label: { zh: '仅 @', en: '@ only' } }],
       hint: { zh: '机器人已加入、但没列在上面的群。“仅 @”接收那里 @ 机器人的消息；谁的消息能发起工作看策略里的准入。', en: 'Chats the bot has joined that are not listed above. "@ only" receives messages there that mention the bot; whose messages may originate work is the Policy\'s admission.' } },
     { key: 'directMessages', type: 'switch', label: { zh: '接收私聊', en: 'Direct messages' } },
-    { key: 'readPageSize', type: 'number', advanced: true, min: 1, max: 50, label: { zh: '每页消息数', en: 'Messages per page' }, hint: { zh: '智能体读取线程和群历史时，每页的消息数。', en: 'Messages per page when agents read Threads and chat history.' } },
-    { key: 'linkTimeoutMs', type: 'number', advanced: true, min: 1, max: 90000, label: { zh: '原消息链接的查询时限 / 毫秒', en: 'Original message link time limit / ms' },
-      hint: { zh: '查询原消息链接最多等待的时间；超时后智能体改为直接读取原消息。', en: 'How long to wait for an original message\'s link; after that, agents read the message itself.' } },
   ],
-  health: ['feishu', 'history'],
+  health: ['feishu'],
   scope({ meta }, config) {
     if (meta.direct === true) return config.directMessages ? { listened: true, observed: false, row: 'direct' } : { listened: false, reason: 'direct_messages_not_allowed' }
     const chat = config.chats.find(item => item.chatId === meta.chatId)
@@ -63,7 +58,6 @@ export const feishuKind: SourceKind<FeishuConfig> = {
       feishuKind.scope!({ meta: { chatId: address.chatId ?? '', direct: address.direct === 'true' } }, config).listened,
     send: sendFeishu, link: feishuLink,
   },
-  threadContext: feishuThreadContext,
   find: query => ({ threads: [], terms: [...new Set(query.match(/om_[A-Za-z0-9_-]+/g) ?? [])] }),
   // A message's Trigger is named after the message, so the one it answers is named after its parent.
   repliesTo: trigger => typeof trigger.meta.parentId === 'string' ? feishuTriggerId(trigger.meta.parentId) : undefined,
@@ -72,6 +66,7 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     schema: z.object({
       allowed: z.array(z.object({ id: z.string().regex(/^ou_[a-zA-Z0-9]+$/), name: z.string().trim().max(100).optional() }).strict())
         .refine(users => new Set(users.map(user => user.id)).size === users.length, 'Duplicate open_ids').default([]),
+      // Accepted so a Policy saved when member synchronization existed still validates; the list is now maintained by hand.
       syncChat: z.string().regex(/^(oc_[a-zA-Z0-9]+)?$/).default(''),
       bots: z.array(z.object({ id: z.string().regex(/^(cli|ou)_[a-zA-Z0-9]+$/), name: z.string().trim().max(100).optional() }).strict())
         .refine(bots => new Set(bots.map(bot => bot.id)).size === bots.length, 'Duplicate bot ids').optional(),
@@ -79,8 +74,6 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     fields: [
       { key: 'allowed', type: 'rows', label: { zh: '能发起工作的飞书用户', en: 'Feishu users who may originate work' },
         columns: [{ key: 'id', type: 'text', label: { zh: 'open_id', en: 'open_id' }, pattern: 'ou_[a-zA-Z0-9]+' }, { key: 'name', type: 'text', label: { zh: '名字', en: 'Name' }, optional: true }] },
-      { key: 'syncChat', type: 'text', pattern: '(oc_[a-zA-Z0-9]+)?', label: { zh: '同步来源群', en: 'Sync chat' }, choose: { zh: '不同步', en: 'Do not sync' },
-        hint: { zh: '同步时，名单变成这个群里的人：新成员加入，离开的人移除，名字取群里的名字。启动时和点同步时进行。', en: 'Syncing makes the list the people in this chat: new members join, people who left are removed, and names follow the chat. It runs at startup and on Sync.' } },
       { key: 'bots', type: 'rows', label: { zh: '消息可以成为候选的机器人', en: 'Bots whose messages may become candidates' },
         hint: { zh: '名单里的机器人在接收的群里发的消息成为推断的候选，交给评估；它们不能发起明确的请求，也不能停止工单。其他机器人的消息不接收。', en: 'Messages of a bot on this list, in chats the Source receives, become inferred candidates for an assessment; they never make an explicit request or stop a ticket. Other bots\' messages are not admitted.' },
         columns: [{ key: 'id', type: 'text', label: { zh: 'App ID 或 open_id', en: 'App ID or open_id' }, pattern: '(cli|ou)_[a-zA-Z0-9]+' },
@@ -99,21 +92,6 @@ export const feishuKind: SourceKind<FeishuConfig> = {
           cells: { listedUnaddressed: false, unlistedAddressed: config.directMessages, unlistedUnaddressed: false } },
       ]
     },
-    sync: {
-      label: { zh: '立即同步', en: 'Sync now' },
-      ready: part => !!part.syncChat,
-      async run(host, part, signal) {
-        const commands = sourceContext(host, feishuKind).commands.withSignal(signal)
-        const chat = String(part.syncChat)
-        const members = ['im', '+chat-members-list', '--chat-id', chat, '--member-types', 'user', '--page-all', '--page-limit', '0']
-        const result = MembersSchema.parse(await commands.lark(members))
-        if (result.has_more || result.truncations?.length) throw new Error('Feishu returned an incomplete member list')
-        // Preserve existing member order so policy version hashes stay stable; update names in place and append new members.
-        const users = new Map(result.users.map(user => [user.member_id, user.name]))
-        const known = new Set(part.allowed.map(entry => entry.id))
-        return { ...part, allowed: [...part.allowed.filter(entry => users.has(entry.id)).map(entry => ({ ...entry, name: users.get(entry.id)! })), ...result.users.filter(user => !known.has(user.member_id)).map(user => ({ id: user.member_id, name: user.name }))] }
-      },
-    },
   },
   environment: {
     variables: [
@@ -124,9 +102,6 @@ export const feishuKind: SourceKind<FeishuConfig> = {
   },
   facts: (deployment): Record<string, Localized | string> => deployment?.feishu ? { cli: { zh: `当前机器人 ${deployment.feishu.name || deployment.feishu.botId}`, en: `Current bot ${deployment.feishu.name || deployment.feishu.botId}` } } : {},
 }
-/** Returns the Feishu Source's settings, falling back to schema defaults while the Feishu plugin is disabled. */
-export const feishuSettings = (sources: SourceRegistry): FeishuConfig => sources.instance<FeishuConfig>(SOURCE)?.config ?? FeishuConfigSchema.parse({})
-
 export const name = 'dsh-superagent-feishu'
 export const inject = ['orchestrator']
 export function apply(ctx: Context): void {

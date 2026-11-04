@@ -265,7 +265,7 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     }),
     tool({
       name: 'orchestrator_policy_sync',
-      description: 'Refresh one Source\'s part of the Policy from where that Source keeps it, such as the Feishu users of its sync chat. Same operation as the Web button.',
+      description: 'Refresh one Source\'s part of the Policy from where that Source keeps it. Same operation as the Web button.',
       schema: z.object({ source: z.string() }).strict(),
       execute: async args => {
         const before = host.store.settings().policy.sources[args.source]?.allowed ?? []
