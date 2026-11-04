@@ -132,14 +132,18 @@ describe('setup', () => {
     glab(join(dir, 'bin', 'glab'))
     const deployment = await resolveGitlabDeployment(machine(), { host: 'https://gitlab.example.com:8443/', repository: 'acme/gadgets', cli: 'glab' }, probe, path)
     expect(deployment).toMatchObject({ repository: 'acme/widgets', gitlab: { host: 'https://gitlab.example.com:8443', projectId: 42, defaultBranch: 'main' },
-      git: { provider: 'gitlab', host: 'gitlab.example.com:8443', cli: join(dir, 'bin', 'glab'), login: 'agent-bot',
+      git: { provider: 'gitlab', protocol: 'https', host: 'gitlab.example.com:8443', cli: join(dir, 'bin', 'glab'), login: 'agent-bot',
         commitEmail: '7-agent-bot@gitlab.example.com' } })
+    const http = await resolveGitlabDeployment(machine(), { host: 'http://gitlab.example.com/', repository: 'acme/gadgets', cli: 'glab' }, probe, path)
+    expect(http).toMatchObject({ repository: 'acme/widgets', gitlab: { host: 'http://gitlab.example.com', projectId: 42 },
+      git: { provider: 'gitlab', protocol: 'http', host: 'gitlab.example.com' } })
     glab(join(dir, 'bin', 'glab-reader'), 20)
     const needs = (place: string, code: string, values: Record<string, unknown>, gitlab: unknown) =>
       expect(resolveGitlabDeployment(machine(), gitlab, probe, path)).rejects.toEqual(setupError(place, code, values))
     await needs('gitlab', 'gitlabRepositoryUnset', {}, { cli: 'glab' })
     await needs('gitlab', 'gitlabCliUnset', {}, { repository: 'acme/widgets' })
     await needs('gitlab', 'gitlabHostInvalid', { host: 'not-a-url' }, { repository: 'acme/widgets', cli: 'glab', host: 'not-a-url' })
+    await needs('gitlab', 'gitlabHostInvalid', { host: 'ssh://gitlab.example.com' }, { repository: 'acme/widgets', cli: 'glab', host: 'ssh://gitlab.example.com' })
     await needs('gitlab', 'gitlabProjectReadOnly', { account: 'agent-bot', repository: 'acme/widgets' }, { repository: 'acme/widgets', cli: join(dir, 'bin', 'glab-reader') })
     await needs('gitlab', 'gitlabCliMissing', { output: expect.stringContaining('is not an executable file') }, { repository: 'acme/widgets', cli: join(dir, 'bin', 'missing') })
     await needs('gitlab', 'gitlabCliSignedOut', { output: expect.stringContaining('Command failed') }, { repository: 'acme/widgets', cli: program(join(dir, 'bin', 'glab-broken'), 'exit 1') })

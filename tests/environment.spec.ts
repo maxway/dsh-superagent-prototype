@@ -42,6 +42,12 @@ describe('worker shims', () => {
     expect(readFileSync(workerGitConfig(dir), 'utf8')).toContain(`[credential "https://gitlab.com"]\n\thelper = "${credentialHelper(glab)}"`)
     expect(agentVariables(dir)).toMatchObject({ GLAB_TOKEN: undefined, GITLAB_TOKEN: undefined })
   })
+  it('binds an HTTP self-managed GitLab credential instead of assuming HTTPS', async () => {
+    const glab = program(join(dir, 'glab-agent'), 'echo glab "$@"')
+    await writeEnvironment(testGitlabDeployment({ stateDir: dir, git: { ...testGitlabDeployment().git, protocol: 'http', host: 'gitlab.example.com', cli: glab },
+      gitlab: { ...testGitlabDeployment().gitlab!, host: 'http://gitlab.example.com' }, feishu: undefined }), [])
+    expect(readFileSync(workerGitConfig(dir), 'utf8')).toContain(`[credential "http://gitlab.example.com"]\n\thelper = "${credentialHelper(glab)}"`)
+  })
   it('make `lark-cli` fail without a Feishu bot and each blocked command fail with the agent\'s login', async () => {
     await writeEnvironment(testDeployment({ stateDir: dir, feishu: undefined }), ['personal-gh'])
     const bin = workerBin(dir)

@@ -60,9 +60,11 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
    GLAB_CONFIG_DIR="$HOME/.config/glab-agent" exec glab "$@"
    EOF
    chmod +x ~/.local/bin/glab-agent
-   glab-agent auth login --hostname gitlab.com
+   glab-agent auth login --hostname gitlab.example.com
    glab-agent api user
    ```
+
+   这里要写自建实例的 host，不是 `gitlab.com`；来源里的 GitLab 地址必须使用同一 host 和协议：HTTPS 写 `https://gitlab.example.com`，HTTP 写 `http://gitlab.example.com`，worker 的 git credential helper 会按这个协议配置。`glab auth git-credential` 需要 glab 1.36 或更新版本；可用 `glab-agent auth git-credential --help` 检查，命令不存在就升级 glab。实例使用私有 CA 时，让 glab 和 worker 的 git 都信任它（git 可在服务环境里设置 `GIT_SSL_CAINFO`，或把 CA 装进操作系统信任库）。
 
 3. 一个部署只有一个生效的 Git 来源。在 profile 的 `cordis.patch.yml` 中启用 `dsh-superagent-gitlab` 并禁用 `dsh-superagent-github`；两者只能启用一个。在 **来源** 中设置 GitLab 地址、项目（`group/project`）和包装脚本路径。
 

@@ -60,7 +60,7 @@ export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { githu
 /** The Git host a deployment works through; exactly one is active at a time, so a Ticket always has one remote. */
 export type GitProvider = 'github' | 'gitlab'
 /** Identity shared by every Git host. `host` is the host name used for clone URLs, `cli` the account wrapper. */
-export interface GitIdentity { provider: GitProvider; host: string; cli: string; login: string; commitEmail: string }
+export interface GitIdentity { provider: GitProvider; protocol?: 'http' | 'https'; host: string; cli: string; login: string; commitEmail: string }
 export interface Deployment extends Machine {
   repository: string
   git: GitIdentity
@@ -136,8 +136,12 @@ export async function resolveGitlabDeployment(machine: Machine, gitlab: unknown,
   if (!remote) throw new SetupError('gitlabRepositoryUnset')
   if (!accounts.cli) throw new SetupError('gitlabCliUnset')
   const base = accounts.host.replace(/\/+$/, '')
-  let host = '', hostname = ''
-  try { const url = new URL(base); host = url.host; hostname = url.hostname } catch { throw new SetupError('gitlabHostInvalid', { host: accounts.host }) }
+  let host = '', hostname = '', protocol: 'http' | 'https' = 'https'
+  try {
+    const url = new URL(base)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('unsupported protocol')
+    host = url.host; hostname = url.hostname; protocol = url.protocol === 'http:' ? 'http' : 'https'
+  } catch { throw new SetupError('gitlabHostInvalid', { host: accounts.host }) }
   let cli: string
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('gitlabCliMissing', { output: reason(error) }) }
   const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('gitlabCliSignedOut', { output: reason(error) }) })
@@ -152,7 +156,7 @@ export async function resolveGitlabDeployment(machine: Machine, gitlab: unknown,
   if (access < 30) throw new SetupError('gitlabProjectReadOnly', { account: agent.username, repository: project.path_with_namespace })
   const repository = project.path_with_namespace
   const commitEmail = agent.email || `${agent.id}-${agent.username}@${hostname === 'gitlab.com' ? 'users.noreply.gitlab.com' : hostname}`
-  return { ...machine, repository, git: { provider: 'gitlab', host, cli, login: agent.username, commitEmail },
+  return { ...machine, repository, git: { provider: 'gitlab', protocol, host, cli, login: agent.username, commitEmail },
     gitlab: { host: base, projectId: project.id, defaultBranch: project.default_branch || 'main' } }
 }
 

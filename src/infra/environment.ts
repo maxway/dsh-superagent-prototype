@@ -107,13 +107,14 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   }
   for (const name of before) if (!kept.has(name)) await unlink(join(dir, name))
   const host = git.host
+  const scheme = git.protocol ?? 'https'
   await own(workerGitConfig(stateDir), [
     MARKER,
     // Make git refuse to commit without an explicit identity set by the worker instead of guessing from the operator's OS user.
     '[user]', '\tuseConfigOnly = true',
     '[credential]', '\thelper =',
-    `[credential "https://${host}"]`, `\thelper = ${gitQuote(credentialHelper(git.cli))}`,
-    `[url "https://${host}/"]`, `\tinsteadOf = git@${host}:`, `\tinsteadOf = ssh://git@${host}/`,
+    `[credential "${scheme}://${host}"]`, `\thelper = ${gitQuote(credentialHelper(git.cli))}`,
+    `[url "${scheme}://${host}/"]`, `\tinsteadOf = git@${host}:`, `\tinsteadOf = ssh://git@${host}/`,
     // Include Git LFS filters because the operator's global gitconfig (which usually holds them) is ignored.
     '[filter "lfs"]', '\tclean = git-lfs clean -- %f', '\tsmudge = git-lfs smudge -- %f', '\tprocess = git-lfs filter-process', '\trequired = true',
   ].join('\n') + '\n')
@@ -142,7 +143,7 @@ export async function runAsWorker(subprocess: SubprocessRuntime, argv: string[],
 export async function verifyEnvironment(deployment: Pick<Deployment, 'git' | 'stateDir'>, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void> {
   const { git, stateDir } = deployment
   // `-z` separates fields with NUL and never quotes paths.
-  const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', `credential.https://${git.host}.helper`], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0')
+  const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', `credential.${git.protocol ?? 'https'}://${git.host}.helper`], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0')
   if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(git.cli), ''].join('\0')) throw new SetupError('gitTooOld')
 }
 

@@ -58,9 +58,11 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
    GLAB_CONFIG_DIR="$HOME/.config/glab-agent" exec glab "$@"
    EOF
    chmod +x ~/.local/bin/glab-agent
-   glab-agent auth login --hostname gitlab.com
+   glab-agent auth login --hostname gitlab.example.com
    glab-agent api user
    ```
+
+   Use the self-managed host, not `gitlab.com`. The same host and protocol must be set on the GitLab Source: `https://gitlab.example.com`, or `http://gitlab.example.com` for an instance served over HTTP; the worker's git credential helper then uses that protocol. `glab auth git-credential` needs a glab version that provides it (1.36 or newer); check with `glab-agent auth git-credential --help` and update glab if the command is missing. If the instance uses a private certificate authority, teach glab and the worker's git to trust it (for git, set `GIT_SSL_CAINFO` in the service environment or install the CA in the OS trust store).
 
 3. A deployment has one active Git Source. In the profile's `cordis.patch.yml`, enable `dsh-superagent-gitlab` and disable `dsh-superagent-github`; enable exactly one of them. In **Sources**, set the GitLab URL, the project (`group/project`) and the wrapper path.
 
