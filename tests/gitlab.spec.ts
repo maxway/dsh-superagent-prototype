@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { key, type Ticket, type Trigger } from '../src/core/index.ts'
-import { Commands } from '../src/infra/commands.ts'
+import { key, type Thread, type Ticket, type Trigger } from '../src/core/index.ts'
+import { CliError, Commands } from '../src/infra/commands.ts'
 import { KV } from '../src/kv.ts'
 import { testGitlabDeployment } from './fixtures/deployment.ts'
 import { gitlabKind, pollRound, type GitlabConfig } from '../src/sources/gitlab.ts'
 import { gitlabChannel, gitlabThread, issueTrigger, mergeRequestTrigger, noteTrigger, type GitlabIssue, type GitlabMergeRequest,
   type GitlabNote } from '../src/sources/gitlab-trigger.ts'
 import { claimMergeRequest, mergeRequestEndNotices, observeMergeRequest } from '../src/sources/gitlab-pull.ts'
+import { changeOf } from '../src/sources/git-change.ts'
 import { sendGitlab } from '../src/sources/gitlab-channel.ts'
 import type { SourceContext } from '../src/sources/host.ts'
 
@@ -67,9 +68,9 @@ describe('gitlab triggers', () => {
     const mrValue = mergeRequestTrigger(mr(), 'agent-bot')
     expect(mrValue).toMatchObject({ id: key('gitlab-mr', '7'), meta: { kind: 'mr', iid: 7, sourceBranch: 'fix-margin' },
       channel: { source: 'gitlab', thread: 'gitlab:mr:7' } })
-    const noteValue = noteTrigger(note({ position: { new_path: 'src/app.css', new_line: 12 } }), { kind: 'issue', iid: 5, url: 'https://gitlab.com/acme/widgets/-/issues/5' }, 'agent-bot')
+    const noteValue = noteTrigger(note({ discussion_id: 'disc-1', position: { new_path: 'src/app.css', new_line: 12 } }), { kind: 'issue', iid: 5, url: 'https://gitlab.com/acme/widgets/-/issues/5' }, 'agent-bot')
     expect(noteValue).toMatchObject({ source: 'gitlab', threads: [{ source: 'gitlab', id: 'gitlab:issue:5' }], addressed: 'mention',
-      channel: { source: 'gitlab', thread: 'gitlab:issue:5' }, meta: { kind: 'issue', iid: 5, noteId: 11, path: 'src/app.css', line: 12 } })
+      channel: { source: 'gitlab', thread: 'gitlab:issue:5' }, meta: { kind: 'issue', iid: 5, noteId: 11, discussionId: 'disc-1', path: 'src/app.css', line: 12 } })
     expect(noteValue.text).toContain('src/app.css:12')
     // A bot's note is not human, and the agent's own note is not a trigger at all.
     expect(noteTrigger(note({ author: { id: 3, username: 'ci-bot', bot: true } }), { kind: 'issue', iid: 5 }, 'agent-bot').human).toBe(false)
@@ -83,7 +84,15 @@ describe('gitlab triggers', () => {
     expect(gitlabKind.policy!.rows!(policyConfig as unknown as Record<string, unknown>)).toMatchObject([{ id: 'issues', cells: { listedUnaddressed: true } },
       { id: 'mrs', cells: { listedUnaddressed: false } }, { id: 'comments', cells: { listedUnaddressed: true } }, { id: 'ci', cells: { unlistedUnaddressed: false } }])
     expect(gitlabKind.find!('#5')).toEqual({ threads: ['gitlab:issue:5'], terms: [] })
+    expect(gitlabKind.find!('please check #5, thanks')).toEqual({ threads: ['gitlab:issue:5'], terms: [] })
+    expect(gitlabKind.find!('see !7')).toEqual({ threads: ['gitlab:mr:7'], terms: [] })
     expect(gitlabKind.find!('https://gitlab.example.com/group/sub/repo/-/merge_requests/7')).toEqual({ threads: ['gitlab:mr:7'], terms: [] })
+  })
+it('prefers the ticket\'s own change request, and the newest among equals', () => {
+    expect(changeOf({ follows: [{ thread: 'gitlab:mr:7', own: false }, { thread: 'gitlab:mr:8', own: true }, { thread: 'gitlab:mr:9', own: true }] }))
+      .toEqual({ provider: 'gitlab', number: 9 })
+    expect(changeOf({ follows: [{ thread: 'github:2', own: false }, { thread: 'github:1', own: true }] })).toEqual({ provider: 'github', number: 1 })
+    expect(changeOf({ follows: [] })).toBeUndefined()
   })
 })
 
@@ -157,6 +166,21 @@ describe('gitlab polling', () => {
     const triggers = (h.ctx.receive as ReturnType<typeof vi.fn>).mock.calls.map(([trigger]) => trigger as Trigger)
     expect(triggers.some(trigger => trigger.meta.ci === true && trigger.meta.revision === 1)).toBe(true)
   })
+  it('reads a subscribed merge request\'s new notes even when the project scan has no update', async () => {
+    const h = context()
+    const followed = { key: 'gitlab:mr:7', ref: { source: 'gitlab', id: 'mr:7' }, subscriptions: ['t1'], createdAt: now(), lastAt: now(),
+      meta: { url: 'https://gitlab.com/acme/widgets/-/merge_requests/7', author: 'alice' }, pending: [], decisions: [] } as unknown as Thread
+    h.ctx.threads.subscribed = () => [followed]
+    h.state.set(KV.gitlab.since, new Date(Date.now() - 3_600_000).toISOString())
+    h.state.set(KV.gitlab.cursor('mr', 7), new Date(Date.now() - 3_600_000).toISOString())
+    const reply = note({ id: 31, body: 'One more look?', author: { id: 2, username: 'alice' }, noteable_type: 'MergeRequest', noteable_iid: 7 })
+    glab(h.commands, {
+      'projects/42/issues': [], 'projects/42/merge_requests': [], 'projects/42/pipelines': [],
+      'projects/42/merge_requests/7': mr(), 'projects/42/merge_requests/7/notes': [reply],
+    })
+    await pollRound(h.ctx)
+    expect((h.ctx.receive as ReturnType<typeof vi.fn>).mock.calls.map(([trigger]) => (trigger as Trigger).meta.noteId)).toContain(31)
+  })
 })
 
 describe('gitlab channel and merge requests', () => {
@@ -177,6 +201,11 @@ describe('gitlab channel and merge requests', () => {
     })
     expect(await sendGitlab(h.ctx, message)).toBe('sent')
     expect(posted).toBe(1)
+  })
+  it('retries a note target that reports 404 instead of dropping the message', async () => {
+    const h = context()
+    vi.spyOn(h.commands, 'run').mockRejectedValue(new CliError('404 Not Found', 404))
+    await expect(sendGitlab(h.ctx, { id: 'reply-1', kind: 'reply' as const, channel: gitlabChannel('issue', 5), text: 'Done' })).rejects.toThrow('404')
   })
   it('claims an agent merge request on the ticket branch and ends a ticket when the merge request closes', async () => {
     const ticket = { id: 't1', title: 'Fix', follows: [], channels: [], assignments: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '',

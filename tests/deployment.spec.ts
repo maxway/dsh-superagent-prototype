@@ -127,9 +127,9 @@ describe('setup', () => {
   it('reads the GitLab project and account from glab, including a self-managed host and a renamed project', async () => {
     const glab = (file: string, access = 30): string => program(file, `case "$*" in\n  "api user") echo '{"id":7,"username":"agent-bot","email":null}' ;;\n  "api projects/"*) echo '{"id":42,"path_with_namespace":"acme/widgets","default_branch":"main","permissions":{"project_access":{"access_level":${access}}}}' ;;\n  *) exit 1 ;;\nesac`)
     glab(join(dir, 'bin', 'glab'))
-    const deployment = await resolveGitlabDeployment(machine(), { host: 'https://gitlab.example.com/', repository: 'acme/gadgets', cli: 'glab' }, probe, path)
-    expect(deployment).toMatchObject({ repository: 'acme/widgets', gitlab: { host: 'https://gitlab.example.com', projectId: 42, defaultBranch: 'main' },
-      git: { provider: 'gitlab', host: 'gitlab.example.com', cli: join(dir, 'bin', 'glab'), login: 'agent-bot',
+    const deployment = await resolveGitlabDeployment(machine(), { host: 'https://gitlab.example.com:8443/', repository: 'acme/gadgets', cli: 'glab' }, probe, path)
+    expect(deployment).toMatchObject({ repository: 'acme/widgets', gitlab: { host: 'https://gitlab.example.com:8443', projectId: 42, defaultBranch: 'main' },
+      git: { provider: 'gitlab', host: 'gitlab.example.com:8443', cli: join(dir, 'bin', 'glab'), login: 'agent-bot',
         commitEmail: '7-agent-bot@gitlab.example.com' } })
     glab(join(dir, 'bin', 'glab-reader'), 20)
     const needs = (place: string, code: string, values: Record<string, unknown>, gitlab: unknown) =>

@@ -16,7 +16,8 @@ export type GitlabUser = z.infer<typeof GitlabUserSchema>
 /** A GitLab note; a diff note carries `position` and a discussion reply carries no `type`. */
 export const NoteSchema = z.looseObject({
   id: z.number(), body: z.string().nullish(), author: GitlabUserSchema, created_at: z.string(), updated_at: z.string().nullish(),
-  system: z.boolean().nullish(), type: z.string().nullish(), noteable_type: z.string().nullish(), noteable_iid: z.number().nullish(),
+  system: z.boolean().nullish(), type: z.string().nullish(), discussion_id: z.string().nullish(), noteable_type: z.string().nullish(),
+  noteable_iid: z.number().nullish(),
   position: z.looseObject({ new_path: z.string().nullish(), new_line: z.number().nullish(), old_line: z.number().nullish(),
     head_sha: z.string().nullish() }).nullish(),
 })
@@ -72,7 +73,7 @@ export function noteTrigger(note: GitlabNote, ref: { kind: GitlabKind; iid: numb
   return { id, source: SOURCE, threads: [{ source: SOURCE, id: gitlabThread(ref.kind, ref.iid) }], ...author(note.author, agent), at,
     text: noteText(note), ...(mentions(note.body ?? '', agent) ? { addressed: 'mention' as const } : {}),
     channel: gitlabChannel(ref.kind, ref.iid, url), ...(url ? { url } : {}),
-    meta: { kind: ref.kind, iid: ref.iid, noteId: note.id, ...(ref.discussionId ? { discussionId: ref.discussionId } : {}),
+    meta: { kind: ref.kind, iid: ref.iid, noteId: note.id, ...(note.discussion_id ?? ref.discussionId ? { discussionId: note.discussion_id ?? ref.discussionId } : {}),
       ...(ref.author ? { author: ref.author } : {}), ...note.position?.new_path ? { path: note.position.new_path,
         line: note.position.new_line ?? note.position.old_line ?? null } : {}, ...note.type ? { noteType: note.type } : {} } }
 }

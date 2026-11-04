@@ -50,7 +50,7 @@ const RULES: [rule: string, file: string, says: string[], gone?: string[]][] = [
   ['A person\'s follow-up is its ticket\'s worker\'s to decide; the main Session only stops the work on request', 'dispatch',
     ['a human follow-up becomes new work only once its ticket\'s worker hands it back'], ['related human follow-ups can']],
   ['A question for a person is asked through the report, not left where nobody reads it', 'work',
-    ['Do not leave the question only in summary, GitHub or the Session and wait.']],
+    ['Do not leave the question only in summary, GitHub, GitLab or the Session and wait.']],
   ['A person\'s follow-up is its ticket\'s worker\'s to decide; the main Session only stops the work on request', 'work',
     ['Decide every person\'s message on this ticket\'s own threads yourself', 'back with orchestrator_trigger_handback',
       'never drop a request silently', 'leave ordinary discussion unanswered']],

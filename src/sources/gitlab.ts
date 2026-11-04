@@ -62,8 +62,8 @@ export const gitlabKind: SourceKind<GitlabConfig> = {
   channel: { send: sendGitlab, link: gitlabLink },
   threadContext: gitlabThreadContext,
   find: query => {
-    const issue = /(?:https?:\/\/[^/\s]+(?:\/[^/\s]+)+\/-\/issues\/(\d+)|^#(\d+)$)/.exec(query.trim())
-    const mr = /(?:https?:\/\/[^/\s]+(?:\/[^/\s]+)+\/-\/merge_requests\/(\d+)|^!(\d+)$)/.exec(query.trim())
+    const issue = /(?:https?:\/\/[^/\s]+(?:\/[^/\s]+)+\/-\/issues\/(\d+)|(?:^|\s)#(\d+)(?=$|\s|[.,;:!?)]))/m.exec(query)
+    const mr = /(?:https?:\/\/[^/\s]+(?:\/[^/\s]+)+\/-\/merge_requests\/(\d+)|(?:^|\s)!(\d+)(?=$|\s|[.,;:!?)]))/m.exec(query)
     return { threads: [...issue ? [`${SOURCE}:issue:${issue[1] ?? issue[2]}`] : [], ...mr ? [`${SOURCE}:mr:${mr[1] ?? mr[2]}`] : []], terms: [] }
   },
   policy: {
@@ -222,6 +222,7 @@ async function pollMergeRequests(ctx: SourceContext, round: Round, config: Gitla
     }
     nameThread(ctx, 'mr', mr.iid, mr.title, mr.web_url)
     const ended = await observeMergeRequest(ctx, mr)
+    round.read.add(`mr:${mr.iid}:change`)
     if (!ended) await intakeNotes(ctx, round, config, project, 'mr', mr.iid, mr.web_url, mr.author.username, false)
     if (config.observeCi) await intakeMergeRequestCi(ctx, round, mr)
     ctx.state.set(KV.gitlab.cursor('mr', mr.iid), cursorAt(round.started))

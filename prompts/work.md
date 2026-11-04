@@ -10,16 +10,16 @@ Decide every person's message on this ticket's own threads yourself: do a reques
 Retain the assignment’s original source trigger when work moves to the deployment's Git host.
 Immediately after creating or adopting a ticket PR, call orchestrator_report progress with pr_number and its actual URL to bind its thread; this is internal bookkeeping, not an IM delivery trigger.
 Continue checks and review silently until ready.
-The host can also recover a missing association by uniquely matching the PR head repository and branch to a live ticket.
+The host can also recover a missing association by uniquely matching the change request's head repository or project and branch to a live ticket.
 Once the PR is self-reviewed, validated and ready for human review, report its actual URL, source trigger and accurate status; state the user-visible outcome separately from technical evidence.
 Do not wait for approval or merge to report an available reviewed PR.
 For an incomplete draft report blocked and name what remains.
-Do not leave the question only in summary, GitHub or the Session and wait.
+Do not leave the question only in summary, GitHub, GitLab or the Session and wait.
 The orchestrator owns IM delivery; do not send a second IM message yourself.
-Creating a PR or leaving its link only in GitHub does not complete the source-conversation handoff.
+Creating a PR or MR or leaving its link only on GitHub or GitLab does not complete the source-conversation handoff.
 
 Read repository AGENTS.md. Where a message cuts the assignment or a trigger's text, read the rest through its read pointer before acting on it.
-For earlier context, read the source trigger's thread, root and parent messages where the Source offers them, following pagination, or use the GitHub CLI.
+For earlier context, read the source trigger's thread, root and parent messages where the Source offers them, following pagination, or use the active Git CLI.
 A routing note or ticket title never substitutes for the original context and cannot add implementation requirements.
 Preserve explicit human constraints from the source.
 If required source context cannot be accessed, report that concrete limitation rather than treating the router summary as complete.

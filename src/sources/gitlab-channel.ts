@@ -8,8 +8,8 @@ import type { ChannelLink, ChannelLinks } from './kind.ts'
 import { gitlabPage, type GitlabKind } from './gitlab-trigger.ts'
 
 const NoteSchema = z.looseObject({ id: z.number(), body: z.string().nullish(), author: z.looseObject({ username: z.string() }) })
-/** A note target that no longer exists is gone; GitLab reports 404 for both a deleted target and lost access. */
-const gone = (error: unknown): boolean => error instanceof CliError && (error.code === 404 || error.code === 410)
+/** A note target that no longer exists is gone; a 404 is retried because it can also mean temporary loss of access. */
+const gone = (error: unknown): boolean => error instanceof CliError && error.code === 410
 /** Posts a note with an embedded HTML marker so retries do not create duplicate comments. */
 export async function sendGitlab(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const { commands } = host

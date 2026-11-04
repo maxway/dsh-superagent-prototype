@@ -88,6 +88,8 @@ export class Setup {
       : block === 'source:gitlab' ? resolveGitlabDeployment(machine, settings.sources.gitlab?.config, this.probe())
       : resolveDeployment(machine, settings.sources.github?.config, this.probe())
     await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
+    // An enabled Git Source must leave exactly one provider configured, so the save fails before the restart would.
+    if (block.startsWith('source:') && block !== 'source:feishu') gitProvider(settings)
   }
   async blockCommands(blocked: readonly string[]): Promise<void> {
     if (this.resolved) await writeEnvironment(this.resolved, blocked)

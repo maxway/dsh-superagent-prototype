@@ -136,8 +136,8 @@ export async function resolveGitlabDeployment(machine: Machine, gitlab: unknown,
   if (!remote) throw new SetupError('gitlabRepositoryUnset')
   if (!accounts.cli) throw new SetupError('gitlabCliUnset')
   const base = accounts.host.replace(/\/+$/, '')
-  let host = ''
-  try { host = new URL(base).host } catch { throw new SetupError('gitlabHostInvalid', { host: accounts.host }) }
+  let host = '', hostname = ''
+  try { const url = new URL(base); host = url.host; hostname = url.hostname } catch { throw new SetupError('gitlabHostInvalid', { host: accounts.host }) }
   let cli: string
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('gitlabCliMissing', { output: reason(error) }) }
   const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('gitlabCliSignedOut', { output: reason(error) }) })
@@ -151,7 +151,7 @@ export async function resolveGitlabDeployment(machine: Machine, gitlab: unknown,
   const access = Math.max(project.permissions?.project_access?.access_level ?? 0, project.permissions?.group_access?.access_level ?? 0)
   if (access < 30) throw new SetupError('gitlabProjectReadOnly', { account: agent.username, repository: project.path_with_namespace })
   const repository = project.path_with_namespace
-  const commitEmail = agent.email || `${agent.id}-${agent.username}@${host === 'gitlab.com' ? 'users.noreply.gitlab.com' : host}`
+  const commitEmail = agent.email || `${agent.id}-${agent.username}@${hostname === 'gitlab.com' ? 'users.noreply.gitlab.com' : hostname}`
   return { ...machine, repository, git: { provider: 'gitlab', host, cli, login: agent.username, commitEmail },
     gitlab: { host: base, projectId: project.id, defaultBranch: project.default_branch || 'main' } }
 }
