@@ -155,16 +155,19 @@ GIT_CONFIG_GLOBAL="$TMP/gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
 - 幂等检查只读最近 100 条 note。
 - `gitlab/.../checks` 只到 pipeline，不到单个 job。
 - 404 note POST 会重试；目标被删除时可能持续重试。
-- 真实 CE 只完成 Issue 评论→回复和 CLI smoke；MR、CI、重启/游标、UI 证据未完成，PR 保持 draft。
+- 真实 CE 已验证 Issue 评论→回复、CLI smoke、默认分支 pipeline ID 变化触发及停服后游标恢复；人类作者 MR、MR-head CI/job 结果、运行中重启和 Sources UI 截图仍未完成，PR 保持 draft。
 
 ## 13. 本次实测记录
 
-本次只完成 Issue 评论到回复的冒烟验证，不代表第 1–12 节的全量验收。
+本次复用既有 GitLab 项目 `ngd/dsh-superagent-prototype`（ID `4569`）和隔离 profile `superagent-gitlab-test`；结果不代表第 1–12 节的全量验收。
 
-- **隔离环境**：在功能分支 `e2d4e9d` 上使用独立测试 profile（端口 `52853`），启用 GitLab、关闭 GitHub 和 Feishu；原有 `3082` 服务及工作区保持不变。`glab` 版本为 `1.36.0`，测试账号具有项目 Maintainer 权限。
+- **隔离环境**：在功能分支 `e2d4e9d` 上使用独立测试 profile（端口 `52853`），启用 GitLab、关闭 GitHub 和 Feishu；原有 `3082` 服务及工作区保持不变。`glab` 版本为 `1.36.0`，测试账号 `project_4569_bot` 具有项目 Maintainer 权限。
 - **接入检查**：账号与项目 API 检查通过；GitLab Source health 为 `ready`。credential helper 和隔离配置下的 `git ls-remote` 经手动验证成功。
-- **Issue 流程**：在测试 Issue `#1` 添加评论后，Source 收到 1 个 Trigger，策略创建 `accept` 决策，Ticket `cfb32838e0dfd5d1dc935a22d4b72696` 进入 `ready`。Superagent 发布确认 note `122026` 和摘要 note `122027`；摘要读回内容符合预期。
+- **Issue 流程**：在测试 Issue `#1` 添加评论后，Source 收到 1 个 Trigger，策略创建 `accept` 决策，Ticket `cfb32838e0dfd5d1dc935a22d4b72696` 进入 `ready` 并结束。Superagent 发布确认 note `122026` 和摘要 note `122027`；摘要读回内容符合预期。
+- **MR**：在既有项目创建临时分支 `test/superagent-gitlab-ce-20261105` 和 MR `!1`。MR 作者是智能体账号 `project_4569_bot`，Source 按设计跳过自身创建的 MR；因此验证了自触发抑制，但尚未验证人类作者 MR 的 Trigger。
+- **CI**：GitLab 项目没有注册 Runner。MR pipelines `148266`、`148268`、`148271` 及默认分支 pipelines `148272`、`148273`、`148279` 均为 `pending`，job 无法执行。Source 在 `gitlab:ci:main` 收到 pipeline `148273` 和 `148279` 的 CI Trigger，均被策略记为 `admission_ignored`，没有派发 worker；说明默认分支 pipeline ID 变化可被检测，但未覆盖 job 完成或成功/失败状态。MR 列表 API 的 `head_pipeline` 为 `null`，而单 MR 详情能返回 pipeline；本次未观察到 MR 专属 CI 状态记录，不能据此判定 MR-head CI 通过。`gitlab/mrs/<iid>/checks` 的失败流水线读取也未验证。
+- **服务重启/游标恢复**：在 profile 停止期间由 `jun.mei` 分别向 Issue `#1` 和 MR `!1` 添加测试 note `122049`、`122050`。重启同一 profile 后，Source `received` 从 `3` 增至 `5`，两条 note 各被读取一次；策略未派发 worker（running/queued 均为 `0`），GitLab 未出现重复回复。重启后 runtime 与 GitLab health 均为 `ready`。因此仅验证了“停服期间新评论可恢复且无重复”，运行中重启补读仍未测试。
+- **Sources 截图**：现有 CDP Chrome 会话没有已认证的 DSH 页面；裸地址 `http://127.0.0.1:52852` 会要求认证。尚未取得 Sources 启用前/后的截图；需由维护者在现有浏览器新标签打开 DSH 提供的认证地址（无需在聊天中粘贴凭据）后再截取。
 - **执行与代码验证**：模型服务返回 HTTP `200`，worker checkout 干净，位于提交 `c5d1ebe`。`pnpm check` 通过：58 个测试文件、1194 个测试，以及类型检查和构建均通过。
-- **注意事项与范围**：冒烟脚本本身因调用 `glab auth git-credential` 时遗漏 `get` 参数而返回非零；此脚本结果不算通过，credential helper 和 `git ls-remote` 是单独验证通过的。MR、CI、服务重启/游标恢复及其他 CE 部署形态本次未测试。
-- **后续修正（2026-11-04）**：冒烟脚本已补上 `glab auth git-credential get`；需要重跑脚本，成功后才能把这一项标为通过。
-- **修复后复跑（2026-11-04）**：补上 `get` 后，`GLAB=/home/max/.local/bin/glab-agent-test scripts/gitlab-smoke.sh gitlab.diandian.info ngd/dsh-superagent-prototype 1` 通过（account 为 project bot、project readable、`updated_at` 从 `14:51:16` 变为 `15:43:27`、note read back、credential helper get ok）。这是 HTTPS 自建 CE 的 Issue/credential 路径；MR、CI、重启/游标和 UI 仍未覆盖。
+- **CLI smoke 历史**：在功能分支 `e2d4e9d` 上的初次运行因 `glab auth git-credential` 漏掉 `get` 参数而失败；后续提交 `051b9b6` 修复后复跑通过（账号、项目、`updated_at` 从 `14:51:16` 更新到 `15:43:27`、note 读回及 credential helper 均通过）。该次复跑是 HTTPS 自建 CE 的 Issue/credential 路径；本次 profile 的 credential helper 和隔离配置 `git ls-remote` 也单独通过。
+- **清理**：测试后已取消六条测试 pipeline、关闭临时 MR `!1`、删除分支 `test/superagent-gitlab-ce-20261105`；Source 的 MR/评论/CI 观察开关已复位为 `false`，GitLab Source 仍启用，Issue `#1` 保留。其他 CE 部署形态仍未测试。
