@@ -121,8 +121,12 @@ export class Commands {
     return items
   }
   private glabPath(path: string): string {
-    const outside = /^\/|^[a-z]+:|(^|\/)\.\.?(\/|\?|$)/i.test(path)
-    if (outside || !path.startsWith('projects/')) throw new Error('GitLab calls are restricted to the configured project')
+    const outside = /^\/|^[a-z]+:|(^|\/)\.\.?(?=\/|\?|$|%2f)|%2e/i.test(path)
+    const project = this.deployment.gitlab
+    const prefix = project ? `projects/${project.projectId}` : ''
+    if (!prefix || outside || !(path === prefix || path.startsWith(`${prefix}/`) || path.startsWith(`${prefix}?`))) {
+      throw new Error('GitLab calls are restricted to the configured project')
+    }
     return path
   }
   /**

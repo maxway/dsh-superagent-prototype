@@ -89,7 +89,7 @@ export function pipelineSummary(status: string, where: string, read: string): st
 /** Builds a trigger for a default-branch pipeline transition; it has no person to reply to, so it has no channel. */
 export function branchPipelineTrigger(host: string, repository: string, branch: string, sha: string, revision: number, status: string, url: string): Trigger {
   return { id: key('gitlab-ci', `branch:${branch}`, String(revision)), source: SOURCE, threads: [{ source: SOURCE, id: `ci:${branch}` }],
-    actor: { source: SOURCE, id: '' }, human: false, at: new Date().toISOString(), text: pipelineSummary(status, `${repository}@${branch}`, `gitlab/commits/${sha}/checks`),
+    actor: { source: SOURCE, id: '' }, human: false, at: new Date().toISOString(), text: pipelineSummary(status, `${repository}@${branch}`, url || 'the pipeline in GitLab'),
     url, meta: { ci: true, branch, sha, revision, status } }
 }
 export function mergeRequestPipelineTrigger(mr: GitlabMergeRequest, revision: number, status: string, url: string): Trigger {

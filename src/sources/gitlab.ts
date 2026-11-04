@@ -205,7 +205,8 @@ async function pollIssues(ctx: SourceContext, round: Round, config: GitlabConfig
       round.issues += 1
     }
     nameThread(ctx, 'issue', issue.iid, issue.title, issue.web_url)
-    await intakeNotes(ctx, round, config, project, 'issue', issue.iid, issue.web_url, issue.author.username, false)
+    const done = await intakeNotes(ctx, round, config, project, 'issue', issue.iid, issue.web_url, issue.author.username, false)
+    if (!done) return
     ctx.state.set(KV.gitlab.cursor('issue', issue.iid), cursorAt(round.started))
   }
 }
@@ -223,21 +224,24 @@ async function pollMergeRequests(ctx: SourceContext, round: Round, config: Gitla
     nameThread(ctx, 'mr', mr.iid, mr.title, mr.web_url)
     const ended = await observeMergeRequest(ctx, mr)
     round.read.add(`mr:${mr.iid}:change`)
-    if (!ended) await intakeNotes(ctx, round, config, project, 'mr', mr.iid, mr.web_url, mr.author.username, false)
+    const done = !ended ? await intakeNotes(ctx, round, config, project, 'mr', mr.iid, mr.web_url, mr.author.username, false) : true
+    if (!done) return
     if (config.observeCi) await intakeMergeRequestCi(ctx, round, mr)
+    if (stopped(ctx, round)) return
     ctx.state.set(KV.gitlab.cursor('mr', mr.iid), cursorAt(round.started))
   }
 }
 async function intakeNotes(ctx: SourceContext, round: Round, config: GitlabConfig, project: string, kind: GitlabKind, iid: number,
-  url: string, author: string, force: boolean): Promise<void> {
+  url: string, author: string, force: boolean): Promise<boolean> {
   const readKey = `${kind}:${iid}:notes`
-  if (round.read.has(readKey)) return
+  if (round.read.has(readKey)) return true
+  if (stopped(ctx, round)) return false
   round.read.add(readKey)
   const login = ctx.deployment.git.login
   const cursor = ctx.state.get(KV.gitlab.cursor(kind, iid)) ?? ctx.state.get(KV.gitlab.since) ?? round.started
   const notes = await ctx.commands.withSignal(round.signal).glabPages(NoteSchema, `${notesPath(project, kind, iid)}?sort=asc&order_by=created_at`, round.tally)
   for (const note of notes) {
-    if (stopped(ctx, round)) return
+    if (stopped(ctx, round)) return false
     if (note.system || sameName(note.author.username, login)) continue
     if (Date.parse(note.updated_at ?? note.created_at) < Date.parse(cursor)) continue
     if (!force && !config.observeComments && !mentions(note.body ?? '', login)) continue
@@ -246,6 +250,7 @@ async function intakeNotes(ctx: SourceContext, round: Round, config: GitlabConfi
     await ctx.receive(trigger)
     round.notes += 1
   }
+  return true
 }
 async function intakeMergeRequestCi(ctx: SourceContext, round: Round, mr: GitlabMergeRequest): Promise<void> {
   const status = mr.head_pipeline?.status
@@ -254,17 +259,19 @@ async function intakeMergeRequestCi(ctx: SourceContext, round: Round, mr: Gitlab
   const previous = ctx.state.get(KV.gitlab.ci('mr', mr.iid))
   const revision = previous ? previous.revision + 1 : 0
   // A retried pipeline can keep its status; the new pipeline id is still a change worth reporting.
+  if (stopped(ctx, round)) return
   if (previous && (previous.status !== status || previous.id !== id)) {
     await ctx.receive(mergeRequestPipelineTrigger(mr, revision, status, mr.head_pipeline?.web_url ?? mr.web_url))
   }
+  if (stopped(ctx, round)) return
   ctx.state.set(KV.gitlab.ci('mr', mr.iid), { status, revision, ...(id === undefined ? {} : { id }) })
   ctx.threads.describe(gitlabThread('mr', mr.iid), { facts: { ci: pipelineFact(status) } })
 }
 async function pollDefaultBranchCi(ctx: SourceContext, round: Round, config: GitlabConfig, project: string, branch: string): Promise<void> {
   if (!config.observeCi) {
-    // Forget the observed pipeline so switching CI back on baselines afresh instead of reporting the gap.
-    const seen = ctx.state.get(KV.gitlab.ci('branch', 0))
-    if (seen) ctx.state.set(KV.gitlab.ci('branch', 0), { revision: seen.revision })
+    // Forget observed pipelines so switching CI back on baselines afresh instead of reporting the gap.
+    for (const name of ctx.state.keys(KV.gitlab.ci.prefix)) ctx.state.set(name, undefined)
+    ctx.threads.describe(`gitlab:ci:${branch}`, { facts: { ci: null } })
     return
   }
   const pipelines = await ctx.commands.withSignal(round.signal).glabApi(z.array(z.looseObject({ id: z.number(), status: z.string(),
@@ -273,10 +280,12 @@ async function pollDefaultBranchCi(ctx: SourceContext, round: Round, config: Git
   if (!latest) return
   const previous = ctx.state.get(KV.gitlab.ci('branch', 0))
   const revision = previous ? previous.revision + 1 : 0
+  if (stopped(ctx, round)) return
   if (previous && (previous.status !== latest.status || previous.id !== latest.id)) {
     await ctx.receive(branchPipelineTrigger(ctx.deployment.gitlab?.host ?? `https://${ctx.deployment.git.host}`, ctx.deployment.repository,
       branch, latest.sha, revision, latest.status, latest.web_url ?? ''))
   }
+  if (stopped(ctx, round)) return
   ctx.state.set(KV.gitlab.ci('branch', 0), { status: latest.status, revision, id: latest.id })
   ctx.threads.describe(`gitlab:ci:${branch}`, { label: `CI on ${branch}`, facts: { ci: pipelineFact(latest.status) } })
 }
@@ -295,7 +304,8 @@ async function pollThreads(ctx: SourceContext, round: Round): Promise<void> {
       const mr = await ctx.commands.withSignal(round.signal).glabApi(MergeRequestSchema, `${project}/merge_requests/${iid}`)
       await observeMergeRequest(ctx, mr)
     }
-    await intakeNotes(ctx, round, config, project, kind, iid, String(thread.meta.url ?? ''), String(thread.meta.author ?? ''), true)
+    const done = await intakeNotes(ctx, round, config, project, kind, iid, String(thread.meta.url ?? ''), String(thread.meta.author ?? ''), true)
+    if (!done) return
     ctx.state.set(KV.gitlab.cursor(kind, iid), cursorAt(round.started))
   }, thread => {
     if (thread.ref.id.startsWith('ci:')) return true

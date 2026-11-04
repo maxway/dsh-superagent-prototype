@@ -40,7 +40,7 @@ export async function readGitlab(commands: Commands, resource: string): Promise<
     const title = item.title, body = 'description' in item ? item.description ?? '' : ''
     const branches = 'source_branch' in item ? { head: item.source_branch, ...item.target_branch ? { base: item.target_branch } : {} } : {}
     const merged = 'merged_at' in item && item.merged_at ? { merged: true } : {}
-    return { number, title, state: item.state, ...merged, ...branches, id: String(number), from: item.author.username, at: item.created_at,
+    return { number, title, state: item.state, ...merged, ...branches, id: `${kind}-${number}`, from: item.author.username, at: item.created_at,
       text: body, url: item.web_url, ...!isHumanUser(item.author) ? { bot: true } : {} }
   }
   if (section === 'checks') {
@@ -56,6 +56,7 @@ export async function readGitlab(commands: Commands, resource: string): Promise<
     return { messages, body: { messages } }
   }
   const pageNumber = Number(page)
+  if (!Number.isInteger(pageNumber) || pageNumber < 1) throw new Error('Use a positive page number for comments')
   const { notes, more } = await notesPage(commands, kind, number, pageNumber)
   const messages = notes.map(note => message(note, gitlabPage(hostOf(commands), commands.deployment.repository, kind, number)))
   return { messages, ...more ? { next_resource: `gitlab/${listed}/${number}/${section}/${pageNumber + 1}` } : {} }
@@ -81,6 +82,7 @@ export async function readGitlabRepositoryPath(commands: Commands, path: string,
   const project = commands.deployment.gitlab
   if (!project) throw new Error('This deployment has no GitLab project')
   const parts = path.split('/').filter(part => part && part !== '.')
+  if (kind === 'file' && !parts.length) throw new Error('Name a file to read')
   if (parts.some(part => part === '..' || part.startsWith('.') || part === 'node_modules')) throw new Error('Only non-hidden repository source paths are available')
   const prefix = projectPath(commands)
   const ref = encodeURIComponent(project.defaultBranch)

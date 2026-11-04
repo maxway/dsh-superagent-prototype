@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { z } from 'zod'
 import { key, type Thread, type Ticket, type Trigger } from '../src/core/index.ts'
 import { CliError, Commands } from '../src/infra/commands.ts'
 import { KV } from '../src/kv.ts'
 import { testGitlabDeployment } from './fixtures/deployment.ts'
 import { gitlabKind, pollRound, type GitlabConfig } from '../src/sources/gitlab.ts'
-import { gitlabChannel, gitlabThread, issueTrigger, mergeRequestTrigger, noteTrigger, type GitlabIssue, type GitlabMergeRequest,
+import { branchPipelineTrigger, gitlabChannel, gitlabThread, issueTrigger, mergeRequestTrigger, noteTrigger, type GitlabIssue, type GitlabMergeRequest,
   type GitlabNote } from '../src/sources/gitlab-trigger.ts'
 import { claimMergeRequest, mergeRequestEndNotices, observeMergeRequest } from '../src/sources/gitlab-pull.ts'
 import { changeOf } from '../src/sources/git-change.ts'
 import { sendGitlab } from '../src/sources/gitlab-channel.ts'
+import { gitlabThreadContext, readGitlab, readGitlabRepositoryPath } from '../src/sources/gitlab-read.ts'
 import type { SourceContext } from '../src/sources/host.ts'
 
 const deployment = testGitlabDeployment()
@@ -35,7 +37,7 @@ function context(overrides: Partial<SourceContext> = {}) {
     deployment, commands, ready: Promise.resolve(), configured: () => true, config: (() => config()) as SourceContext['config'],
     receive: vi.fn(() => 'stored' as const), atomic: work => work(),
     state: { get: name => state.get(name) as never, set: (name, next) => { if (next === undefined) state.delete(name); else state.set(name, next) },
-      keys: () => [] },
+      keys: family => [...state.keys()].filter(name => name.startsWith(typeof family === 'string' ? family : family.prefix)) },
     threads: { get: name => threads.get(name) as never, subscribed: () => [], describe: vi.fn(), patch: vi.fn() },
     tickets: { get: () => undefined, open: () => [], bindThread: vi.fn(), threadClosed: vi.fn() },
     triggers: { get: () => undefined, latest: () => undefined }, notify: vi.fn(), report: vi.fn(), ...overrides,
@@ -88,11 +90,60 @@ describe('gitlab triggers', () => {
     expect(gitlabKind.find!('see !7')).toEqual({ threads: ['gitlab:mr:7'], terms: [] })
     expect(gitlabKind.find!('https://gitlab.example.com/group/sub/repo/-/merge_requests/7')).toEqual({ threads: ['gitlab:mr:7'], terms: [] })
   })
-it('prefers the ticket\'s own change request, and the newest among equals', () => {
+it('points a branch pipeline trigger at its URL, not an unreadable resource', () => {
+    const trigger = branchPipelineTrigger('https://gitlab.com', 'acme/widgets', 'main', 'abc', 0, 'failed', 'https://gitlab.com/acme/widgets/-/pipelines/3')
+    expect(trigger.text).toContain('https://gitlab.com/acme/widgets/-/pipelines/3')
+    expect(trigger.text).not.toContain('gitlab/commits/')
+  })
+  it('prefers the ticket\'s own change request, and the newest among equals', () => {
     expect(changeOf({ follows: [{ thread: 'gitlab:mr:7', own: false }, { thread: 'gitlab:mr:8', own: true }, { thread: 'gitlab:mr:9', own: true }] }))
       .toEqual({ provider: 'gitlab', number: 9 })
     expect(changeOf({ follows: [{ thread: 'github:2', own: false }, { thread: 'github:1', own: true }] })).toEqual({ provider: 'github', number: 1 })
     expect(changeOf({ follows: [] })).toBeUndefined()
+  })
+it('restricts GitLab API paths to the configured project', async () => {
+    const h = context()
+    vi.spyOn(h.commands, 'run').mockResolvedValue('{}')
+    await expect(h.commands.glabApi(z.unknown(), 'projects/99/issues')).rejects.toThrow('restricted to the configured project')
+    await expect(h.commands.glabApi(z.unknown(), 'projects/42/issues/%2e%2e/99')).rejects.toThrow('restricted to the configured project')
+    await expect(h.commands.glabApi(z.unknown(), 'projects/42/..%2f99/issues')).rejects.toThrow('restricted to the configured project')
+    await expect(h.commands.glabApi(z.unknown(), 'projects/42/%2e./99/issues')).rejects.toThrow('restricted to the configured project')
+    await expect(h.commands.glabApi(z.unknown(), 'projects/42/%2e%2f99/issues')).rejects.toThrow('restricted to the configured project')
+    await expect(h.commands.glabApi(z.unknown(), 'projects/42/issues')).resolves.toEqual({})
+  })
+it('reads a merge request description, its notes, a discussion and its head pipeline', async () => {
+    const h = context()
+    glab(h.commands, {
+      'projects/42/issues/5': issue(),
+      'projects/42/issues/5/notes': [note()],
+      'projects/42/merge_requests/7': mr({ head_pipeline: { id: 9, status: 'failed', web_url: 'https://gitlab.com/p/9' } }),
+      'projects/42/pipelines/9': { id: 9, status: 'failed', web_url: 'https://gitlab.com/p/9', sha: 'abc' },
+      'projects/42/merge_requests/7/discussions/disc-1': { id: 'disc-1', notes: [note({ discussion_id: 'disc-1' })] },
+    })
+    expect(await readGitlab(h.commands, 'gitlab/issues/5')).toMatchObject({ number: 5, title: 'Fix the margin', state: 'opened', id: 'issue-5', text: 'Please fix the margin. @agent-bot' })
+    expect(await readGitlab(h.commands, 'gitlab/issues/5/comments/1')).toMatchObject({ messages: [{ id: '11', from: 'alice' }] })
+    await expect(readGitlab(h.commands, 'gitlab/issues/5/comments/0')).rejects.toThrow('positive page number')
+    await expect(readGitlab(h.commands, 'gitlab/issues/5/comments/abc')).rejects.toThrow('positive page number')
+    expect(await readGitlab(h.commands, 'gitlab/mrs/7/discussions/disc-1')).toMatchObject({ messages: [{ id: '11' }] })
+    expect(await readGitlab(h.commands, 'gitlab/mrs/7/checks')).toMatchObject({ pipeline: { id: 9, status: 'failed' } })
+  })
+  it('reads a subscribed Thread with its description first and its notes after it', async () => {
+    const h = context()
+    glab(h.commands, { 'projects/42/issues/5': issue(), 'projects/42/issues/5/notes': [note()] })
+    const page = await gitlabThreadContext.read(h.commands, issueTrigger(issue(), 'agent-bot'), 'thread', undefined, undefined)
+    expect(page.messages[0]).toMatchObject({ id: 'issue-5', text: 'Fix the margin\n\nPlease fix the margin. @agent-bot' })
+    expect(page.messages[1]).toMatchObject({ id: '11', from: 'alice' })
+  })
+  it('reads repository files and directories under the default branch, and rejects hidden paths', async () => {
+    const h = context()
+    vi.spyOn(h.commands, 'run').mockImplementation(async (_program, args) => {
+      if (args[1]!.includes('/repository/files/')) return 'export const x = 1'
+      return JSON.stringify([{ name: 'b', type: 'blob' }, { name: 'a', type: 'tree' }, { name: '.env', type: 'blob' }])
+    })
+    expect(await readGitlabRepositoryPath(h.commands, 'src/app.ts', 'file')).toBe('export const x = 1')
+    expect(await readGitlabRepositoryPath(h.commands, '', 'directory')).toBe('a\nb')
+    await expect(readGitlabRepositoryPath(h.commands, '', 'file')).rejects.toThrow('Name a file')
+    await expect(readGitlabRepositoryPath(h.commands, '.secret', 'file')).rejects.toThrow('hidden')
   })
 })
 
@@ -148,6 +199,29 @@ describe('gitlab polling', () => {
     glab(h.commands, { 'projects/42/issues': () => { throw new Error('network down') } })
     await expect(pollRound(h.ctx)).rejects.toThrow(/GitLab reads failed/)
     expect(h.state.get(KV.gitlab.since)).toBeTruthy()
+  })
+  it('does not advance a note cursor when the round stops mid-thread', async () => {
+    const controller = new AbortController()
+    const h = context({ receive: vi.fn(async () => { controller.abort(); return 'stored' as const }) })
+    vi.spyOn(h.commands, 'withSignal').mockReturnValue(h.commands)
+    const old = new Date(Date.now() - 3_600_000).toISOString()
+    h.state.set(KV.gitlab.since, old)
+    h.state.set(KV.gitlab.cursor('issue', 5), old)
+    glab(h.commands, {
+      'projects/42/issues': [issue({ created_at: old, updated_at: now() })],
+      'projects/42/issues/5/notes': [note({ id: 11 }), note({ id: 12, body: 'Second note' })],
+      'projects/42/merge_requests': [], 'projects/42/pipelines': [],
+    })
+    await pollRound(h.ctx, controller.signal)
+    expect(h.state.get(KV.gitlab.cursor('issue', 5))).toBe(old)
+    expect((h.ctx.receive as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
+  })
+  it('clears observed pipelines while CI observation is off, so turning it on baselines afresh', async () => {
+    const h = context()
+    h.state.set(KV.gitlab.ci('branch', 0), { status: 'failed', revision: 2, id: 9 })
+    glab(h.commands, { 'projects/42/issues': [], 'projects/42/merge_requests': [], 'projects/42/pipelines': [] })
+    await pollRound(h.ctx)
+    expect(h.state.get(KV.gitlab.ci('branch', 0))).toBeUndefined()
   })
   it('reports a retried head pipeline even when its status repeats', async () => {
     const h = context({ config: (() => config({ observeCi: true })) as SourceContext['config'] })
