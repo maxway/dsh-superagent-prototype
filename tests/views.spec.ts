@@ -103,12 +103,10 @@ it('states each Source by the first state that holds', () => {
   const states = (setup: Parameters<typeof sourcesStatus>[2], health: Parameters<typeof sourcesStatus>[1] = {}) =>
     Object.fromEntries(sourcesStatus(host, health, setup).map(source => [source.id, source.state]))
   expect(states({})).toEqual({ feishu: 'starting', github: 'starting' })
-  expect(states({}, { feishu: { state: 'ready', detail: '' }, history: { state: 'paused', detail: '' }, github: { state: 'error',
-    detail: 'x' } }))
+  expect(states({}, { feishu: { state: 'paused', detail: '' }, github: { state: 'error', detail: 'x' } }))
     .toEqual({ feishu: 'paused', github: 'error' })
   const problem = { place: 'deployment', code: 'stateDirUnset', values: {}, detail: '' } as never
-  expect(states({ problem }, { feishu: { state: 'ready', detail: '' }, history: { state: 'ready', detail: '' }, github: { state: 'ready',
-    detail: '' } }))
+  expect(states({ problem }, { feishu: { state: 'ready', detail: '' }, github: { state: 'ready', detail: '' } }))
     .toEqual({ feishu: 'setup', github: 'setup' })
 })
 
@@ -165,14 +163,13 @@ it('lists an Eval past its deadline, and as dsh-superagent\'s own errors only pa
     evaluating, meta: {} })
   const error = (detail: string) => ({ state: 'error' as const, detail })
   const health = { relay: error('relay failing'), reply: error('reply failing'), feishu: error('socket closed'),
-    history: error('read failed'),
     'sync:feishu': error('sync failed'), evals: error('unavailable'), launch: { state: 'ready' as const, detail: '' } }
   const found = problems(host, health)
   expect(found).toContainEqual({ kind: 'eval-overdue', thread: expect.objectContaining({ key: 'github:1', stage: 'evaluating' }) })
   // Effects are dsh-superagent's own; a Source shows its parts and its Policy sync, and the Evals are listed one by one.
   expect(found.filter(item => item.kind === 'runtime-error')).toEqual([{ kind: 'runtime-error', name: 'relay', detail: 'relay failing' },
     { kind: 'runtime-error', name: 'reply', detail: 'reply failing' }])
-  expect(found.filter(item => item.kind === 'source-error').map(item => item.source.health.name)).toEqual(['feishu', 'history'])
+  expect(found.filter(item => item.kind === 'source-error').map(item => item.source.health.name)).toEqual(['feishu'])
 })
 
 it('says no Source runs when every Source is off, and states a Source missing or off', () => {

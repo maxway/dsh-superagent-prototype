@@ -269,11 +269,10 @@ it('assesses a proactive observation in the orchestrator Session and creates the
   await receive(trigger)
   const candidate = relays(runtime.masterId).at(-1)!
   expect(candidate).toMatchObject({ kind: 'candidate', strength: 'inferred', mode: 'observe', next_action: expect.stringContaining('orchestrator_eval') })
-  vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ items: [{ message_id: 'om_3', chat_id: CHAT }] })
   const details = await runTool(runtime.masterId, 'orchestrator_eval', { trigger_id: trigger.id })
   // The rules are in the main Session's Policy section; the context names the Policy version it was built from.
   expect(details).not.toHaveProperty('rules')
-  expect(details).toMatchObject({ trigger_id: trigger.id, strength: 'inferred', policy_version: policyVersion(runtime.store.settings()), thread: expect.objectContaining({ complete: true, loaded_messages: 0 }) })
+  expect(details).toMatchObject({ trigger_id: trigger.id, strength: 'inferred', policy_version: policyVersion(runtime.store.settings()), thread: { error: expect.stringContaining('no Thread context'), complete: false } })
   const decision = (id: string) => ({ trigger_id: id, decision: 'accept', title: '文案修订', worktree_name: 'copy-fix', scope: '改副标题', reason: 'explicit copy change', intent_evidence: 'quoted', acknowledgement: '收到，把副标题改成“浏览网页”。',
     rule_assessments: [{ rule_id: 'copy', matched: true, reason: 'copy change' }, { rule_id: 'visual', matched: false, reason: 'not visual' }],
     direction: { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'the message names the replacement' } })
@@ -298,7 +297,6 @@ it('accepts silently under a rule that says so, gives the worker the rule proced
   await runtime.settings.save('eval', { ...runtime.store.settings().eval, mode: 'auto' }, runtime.store.blockRevision('eval'), 'panel')
   const trigger = feishu('20', '切换主题后刷新，图标颜色不对', { mentions: [] })
   await receive(trigger)
-  vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ items: [{ message_id: 'om_20', chat_id: CHAT }] })
   await runTool(runtime.masterId, 'orchestrator_eval', { trigger_id: trigger.id })
   const accepted = await runTool(runtime.masterId, 'orchestrator_eval_decide', { trigger_id: trigger.id, decision: 'accept', title: '主题图标颜色', worktree_name: 'theme-icon-color', scope: 'bug', reason: 'reported defect', intent_evidence: 'quoted',
     rule_assessments: [{ rule_id: 'copy', matched: false, reason: 'no' }, { rule_id: 'visual', matched: false, reason: 'no' }, { rule_id: 'silent-bugfix', matched: true, reason: 'bug report' }],
@@ -623,38 +621,8 @@ it('refuses an accept through orchestrator_route for inferred candidates so proa
   expect(runtime.store.tickets.list()).toEqual([])
 })
 
-it('syncs a Source\'s list once its plugin loads after dsh-superagent started', async () => {
-  const next = await restart()
-  await next.ready
-  vi.mocked(Commands.prototype.lark).mockResolvedValue({ users: [{ member_id: MEMBER, name: 'Alice' }], has_more: false })
-  next.sources.register(feishuKind)
-  await vi.waitFor(() => expect(next.health['sync:feishu']).toMatchObject({ state: 'ready' }))
-})
-
-it('syncs the Feishu part of the Policy from its sync chat in place, and keeps the Policy version when only the order the chat lists changes', async () => {
-  const policy = runtime.store.settings().policy
-  await runtime.settings.save('policy', { ...policy, sources: { ...policy.sources, feishu: { allowed: [{ id: 'ou_bob', name: 'Bob' }, { id: MEMBER, name: 'Alice' }], syncChat: CHAT } } }, runtime.store.blockRevision('policy'), 'panel')
-  vi.mocked(Commands.prototype.lark).mockResolvedValue({ users: [{ member_id: 'ou_erin', name: 'Erin' }, { member_id: MEMBER, name: 'Alice Liddell' }], has_more: false })
-  expect(await runtime.settings.sync('feishu')).toEqual({ allowed: [{ id: MEMBER, name: 'Alice Liddell' }, { id: 'ou_erin', name: 'Erin' }], syncChat: CHAT, admission: {} })
-  expect(runtime.store.settings().policy.sources.feishu!.allowed.map(entry => entry.id)).toEqual([MEMBER, 'ou_erin'])
-  expect(runtime.health['sync:feishu']).toMatchObject({ state: 'ready', detail: '2 allowed' })
-  const version = policyVersion(runtime.store.settings())
-  vi.mocked(Commands.prototype.lark).mockResolvedValue({ users: [{ member_id: MEMBER, name: 'Alice Liddell' }, { member_id: 'ou_erin', name: 'Erin' }], has_more: false })
-  await runtime.settings.sync('feishu')
-  expect(policyVersion(runtime.store.settings())).toBe(version)
-  await expect(runtime.settings.sync('github')).rejects.toThrow('nothing to sync from')
-  vi.mocked(Commands.prototype.lark).mockRejectedValue(new Error('rate limited'))
-  await expect(runtime.settings.sync('feishu')).rejects.toThrow('rate limited')
-  expect(runtime.health['sync:feishu']).toMatchObject({ state: 'error', detail: expect.stringContaining('rate limited') })
-})
-
-it('describes rule edits in the Policy history and skips Policy syncs that change nothing', async () => {
+it('describes rule edits in the Policy history', async () => {
   const settings = runtime.store.settings()
-  const revision = () => runtime.store.get('settings-revision') as number
-  const before = revision()
-  // The sync chat lists exactly the allowed users already, so nothing is saved.
-  await runtime.settings.sync('feishu')
-  expect(revision()).toBe(before)
   await runtime.settings.save('policy', { ...runtime.store.settings().policy, rules: [{ ...settings.policy.rules[0]!, name: '文案' }, { ...settings.policy.rules[1]!, enabled: false }, { id: 'docs', name: '文档', enabled: true, instruction: 'x' }] }, runtime.store.blockRevision('policy'), 'panel')
   expect(policyHistory(runtime.store, runtime.sources, policyVersion(runtime.store.settings())).items[0]!.changes).toEqual([{ code: 'ruleRenamed', from: 'Copy fixes', to: '文案' }, { code: 'ruleDisabled', name: 'Visual fixes' }, { code: 'ruleAdded', name: '文档' }])
 })
@@ -778,13 +746,12 @@ it('finds triggers by #PR number, GitHub link prefix and Feishu message id', asy
   expect(search(viewsOf(runtime), 'https://x/y?id=om_30', new TextCache(0)).items.map(item => item.id)).toContain(message.id)
 })
 
-it('keeps pages of Source reads, prompt previews and Feishu message links in memory, outside the kv area', async () => {
-  const message = feishu('30', '随便说说', { mentions: [] })
-  await receive(message)
+it('keeps pages of Source reads, prompt previews and delivered Feishu message links in memory, outside the kv area', async () => {
   const link = 'https://applink.feishu.cn/client/message/link/open?token=t30'
-  vi.mocked(Commands.prototype.lark).mockResolvedValue({ messages: [{ message_id: 'om_30', chat_id: CHAT, message_app_link: link }] })
+  const message = feishu('30', '随便说说', { mentions: [], message_app_link: link })
+  await receive(message)
   expect(await runTool(runtime.masterId, 'orchestrator_read', { resource: `trigger/${message.id}` })).toMatchObject({ source_url: link })
-  // An AppLink is found by the links read since dsh-superagent started.
+  // An AppLink delivered with a Trigger is searchable for the lifetime of the process.
   expect((await api('GET', `search?q=${encodeURIComponent(link)}`)).body).toMatchObject({ items: [expect.objectContaining({ id: message.id })] })
   const config = runtime.prompts.current().config
   const { previews } = await runTool(runtime.masterId, 'orchestrator_prompts_save', { config, preview: true }) as { previews: { read: string }[] }
@@ -1240,18 +1207,6 @@ it('attaches a message to an ended ticket and so resumes it', async () => {
   await route({ kind: 'attach', ticket_id: ticket.id, trigger_id: other.id })
   await vi.waitFor(() => expect(runtime.store.tickets.get(ticket.id)!.ended).toBeUndefined())
   expect(runtime.store.tickets.get(ticket.id)!.assignments).toHaveLength(2)
-})
-
-it('rereads a Source\'s display names on request, reports the new ones and keeps the list when the read fails', async () => {
-  runtime.store.set('source-labels:feishu', { oc_team: 'Team' })
-  const lark = vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ chats: [{ chat_id: 'oc_team', name: 'Team' }, { chat_id: 'oc_new', name: 'New chat' }] })
-  expect(await runtime.settings.refreshLabels('feishu')).toEqual({ added: ['New chat'] })
-  expect(lark).toHaveBeenCalledWith(['im', '+chat-list', '--page-all', '--page-size', '100'])
-  expect(runtime.store.get('source-labels:feishu')).toEqual({ oc_team: 'Team', oc_new: 'New chat' })
-  lark.mockRejectedValue(new Error('token expired'))
-  await expect(runtime.settings.refreshLabels('feishu')).rejects.toThrow('token expired')
-  expect(runtime.store.get('source-labels:feishu')).toEqual({ oc_team: 'Team', oc_new: 'New chat' })
-  await expect(runtime.settings.refreshLabels('github')).rejects.toThrow('no names to refresh')
 })
 
 it('drops a message only when its conversation is gone or not listened to, newest drop first, and keeps it while its Source is off', async () => {

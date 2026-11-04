@@ -437,11 +437,6 @@ it('tells the main Session of the settings, prompts, requeues and unsubscription
   expect(notices().slice(before).filter(notice => !('ticket_ended' in notice))).toEqual([])
 })
 
-it('answers a policy sync with the counts and what changed, not the whole list', async () => {
-  vi.mocked(Commands.prototype.lark).mockResolvedValue({ users: [{ member_id: 'ou_alice', name: 'Alice' }, { member_id: 'ou_bob', name: 'Bob' }], has_more: false })
-  expect(await h.runTool(h.runtime.masterId, 'orchestrator_policy_sync', { source: 'feishu' })).toEqual({ source: 'feishu', allowed: 2, added: ['Bob'], removed: [] })
-})
-
 it('shows an Executor Session no id it cannot read: no Decision, no other ticket, no Trigger its ticket did not reach', async () => {
   const { ticket, trigger, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
   const another = feishu('2', '@bot 再修一个', { root_id: 'om_1' })

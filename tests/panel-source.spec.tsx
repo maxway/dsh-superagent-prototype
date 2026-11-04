@@ -35,30 +35,6 @@ it('folds more than six chats into a line of their names', async () => {
   expect(summary.textContent).toBe(['团队群', 'oc_c1', 'oc_c2', 'oc_c3', 'oc_c4', 'oc_c5', 'oc_c6'].join('、'))
 })
 
-it('rereads the chats the bot has joined on request and says which are new, keeping unsaved edits', async () => {
-  await mount()
-  await click(zh['tab.source'])
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
-  const feishu = () => all('.dt-card')[0]!
-  const button = () => [...feishu().querySelectorAll('button')].find(item => item.textContent === '刷新群列表')!
-  await click([...feishu().querySelectorAll('button')].find(item => item.textContent === '添加')!)
-  server.joining = { oc_new: '新群' }
-  await click(button())
-  expect(server.requests.find(request => request.path === 'sources/feishu/labels')).toMatchObject({ method: 'POST' })
-  expect(document.querySelector('.dt-toast')?.textContent).toBe('列表已更新，新增：新群')
-  // The row being added stays, and now offers the new chat.
-  const pick = feishu().querySelectorAll('.dt-rows-item')[1]!.querySelector<HTMLSelectElement>('select[aria-label="选择机器人已加入的群"]')!
-  expect([...pick.options].map(option => option.textContent)).toEqual(['选择机器人已加入的群', '另一个群', '新群'])
-  await click(button())
-  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.labelsCurrent)
-  server.joinError = 'lark-cli: token expired'
-  await click(button())
-  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe('读取失败，列表保持不变：lark-cli: token expired')
-  expect(button().disabled).toBe(false)
-  // Only a field whose key column offers a refresh shows the button.
-  expect([...all('.dt-card')[1]!.querySelectorAll('button')].some(item => item.textContent === '刷新群列表')).toBe(false)
-})
-
 it('renders each Source\'s settings from its kind\'s fields and saves one Source against its own revision', async () => {
   await mount()
   await click(zh['tab.source'])
@@ -69,12 +45,10 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
   expect(feishu.textContent).toContain('接收的群')
   await click([...feishu.querySelectorAll('button')].find(button => button.textContent === '添加')!)
   const rows = feishu.querySelectorAll('.dt-rows-item')
-  // A saved chat shows its name; a row being added picks from the joined chats not yet configured.
+  // A saved chat shows its name; a row being added takes the chat id by hand, because the bot cannot list chats.
   expect(rows[0]!.querySelector('.dt-row-label')?.textContent).toBe('团队群')
-  expect(rows[0]!.querySelector('select[aria-label="选择机器人已加入的群"]')).toBeNull()
-  const pick = rows[1]!.querySelector<HTMLSelectElement>('select[aria-label="选择机器人已加入的群"]')!
-  expect([...pick.options].map(option => option.textContent)).toEqual(['选择机器人已加入的群', '另一个群'])
-  await type(pick, 'oc_other')
+  expect(rows[0]!.querySelector('input[aria-label="群 chat_id"]')).toBeNull()
+  await type(rows[1]!.querySelector<HTMLInputElement>('input[aria-label="群 chat_id"]')!, 'oc_other')
   await type(rows[1]!.querySelector('select[aria-label="接收"]')!, 'all')
   await click('接收私聊')
   await act(async () => { feishu.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()

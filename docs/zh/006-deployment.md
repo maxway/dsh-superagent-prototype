@@ -50,7 +50,7 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
 
 ### 飞书机器人（可选）
 
-1. 创建一个带机器人能力的自建应用。授予它接收消息事件、读取和发送聊天消息、读取群成员的权限，然后发布应用版本。
+1. 创建一个带机器人能力的自建应用。授予它接收消息事件和以机器人身份发送消息的权限，然后发布应用版本。它不需要读取消息、聊天历史、群或群成员的权限：来源只使用事件携带的内容并回复。被移除的读取路径会调用需要 `im:message`、`im:message:readonly`、`im:message.history:readonly`（消息）以及 `im:chat`、`im:chat:readonly`、`im:chat.group_info:readonly`、`im:chat:read`、`im:chat.members:read`（群和成员）的接口；当前版本不再调用它们。因此它无法补收 dsh-superagent 离线期间的消息，无法按 ID 读取消息或话题，无法列出群或同步成员，也无法读取图片。群 chat_id 和允许名单需要手工填写。为群选择**全部消息**还需要飞书“接收群内全部消息”的权限；没有该权限时只会收到 @ 机器人的消息。
 2. 给机器人一份自己的 `lark-cli` 配置，限制为机器人身份，并提供一个包装脚本：
 
    ```sh
@@ -189,7 +189,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 | `evals` | 过去一小时内未完成、之后没有得到研判或不再提示的评估 |
 | `assessment`、`launch`、`delivery`、`relay`、`notice`、`reply` | 在 [003 执行](003-execution.md) 中描述的已存储工作；送达统计等待中的工作，而回复涵盖渠道消息 |
 | `worker` | 执行器 Session 的事件处理；在首次失败后出现 |
-| `github`、`feishu`、`history` | 来源轮询、事件和历史补收 |
+| `github`、`feishu` | 来源轮询和事件 |
 | `sync:<source id>` | 允许名单同步 |
 
 拒绝会带一个状态码和 `error`（其英文文本）：
@@ -202,7 +202,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 这些块：
 
 - `source:github`、`source:feishu`：`{"enabled": true, "config": {…}}`。GitHub 的配置有 `repository` 和 `cli`，以及开关 `observeIssues`、`observePulls`、`observeComments` 和 `observeCi`，默认关闭，它们接收仓库中每个新 Issue、新 pull request 和评论，以及默认分支的 CI；飞书的配置有 `cli`、`chats`（形如 `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]`，或 `"all"`）、`directMessages`，以及 `otherChats`（`"none"` 或 `"mentions"`）。
-- `policy`：`{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`。`bots` 列出其消息可以成为推断候选的机器人。`admission` 行以群 id 为键；飞书还用 `other` 或 `direct`，GitHub 用 `issues`、`pulls`、`comments` 或 `ci`；未设置的单元格取默认值（见 [002 授权机制](002-authorization.md)）。
+- `policy`：`{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`。`bots` 列出其消息可以成为推断候选的机器人。`admission` 行以群 id 为键；飞书还用 `other` 或 `direct`，GitHub 用 `issues`、`pulls`、`comments` 或 `ci`；未设置的单元格取默认值（见 [002 授权机制](002-authorization.md)）。
 - `eval`：`mode`、`timeoutSeconds` 和 `model`。
 - `executor`：`model`、`maxWorkers`、`directory`、`prepare` 和 `blockedCommands`。处理暂停是一个单独的设置 `paused`，由 `POST executor/pause` 设置。
 

@@ -279,8 +279,8 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 一些通用模块仍然直接引用 GitHub 或飞书：
 
 - Outbox 应用飞书聊天的字数限制。
-- `src/app/links.ts` 解析飞书消息链接和 `repliedTo`。它和 Runtime 用 `feishuSettings` 读取设置。
-- `src/app/resources.ts` 读取 `feishu/` 和 `github/` 的原始记录；`src/app/cards.ts` 为工单卡片使用 `pullOf`。
+- `src/app/links.ts` 使用触发自带的 URL 并解析 `repliedTo`；飞书机器人无法查询消息链接。
+- `src/app/resources.ts` 读取 `github/` 的原始记录；`src/app/cards.ts` 为工单卡片使用 `pullOf`。
 - Runtime 为 merged 或 closed 的工单发送 `pullEndNotices`。
 - 执行器工具用 `readPull` 和 `claimPull` 绑定报告中的 pull request，使用 Runtime 暴露的 GitHub 上下文。
 - MasterAssessor 用 `readRepositoryPath` 读取仓库文件。
@@ -363,19 +363,17 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/sources/kind.ts` | `SourceKind` 协议 |
 | `src/sources/registry.ts` | `SourceRegistry` |
 | `src/sources/host.ts` | `SourceHost`、`SourceContext`、`Health`、`health`，以及固定健康文本 |
-| `src/sources/poll.ts` | GitHub 和飞书轮询共用的内容：`POLL_HORIZON_MS`、`polled`、`cursorAt`，以及 `pollThreads`（把失败作为 `pollError` 留在其线程上） |
+| `src/sources/poll.ts` | GitHub 轮询使用的内容：`POLL_HORIZON_MS`、`polled`、`cursorAt`，以及 `pollThreads`（把失败作为 `pollError` 留在其线程上） |
 | `src/sources/github.ts` | GitHub 种类和插件入口，导出为 `./github-watch`：一轮通知轮询、打开工单的 pull request 及其 CI，以及已订阅的线程 |
 | `src/sources/github-trigger.ts` | 作为触发的 GitHub 评论、评审、Issue 正文和 CI 变化，以及 GitHub 地址 |
 | `src/sources/github-pull.ts` | pull request 规则：工单跟随哪些 pull request（`claimPull`、`observePull`）、它向 Engine 报告的关闭，以及 `pullEndNotices`——工单以 merged 或 closed 结束时的聊天通知 |
 | `src/sources/github-channel.ts` | GitHub 渠道：评论和评审线程回复，`sent` 或 `gone` |
 | `src/sources/github-read.ts` | CI 快照、仓库读取、`github/` 资源，以及 `githubThreadContext`：按页读取 Issue 或 pull request 的对话 |
 | `src/sources/feishu.ts` | 飞书种类和插件入口，导出为 `./feishu-watch` |
-| `src/sources/feishu-trigger.ts` | 把飞书消息作为触发，对实时事件、历史页和主题页使用同一套规则 |
-| `src/sources/feishu-loops.ts` | 飞书循环：事件消费者、历史恢复、聊天名称，以及已订阅主题的轮询 |
+| `src/sources/feishu-trigger.ts` | 把发给机器人的飞书实时消息作为触发 |
+| `src/sources/feishu-loops.ts` | 飞书事件消费者、其健康状态和重启退避 |
 | `src/sources/feishu-channel.ts` | 飞书渠道：主题回复，`sent` 或 `gone` |
-| `src/sources/feishu-read.ts` | 对触发消息、其根消息、父消息和主题的 `feishu/` 读取，以及 `feishuThreadContext`——连同图片把它们交给研判 |
 | `src/sources/admission-context.ts` | 研判起步时的有界窗口：通过其种类读取的触发所在线程的头几页，以及触发周围的消息 |
-| `src/sources/feishu-image.ts` | 把飞书消息中的图片作为附件读取给研判的 Session |
 | `src/client/index.tsx` | 客户端插件入口：侧边栏条目、主面板，以及 DeepSeek Harness 插件管理器中的页面 |
 | `src/client/app.tsx` | 面板：页头、搜索、术语表、标签页和当前路由的页面 |
 | `src/client/provider.tsx` | 每个页面从宿主读取的内容：文案、调用、导航、通知、状态轮询，以及 `restart`——在 dsh-superagent 重启期间快速读取状态 |
@@ -409,10 +407,10 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/stage.spec.ts` | 工单阶段，逐行验证 |
 | `tests/policy.spec.ts` | 来源范围、准入、准入表、授权重新校验、策略版本、设置迁移和研判结论 |
 | `tests/registry.spec.ts` | `SourceRegistry`：实例、校验、策略部分、渠道和线程上下文 |
-| `tests/sources.spec.ts` | `SourceContext` 上的飞书和 GitHub 来源：转换、轮询和读取位置、pull request 规则、健康 |
+| `tests/sources.spec.ts` | `SourceContext` 上的飞书和 GitHub 来源：转换、飞书事件消费者、GitHub 轮询和读取位置、pull request 规则、健康 |
 | `tests/commands.spec.ts` | 以部署账号执行的 CLI 调用、渠道的回答，以及限定在仓库范围内的 GitHub 调用 |
-| `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | 飞书和 GitHub 读取 |
-| `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | 研判的线程窗口，以及飞书图片读取 |
+| `tests/github-read.spec.ts` | GitHub 读取 |
+| `tests/admission-context.spec.ts` | 研判的线程窗口 |
 | `tests/assessment.spec.ts` | MasterAssessor 为每个评估保留什么，以及何时放手 |
 | `tests/background.spec.ts` | 等待 worker 的 shell 作业和子智能体：唤醒它的结束，以及宿主机停止 |
 | `tests/bundle-patch.spec.ts` | 打包产物的补丁，按 DeepSeek Harness 读取它的方式读取，以及它定义的执行器 Session 智能体预设 |
@@ -481,7 +479,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 
 关闭记录存储在其决定上。输入文本在读取时从工单渲染，因此两者都不需要单独的键值记录。
 
-读取缓存使用有界的 `TextCache` 内存实例，重启后丢失。翻页读取来源原始记录或提示词预览的 Session，在重启之后必须从偏移 0 重新读取。接收之后解析出的飞书链接也以同样方式缓存；基于链接的搜索只有在当前进程生命周期内读取过该链接之后才能找到它们。
+读取缓存使用有界的 `TextCache` 内存实例，重启后丢失。翻页读取来源原始记录或提示词预览的 Session，在重启之后必须从偏移 0 重新读取。随触发一起送达的飞书 AppLink 在构建其卡片时以同样方式缓存；基于链接的搜索在当前进程生命周期内可以找到它们。
 
 目前没有任何东西删除旧记录，因此下列内容会无限增长：`trigger`、`disposition` 和 `decision` 行；已结束的工单及其线程；outbox 的回执；以及 `kv` 中每个已保存的设置修订版本和提示词版本、每个 Session 工作过的提示词修订版本，还有来源按线程和按 Issue 或 pull request 保存的记录。
 
@@ -564,7 +562,7 @@ worker 预设在 `cordis.patch.yml` 中定义，并通过 `WORKER_PRESET` 选择
 | `settings`, `settings/<block>` | 修订版本和摘要，或一个可直接保存的完整块 |
 | `prompts`, `prompts/<revision>`, `prompts/current`, `prompts/defaults`, `prompt-preview/<id>` | 提示词配置和合成后的文本 |
 | `models`, `models/<provider>` | 可用的模型 |
-| `feishu/<trigger id>/…`, `github/…` | 来源的原始记录，在来源技能中描述 |
+| `github/…` | GitHub 的原始记录，在来源技能中描述 |
 
 工单线程对仅为上下文的跟随标记为 `context`，对来源绑定标记为 `bound`。派工页面最新的在前，并包含报告预览。用 `next_offset` 继续列表。`/input/<id>` 接受输入的名称或 id。`settings` 完整包含小的块，并对策略块和来源块作摘要。
 

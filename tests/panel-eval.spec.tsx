@@ -84,20 +84,6 @@ it('opens the rule list for an invalid field inside it only', async () => {
   expect(openRows()).toBe(all('.dt-rule').length)
 })
 
-it('syncs a Source\'s list from where the Source keeps it, but not while a Policy draft is unsaved', async () => {
-  await mount()
-  await click(zh['tab.eval'])
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
-  expect([...all('.dt-part select')[0]!.querySelectorAll('option')].map(option => option.textContent)).toEqual(['不同步', '另一个群', '团队群'])
-  await click(find('立即同步', '.dt-part button'))
-  expect(server.requests.some(request => request.path === 'policy-sync/feishu' && request.method === 'POST')).toBe(true)
-  await type(all('.dt-part select')[0] as HTMLSelectElement, 'oc_other')
-  const before = server.requests.length
-  await click(find('立即同步', '.dt-part button'))
-  expect(document.querySelector('.dt-toast')?.textContent).toBe(zh.syncNeedsSave)
-  expect(server.requests.slice(before).some(request => request.path.startsWith('policy-sync'))).toBe(false)
-})
-
 it('adds, copies, renames, disables and deletes rules in Policy without touching Eval', async () => {
   await mount()
   await click(zh['tab.eval'])
