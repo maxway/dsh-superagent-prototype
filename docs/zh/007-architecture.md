@@ -445,7 +445,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/draft.spec.ts`, `tests/prompt-config.spec.ts`, `tests/markdown.spec.ts`, `tests/marks.spec.ts` | 草稿状态、合并和保存栏的那行文字；按段落组织的提示词配置和行级 diff；Markdown 子集及其链接；视图所归类每种状态的标记 |
 | `tests/locales.spec.ts`, `tests/styles.spec.ts` | 两种语言的文案、样式表 |
 | `tests/class-docs.spec.ts` | `src` 中的每个类前面都有一个 JSDoc 块 |
-| `tests/docs.spec.ts` | 编号文档只链接到更早的文档，每个本地链接都可解析，没有文档带有合并冲突标记，每篇文档都有标题和表格行一致、链接可解析的中文翻译，并且本文档的表格列出每个模块和每个测试 |
+| `tests/docs.spec.ts` | 编号文档只链接到更早的文档，每个本地链接都可解析，没有文档带有合并冲突标记，每篇文档都有标题和表格行一致、代码块结构一致且本地链接可解析的中文译本，并且本文档的表格列出每个模块和每个测试 |
 
 `tests/fixtures/` 保存若干测试共用的内容：`host.ts`，模拟的 DeepSeek Harness 宿主；`panel-server.ts` 和 `panel.tsx`，伪造的管理 API 和围绕某个页面的面板；`deployment.ts`，一个已解析的部署；`git.ts`，测试启动的每个 git 的环境，其中不指名任何仓库；以及 `async.ts`。
 

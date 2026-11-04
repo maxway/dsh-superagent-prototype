@@ -32,6 +32,8 @@ Read the numbered documents in order; each builds only on the ones before it.
 - [007 Architecture](docs/007-architecture.md)
 - [008 Cookbook](docs/008-cookbook.md): adding a Source
 
+The runtime prompt and skill files also have Simplified Chinese reference copies under [`prompts/zh-CN/`](prompts/zh-CN/) and in [Feishu](skills/dsh-superagent-feishu/SKILL.zh-CN.md) and [GitHub](skills/dsh-superagent-github/SKILL.zh-CN.md). The English originals remain the only versions loaded at runtime.
+
 ## Development
 
 `pnpm check` runs the typecheck, the tests and the build.

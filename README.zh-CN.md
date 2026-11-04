@@ -32,6 +32,8 @@ dsh-superagent 是一个面向单个 GitHub 仓库的主动式编码智能体，
 - [007 架构](docs/zh/007-architecture.md)
 - [008 实操手册](docs/zh/008-cookbook.md)：新增一个来源
 
+运行时提示词和技能文件也有简体中文参考译本，分别位于 [`prompts/zh-CN/`](prompts/zh-CN/)、[飞书技能](skills/dsh-superagent-feishu/SKILL.zh-CN.md) 和 [GitHub 技能](skills/dsh-superagent-github/SKILL.zh-CN.md)。运行时仍只加载英文原件。
+
 ## 开发
 
 `pnpm check` 会运行类型检查、测试和构建。
