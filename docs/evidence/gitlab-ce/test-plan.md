@@ -156,3 +156,13 @@ GIT_CONFIG_GLOBAL="$TMP/gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
 - `gitlab/.../checks` 只到 pipeline，不到单个 job。
 - 404 note POST 会重试；目标被删除时可能持续重试。
 - 没有真实 CE 冒烟前，PR 保持 draft。
+
+## 13. 本次实测记录
+
+本次只完成 Issue 评论到回复的冒烟验证，不代表第 1–12 节的全量验收。
+
+- **隔离环境**：在功能分支 `e2d4e9d` 上使用独立测试 profile（端口 `52853`），启用 GitLab、关闭 GitHub 和 Feishu；原有 `3082` 服务及工作区保持不变。`glab` 版本为 `1.36.0`，测试账号具有项目 Maintainer 权限。
+- **接入检查**：账号与项目 API 检查通过；GitLab Source health 为 `ready`。credential helper 和隔离配置下的 `git ls-remote` 经手动验证成功。
+- **Issue 流程**：在测试 Issue `#1` 添加评论后，Source 收到 1 个 Trigger，策略创建 `accept` 决策，Ticket `cfb32838e0dfd5d1dc935a22d4b72696` 进入 `ready`。Superagent 发布确认 note `122026` 和摘要 note `122027`；摘要读回内容符合预期。
+- **执行与代码验证**：模型服务返回 HTTP `200`，worker checkout 干净，位于提交 `c5d1ebe`。`pnpm check` 通过：58 个测试文件、1194 个测试，以及类型检查和构建均通过。
+- **注意事项与范围**：冒烟脚本本身因调用 `glab auth git-credential` 时遗漏 `get` 参数而返回非零；此脚本结果不算通过，credential helper 和 `git ls-remote` 是单独验证通过的。MR、CI、服务重启/游标恢复及其他 CE 部署形态本次未测试。
