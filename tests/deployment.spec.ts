@@ -116,6 +116,9 @@ describe('setup', () => {
   it('uses the one enabled Git Source, and refuses none or an ambiguous pair', () => {
     const settings = (sources: Record<string, unknown>) => SettingsSchema.parse({ sources })
     expect(gitProvider(settings({}))).toBe('github')
+    expect(gitProvider(settings({}), kind => kind === 'gitlab')).toBe('gitlab')
+    expect(gitProvider(settings({ github: { enabled: false, config: {} } }), kind => kind === 'gitlab')).toBe('gitlab')
+    expect(() => gitProvider(settings({ gitlab: { enabled: false, config: {} } }), kind => kind === 'gitlab')).toThrow('No Git Source')
     expect(gitProvider(settings({ gitlab: { enabled: true, config: { repository: 'acme/widgets', cli: 'glab' } } }))).toBe('gitlab')
     expect(gitProvider(settings({ github: { enabled: false, config: {} }, gitlab: { enabled: true, config: {} } }))).toBe('gitlab')
     expect(() => gitProvider(settings({ github: { enabled: false, config: {} }, gitlab: { enabled: false, config: {} } }))).toThrow('No Git Source')

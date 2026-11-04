@@ -11,6 +11,8 @@ export interface SetupHost {
   readonly machine: Machine
   readonly lifetime: AbortSignal
   restart(): void
+  /** Whether a Source kind is installed; a plugin-only GitLab profile has no saved Source block yet. */
+  installed?(kind: string): boolean
 }
 
 const setupFields = (settings: Settings) =>
@@ -24,18 +26,24 @@ export const sourceSwitched = (before: Settings, after: Settings): boolean => so
  * The one Git Source a deployment uses: an enabled GitHub or GitLab Source. When both are enabled, the one whose
  * repository is configured wins; configuring both or neither is ambiguous and refused.
  */
-export function gitProvider(settings: Pick<Settings, 'sources'>): 'github' | 'gitlab' {
+export function gitProvider(settings: Pick<Settings, 'sources'>, installed: (kind: string) => boolean = () => true): 'github' | 'gitlab' {
   const gitlab = settings.sources.gitlab, github = settings.sources.github
   const gitlabOn = gitlab?.enabled === true, githubOn = github?.enabled === true
   const configured = (source: { config: Record<string, unknown> }): boolean => {
     const repository = source.config.repository
     return typeof repository === 'string' && repository !== ''
   }
+  if (!gitlabOn && !githubOn && !gitlab && !github) return installed('gitlab') && !installed('github') ? 'gitlab' : 'github'
   if (gitlabOn && githubOn) {
     if (configured(gitlab!) === configured(github!)) throw new SetupError('multipleGitSources')
     return configured(gitlab!) ? 'gitlab' : 'github'
   }
-  if (!gitlabOn && github?.enabled === false) throw new SetupError('gitSourceUnset')
+  if (!gitlabOn && github?.enabled === false) {
+    // A plugin-only GitLab installation has no saved GitLab block yet; otherwise GitHub was explicitly disabled.
+    if (!gitlab && installed('gitlab') && !installed('github')) return 'gitlab'
+    throw new SetupError('gitSourceUnset')
+  }
+  if (!gitlabOn && gitlab?.enabled === false && !github && !installed('github')) throw new SetupError('gitSourceUnset')
   return gitlabOn ? 'gitlab' : 'github'
 }
 
@@ -89,7 +97,7 @@ export class Setup {
       : resolveDeployment(machine, settings.sources.github?.config, this.probe())
     await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
     // An enabled Git Source must leave exactly one provider configured, so the save fails before the restart would.
-    if (block.startsWith('source:') && block !== 'source:feishu') gitProvider(settings)
+    if (block.startsWith('source:') && block !== 'source:feishu') gitProvider(settings, this.host.installed)
   }
   async blockCommands(blocked: readonly string[]): Promise<void> {
     if (this.resolved) await writeEnvironment(this.resolved, blocked)
@@ -105,7 +113,7 @@ export class Setup {
     const probe = this.probe()
     // One Git Source is active at a time: a Ticket always works against one remote.
     this.feishuProblem = undefined
-    const provider = gitProvider(settings)
+    const provider = gitProvider(settings, this.host.installed)
     const deployment = provider === 'gitlab'
       ? await resolveGitlabDeployment(machine, settings.sources.gitlab?.config, probe)
       : await resolveDeployment(machine, settings.sources.github?.config, probe)
