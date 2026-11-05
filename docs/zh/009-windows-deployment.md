@@ -102,7 +102,7 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 | 阶段 | 范围 | 验收 | Windows 主机 |
 | --- | --- | --- | --- |
 | 0 | 在目标机器上做概念验证 | DSH、面板和 pwsh 工具加载；测量 setup 的阻塞点；记录 go/no-go | 需要 |
-| 1 | 服务生命周期：Node 服务脚本和 `service/stop` | `pnpm check` 通过；Linux 上 start、status、stop、restart 行为不变；停止路由有单元测试；POSIX 行为无变化 | 不需要 |
+| 1 | 服务生命周期：Node 服务脚本和 `service/stop` | `pnpm check`；真实的 DSH 停止集成测试；状态 JSON、退出码、标记、日志和锁不变；Windows 启停冒烟推迟到阶段 0/5 | Linux 上不需要；Windows 冒烟需要主机 |
 | 2 | worker 命令层：平台运行器与探测、Win32 shim、`PATHEXT`、blocked commands、账号选择 | 单元测试覆盖生成的文件和参数处理；POSIX 行为不变 | 不需要 |
 | 3 | 准备命令、路由工具、提示词与技能 | 测试通过；Linux 保留 `sh` 路径；Windows 命令有文档 | 不需要 |
 | 4 | 安装与部署文档 | `pnpm check` 和文档测试通过；人工审查 Windows 路径 | 不需要 |
@@ -120,6 +120,13 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 - 状态：读取 PID 文件和管理 API；检测重复实例；保留四个退出码。
 - 停止与重启：调用一个新的本地回环管理路由 `POST service/stop`，它让插件在响应发出后通过 `ctx.appExit(0)` 退出；随后 DSH 现有的关闭路径会释放 profile。这是可移植的优雅停止：Windows 不能跨进程发送 `SIGINT`，而 `os.kill(pid, SIGINT)` 会直接终止进程。在 POSIX 上，脚本可以保留 `SIGINT` 作为后备。
 - 锁与日志：使用独占的控制锁，例如已经是依赖的 `proper-lockfile`，以及像今天一样清理日志。
+
+实现前的自 review 发现：
+
+- **停止时序。** DSH 启动器在 `appExit` 或 `SIGINT` 之后五秒强制退出（profile boot 中的 `PROCESS_SHUTDOWN_TIMEOUT_MS = 5_000`），而执行器 drain 的上限是十秒（`SHUTDOWN_STOP_MS = 10_000`）。如果路由立即调用 `ctx.appExit(0)`，会切断正在回合中的 worker，也无法支撑 [006 部署](006-deployment.md)里“五分钟”的说法。路由应先响应，再通过 `Runtime.stop()` drain，最后调用 `ctx.appExit(0)`；文档中的上限是 drain 加上启动器宽限。如果五分钟是产品要求，就提高 drain 上限或改 DSH 上游，而后者不在范围内。
+- **Windows 启动。** Windows 上的 `dsh` 是 npm 的 `.cmd`，直接 `spawn('dsh')` 会失败。用 `where dsh` 解析，经 `cmd.exe /d /s /c` 以 detached 方式启动，重定向日志，并用 `Get-CimInstance` 记录或发现 Node PID；没有 `ps` 或 `tmux`。增加 Windows 启停冒烟，或推迟到阶段 0/5。
+- **路由验证与后备。** 当前单元测试只检查宿主方法被调用；集成测试必须启动一个 Linux 上的 DSH profile，POST `service/stop`，看到响应并观察到进程退出。如果没有 `appExit`，路由应返回 500，而不是返回 `stopping: true` 后挂起。
+- **兼容与测试预算。** 用 Node 替换 250 行 Python 脚本及其 300 行测试，需要覆盖状态 JSON、退出码、标记、日志和锁的黄金测试；WP1 应预算三到四个人日，而不是两到三个。
 
 备选方案是 PowerShell 孪生脚本加同一个 `service/stop` 路由，例如通过一个 Windows 服务包装器；写起来更快，但会留下两套服务实现需要维护。`tests/service-script.spec.ts` 测试套件会围绕注入的进程与 HTTP 假实现重写，使它在两个平台上都能运行。
 

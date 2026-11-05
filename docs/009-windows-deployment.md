@@ -100,7 +100,7 @@ The work packages are the technical breakdown; the stages are the execution and 
 | Stage | Scope | Acceptance | Windows host |
 | --- | --- | --- | --- |
 | 0 | Proof of concept on the target machine | DSH, the panel and the pwsh tool load; setup's blockers are measured; go or no-go is recorded | Required |
-| 1 | Service lifecycle: Node service script and `service/stop` | `pnpm check` passes; start, status, stop and restart behave as before on Linux; the stop route is unit-tested; no POSIX change | No |
+| 1 | Service lifecycle: Node service script and `service/stop` | `pnpm check`; a real DSH stop test through the route; status JSON, exit codes, markers, logs and locks unchanged; Windows start/stop smoke deferred to stage 0/5 | No on Linux; Windows smoke needs a host |
 | 2 | Worker command layer: platform runner and probes, Win32 shims, `PATHEXT`, blocked commands, account selection | Unit tests cover generated files and argument handling; POSIX behavior is unchanged | No |
 | 3 | Prepare, router tools, prompts and skills | Tests pass; Linux keeps the `sh` path; Windows commands are documented | No |
 | 4 | Setup and deployment documentation | `pnpm check` and the documentation tests pass; a person reviews the Windows path | No |
@@ -118,6 +118,13 @@ Replace the Python service script with one cross-platform Node script (recommend
 - Status: read the PID file and the management API; detect duplicates; keep the four exit codes.
 - Stop and restart: call a new loopback management route, `POST service/stop`, which asks the plugin to exit through `ctx.appExit(0)` after the response is sent; the current DSH shutdown path then disposes the profile. This is the portable graceful stop: Windows cannot deliver `SIGINT` across processes, and `os.kill(pid, SIGINT)` would terminate the process instead. On POSIX the script may keep `SIGINT` as a fallback.
 - Lock and logs: an exclusive control lock, for example `proper-lockfile`, already a dependency, and log pruning as today.
+
+Self-review findings before implementation:
+
+- **Stop timing.** DSH's launcher force-exits five seconds after `appExit` or `SIGINT` (`PROCESS_SHUTDOWN_TIMEOUT_MS = 5_000` in the profile boot), while the Executor drain is bounded at ten seconds (`SHUTDOWN_STOP_MS = 10_000`). An immediate `ctx.appExit(0)` route would cut a mid-turn worker off and cannot support the "five minutes" claim in [006 Deployment](006-deployment.md). The route should answer, drain through `Runtime.stop()`, then call `ctx.appExit(0)`; the documented bound is the drain plus the launcher grace. If five minutes is a product requirement, raise the drain bound or change DSH upstream, which is out of scope.
+- **Windows start.** `dsh` is an npm `.cmd` on Windows; a plain `spawn('dsh')` fails. Resolve it with `where dsh`, launch through `cmd.exe /d /s /c` detached, redirect the log, and record or discover the Node PID with `Get-CimInstance`; there is no `ps` or `tmux`. Add a Windows start/stop smoke or defer it to stage 0/5.
+- **Route verification and fallback.** The current unit test only checks that the host method is called; an integration test must start a DSH profile on Linux, POST `service/stop`, see the response and observe the exit. If `appExit` is absent, the route should refuse with 500 instead of returning `stopping: true` and hanging.
+- **Compatibility and test budget.** Replacing the 250-line Python script and its 300-line test suite with Node needs golden tests for the status JSON, exit codes, markers, logs and locks; budget three to four person-days for WP1, not two to three.
 
 The fallback is a PowerShell twin plus the same `service/stop` route, for example through a Windows service wrapper; it is faster to write but leaves two service implementations to maintain. The `tests/service-script.spec.ts` suite is rewritten around injected process and HTTP fakes so it runs on both platforms.
 
