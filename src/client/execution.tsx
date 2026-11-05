@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 import { TICKET_FILTERS, type TicketFilter } from '../app/api.ts'
 import { LIMITS } from '../limits.ts'
 import { usePoll, type SettingsView, type SourceView, type StateView } from './api.ts'
-import { DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
+import { DisclosureRow, Icon, InfoTip, Input, Pill, Switch } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
@@ -51,6 +51,8 @@ export function ExecutionStatus({ filter: current, state, reload }: {
 }
 
 const firstSentence = (text: string): string => /^[^。；;.]*(?:[。；;]|\.(?=\s|$))?/.exec(text)?.[0] ?? text
+/** Common time zones offered as datalist suggestions for the off-peak window; any IANA name is accepted. */
+const TIME_ZONES = ['UTC', 'Asia/Shanghai', 'Asia/Singapore', 'Asia/Tokyo', 'Europe/London', 'America/New_York', 'America/Los_Angeles']
 function EnvironmentVariables({ groups, sources,
   onPick }: { groups: SettingsView['environment']['variables']; sources: SourceView[]; onPick: (key: string) => void }) {
   const { t } = usePanel()
@@ -82,6 +84,7 @@ export function ExecutionSettings() {
     value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean) }))
   const value = draft.value
   const edit = (next: Partial<typeof value>) => draft.edit({ ...value, ...next })
+  const editOffPeak = (next: Partial<typeof value.offPeak>) => edit({ offPeak: { ...value.offPeak, ...next } })
   const prepare = useRef<HTMLTextAreaElement>(null)
   const insert = (key: string) => {
     const field = prepare.current
@@ -100,6 +103,25 @@ export function ExecutionSettings() {
             <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} required value={value.maxWorkers}
               onChange={event => edit({ maxWorkers: event.target.value })} />
           </Field>
+          <Section title={t('offPeak')} hint={t('offPeakHint')}>
+            <div className="dt-switch-row">
+              <div className="dt-field-head">{t('offPeakEnabled')}<InfoTip text={t('offPeakEnabledHint')} /></div>
+              <Switch checked={value.offPeak.enabled} onChange={enabled => editOffPeak({ enabled })} label={t('offPeakEnabled')} />
+            </div>
+            <div className="dt-grid3">
+              <Field label={t('offPeakStart')} hint={t('offPeakStartHint')}>
+                <Input type="time" required value={value.offPeak.start} onChange={event => editOffPeak({ start: event.target.value })} />
+              </Field>
+              <Field label={t('offPeakEnd')} hint={t('offPeakEndHint')}>
+                <Input type="time" required value={value.offPeak.end} onChange={event => editOffPeak({ end: event.target.value })} />
+              </Field>
+              <Field label={t('offPeakTimezone')} hint={t('offPeakTimezoneHint')}>
+                <Input className="dt-mono" list="dt-offpeak-timezones" spellCheck={false} required value={value.offPeak.timezone}
+                  onChange={event => editOffPeak({ timezone: event.target.value })} />
+              </Field>
+            </div>
+            <datalist id="dt-offpeak-timezones">{TIME_ZONES.map(zone => <option key={zone} value={zone} />)}</datalist>
+          </Section>
         </div>
         <div className="dt-form dt-block">
           <h2 className="dt-block-title">{t('term.environment')}<InfoTip text={t('environmentIntro')} /></h2>

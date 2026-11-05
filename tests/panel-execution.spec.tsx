@@ -139,6 +139,24 @@ it('keeps what a person types in the Execution settings, converting it once on s
   expect(server.settings.executor).toMatchObject({ blockedCommands: ['gh-personal', 'gh-other'], directory: '/srv/my work', maxWorkers: 2 })
 })
 
+it('edits and saves the off-peak window with the Executor block', async () => {
+  await mount()
+  await click(tab(zh['tab.settings']))
+  await click(find(zh['settingsGroup.execution'], '.dt-settings-link'))
+  expect(field<HTMLInputElement>(zh.offPeakStart).value).toBe('22:00')
+  expect(field<HTMLInputElement>(zh.offPeakEnd).value).toBe('08:00')
+  expect(field<HTMLInputElement>(zh.offPeakTimezone).value).toBe('Asia/Shanghai')
+  await click(find(zh.offPeakEnabled))
+  expect(find(zh.offPeakEnabled).getAttribute('aria-checked')).toBe('true')
+  await type(field<HTMLInputElement>(zh.offPeakStart), '21:30')
+  await type(field<HTMLInputElement>(zh.offPeakEnd), '07:30')
+  await type(field<HTMLInputElement>(zh.offPeakTimezone), 'UTC')
+  await click(zh.save)
+  expect(server.requests.find(request => request.path === 'settings/executor')?.body).toMatchObject({ value: { offPeak: {
+    enabled: true, start: '21:30', end: '07:30', timezone: 'UTC' } } })
+  expect(server.settings.executor.offPeak).toEqual({ enabled: true, start: '21:30', end: '07:30', timezone: 'UTC' })
+})
+
 it('says why an Input was not delivered on its Ticket\'s page, in either language', async () => {
   const t1 = server.ticketDetails.t1!
   server.ticketDetails.t1 = { ...t1, stage: 'person', action: 'delivery', deliveryError: 'feishu: message recalled' }

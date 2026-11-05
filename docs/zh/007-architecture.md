@@ -296,6 +296,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/deployment.ts` | 插件的 `Config` 和 `Machine`；`resolveDeployment` 和 `resolveFeishuBot` 从来源设置中读取仓库和账号，每个 CLI 都按执行器 shell 运行它的方式运行；`SETUP_FIELDS` 列出安装配置读取的来源字段。代码不指名任何个人、账号或组织 |
 | `src/setup.ts` | 安装配置问题：`SetupError`，带有代码、修复它的位置，以及日志、主 Session 和面板共用的英文文本 |
 | `src/policy.ts` | 策略：按块划分的设置 schema、策略版本、准入和授权重新校验 |
+| `src/offpeak.ts` | 谷价时段：窗口的 schema、时区校验，以及执行器用来推迟启动的 `insideOffPeak` 和 `offPeakWait` |
 | `src/admission.ts` | 准入表的取值、每个单元格的选项和默认值，与面板共用 |
 | `src/limits.ts` | 人设定的取值的限制，设置 schema 会校验它们，面板的字段也会提供它们 |
 | `src/kv.ts` | `KV`：每一族 `kv` 记录及其键、值类型和拥有者，以及 Store 和 `SourceContext.state` 接受的 `Key` 与 `Family` 类型 |
@@ -421,7 +422,9 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/assessment.spec.ts` | MasterAssessor 为每个评估保留什么，以及何时放手 |
 | `tests/background.spec.ts` | 等待 worker 的 shell 作业和子智能体：唤醒它的结束，以及宿主机停止 |
 | `tests/bundle-patch.spec.ts` | 打包产物的补丁，按 DeepSeek Harness 读取它的方式读取，以及它定义的执行器 Session 智能体预设 |
-| `tests/effects.spec.ts` | 副作用队列：合并、限制、带退避的重试、健康和关停 |
+| `tests/effects.spec.ts` | 副作用队列：合并、限制、带退避的重试、处理者自定的推迟延迟、健康和关停 |
+| `tests/offpeak.spec.ts` | 谷价时段：默认值、日间和跨午夜时段、时区，以及 schema 的拒绝 |
+| `tests/offpeak-runtime.spec.ts` | 谷价窗口之外的工单被持有、窗口开始时启动，以及窗口关闭或工单没有标记时立即启动 |
 | `tests/passes.spec.ts` | Passes：一次一轮，轮次进行期间要求的会在其之后合并为一轮运行，以及失败的轮次所报告的运行时健康 |
 | `tests/outbox.spec.ts` | 运行中 Runtime 上的 Outbox：处理暂停或其来源未安装时，消息会等待 |
 | `tests/cache.spec.ts` | `TextCache` |

@@ -134,6 +134,23 @@ it('lets a handler defer an effect without a failure, until a later dispatch aft
   expect(effects.pending('launch')).toBe(false)
 })
 
+it('lets a handler name the delay of a deferred effect, and the deferred attempt is not a failure', async () => {
+  let waiting = true
+  const run = vi.fn(async () => { if (waiting) throw new Later('Waiting for the off-peak window', 120_000) })
+  effects.handle('launch', run, { retry: [5000, 60_000] })
+  effects.enqueue('launch', 'a', { ticketId: 't', assignmentId: 'a' })
+  await effects.idle()
+  expect(health.launch).toMatchObject({ state: 'ready', detail: '1 waiting since 2026-09-09T00:00:00.000Z' })
+  // The first retry delay is 5 s, but the handler asked for 120 s, so nothing runs in between.
+  clock += 5000; await effects.idle()
+  expect(run).toHaveBeenCalledOnce()
+  waiting = false
+  clock += 115_000; await effects.idle()
+  expect(run).toHaveBeenCalledTimes(2)
+  expect(health.launch).toMatchObject({ state: 'ready' })
+  expect(effects.pending('launch')).toBe(false)
+})
+
 it('runs an ordered kind one at a time in the order queued, and holds the later effects while an earlier one fails', async () => {
   const failing = new Set(['first'])
   const run = vi.fn(async (_payload: { text: string }, key: string) => { if (failing.has(key)) throw new Error('offline') })
