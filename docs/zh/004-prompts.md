@@ -10,7 +10,7 @@
 
 | 段落 | 内容 |
 | --- | --- |
-| Communication | 何时给人发消息、消息怎么写、每条 GitHub 消息开头的那一行（默认是 `This is by an automated agent, not a human`）、如何处理评审，以及哪些普通账号是评审机器人 |
+| Communication | 何时给人发消息、消息怎么写、消息使用哪种语言、每条 GitHub 消息开头的那一行（默认是 `This is by an automated agent, not a human`）、如何处理评审，以及哪些普通账号是评审机器人 |
 | Ticket scope | 工单何时继续推进，以及何时带着草稿停止 |
 | Delivery requirements | pull request 中的证据、带行数阈值的自动合并条件，以及提交作者；没有指定时，执行器以智能体账号的 no-reply 地址提交 |
 | Team skills | 智能体在需要时加载的知识，例如一个 `identities` 技能，说明哪个飞书用户对应哪个 GitHub 账号 |
