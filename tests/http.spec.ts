@@ -52,6 +52,13 @@ it('answers each kind of failure with its own status', async () => {
   expect(await call('POST', 'executor/pause', 'not json')).toEqual({ status: 400, body: { error: 'The request body is not JSON' } })
 })
 
+it('asks the host to shut down through the management API', async () => {
+  let calls = 0
+  const call = serve({ requestShutdown: () => { calls += 1 } })
+  expect(await call('POST', 'service/stop')).toEqual({ status: 200, body: { stopping: true } })
+  expect(calls).toBe(1)
+})
+
 it('decodes path parameters and parses each route\'s query', async () => {
   const seen: unknown[] = []
   const call = serve({
