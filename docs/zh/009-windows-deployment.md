@@ -110,7 +110,7 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 
 ### WP0：概念验证
 
-在一台干净的 Windows 11 或 Windows Server 机器上，安装 Node 22.19+ 或 24、pnpm、git、PowerShell 7，以及 [006 部署](006-deployment.md)中固定的 DSH 版本。创建 `superagent` profile，用 `link:` 添加 bundle，打开面板，确认 Web profile、`pwsh` 工具和隔离设置都能加载。然后故意复现三个阻塞点：setup 的 `env` 探测、用 `.cmd` 包装的 `execFile`/`spawn` 调用，以及 `sh -c` 下的准备命令。三个问题都有实测答案时结束；如果 DSH 本身都跑不起来就停止，因为那会改变整个估算。
+在一台干净的 Windows 11 或 Windows Server 机器上，安装 Node 22.19+ 或 24、pnpm、git、PowerShell 7，以及 [006 部署](006-deployment.md)中固定的 DSH 版本。创建 `superagent` profile，用 `link:` 添加 bundle，打开面板，确认 Web profile、`pwsh` 工具和隔离设置都能加载。然后故意复现三个阻塞点：setup 的 `env` 探测、用 `.cmd` 包装的 `execFile`/`spawn` 调用，以及 `sh -c` 下的准备命令。三个问题都有实测答案时结束；如果 DSH 本身都跑不起来就停止，因为那会改变整个估算。目标机器是运营者的本机 Windows；agent 进程跑在 Linux 上，无法直接操作它，因此这些命令由运营者执行，或提供远程通道。
 
 ### WP1：服务生命周期
 
@@ -238,7 +238,7 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 - 飞书是否进入首个版本，还是作为后续工作。
 - 账号配置是改为 `configDir` 设置，还是在 POSIX 上保留包装脚本、在 Windows 上用环境变量。
 - 是否有可用的 Windows CI runner；没有的话，把 Windows 标为实验性。
-- 阶段 0 和端到端阶段使用哪台 Windows 机器，以及项目工具链的前置条件是否已经装好。
+- 运营者能否为 POC 提供本机 Windows 的远程访问，以及项目工具链的前置条件是否已经装好。
 
 ## 不在范围内
 
