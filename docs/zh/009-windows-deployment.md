@@ -123,7 +123,7 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 
 实现前的自 review 发现：
 
-- **停止时序。** DSH 启动器在 `appExit` 或 `SIGINT` 之后五秒强制退出（profile boot 中的 `PROCESS_SHUTDOWN_TIMEOUT_MS = 5_000`），而执行器 drain 的上限是十秒（`SHUTDOWN_STOP_MS = 10_000`）。如果路由立即调用 `ctx.appExit(0)`，会切断正在回合中的 worker，也无法支撑 [006 部署](006-deployment.md)里“五分钟”的说法。路由应先响应，再通过 `Runtime.stop()` drain，最后调用 `ctx.appExit(0)`；文档中的上限是 drain 加上启动器宽限。如果五分钟是产品要求，就提高 drain 上限或改 DSH 上游，而后者不在范围内。
+- **停止时序。** DSH 启动器在 `appExit` 或 `SIGINT` 之后五秒强制退出（profile boot 中的 `PROCESS_SHUTDOWN_TIMEOUT_MS = 5_000`），而执行器 drain 的上限是十秒（`SHUTDOWN_STOP_MS = 10_000`）。如果路由立即调用 `ctx.appExit(0)`，会切断正在回合中的 worker，也无法支撑 [006 部署](006-deployment.md)里“五分钟”的说法。路由应先响应，再通过 `Runtime.stop()` drain，最后调用 `ctx.appExit(0)`；文档中的上限是 drain 加上启动器宽限。**决定：方案 A。** 保留十秒 drain，接受约十五秒的停止；让长回合自然结束的更久 drain 是另一个特性，不属于本次移植。
 - **Windows 启动。** Windows 上的 `dsh` 是 npm 的 `.cmd`，直接 `spawn('dsh')` 会失败。用 `where dsh` 解析，经 `cmd.exe /d /s /c` 以 detached 方式启动，重定向日志，并用 `Get-CimInstance` 记录或发现 Node PID；没有 `ps` 或 `tmux`。增加 Windows 启停冒烟，或推迟到阶段 0/5。
 - **路由验证与后备。** 当前单元测试只检查宿主方法被调用；集成测试必须启动一个 Linux 上的 DSH profile，POST `service/stop`，看到响应并观察到进程退出。如果没有 `appExit`，路由应返回 500，而不是返回 `stopping: true` 后挂起。
 - **兼容与测试预算。** 用 Node 替换 250 行 Python 脚本及其 300 行测试，需要覆盖状态 JSON、退出码、标记、日志和锁的黄金测试；WP1 应预算三到四个人日，而不是两到三个。
