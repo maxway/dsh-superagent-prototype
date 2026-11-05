@@ -1,15 +1,15 @@
 # 009 Windows deployment
 
-This document answers two questions: whether dsh-superagent should run on a native Windows host, and what that would take. For this project the answer is yes: the workers must run Unity batchmode, build the Windows exe and run smoke tests in their ticket workspaces, and the Windows-only DSH skills run there too. The plan below is the path, not yet a supported deployment; the analysis also records when the answer would be no, so the decision stays readable if the project changes.
+This document answers two questions: whether dsh-superagent should run on a native Windows host, and what that would take. For this project the host must be Windows because its workers run a Windows-only toolchain; this plan covers only the dsh-superagent Windows deployment. The project's own toolchain work — Unity batchmode builds, exe packaging, smoke tests, project-specific skills and CI job definitions — is outside this scope and stays with the project.
 
 The question is about the host, not about who can use the agent. Every user opens the panel in a browser and mentions the agent in the Source conversation, so a Windows desktop never needs a local copy of the service.
 
 ## Summary
 
-- **Required for this project.** The workers must run Unity batchmode, build the Windows exe and run smoke tests inside their ticket workspaces, and their DSH skills call Windows-only tools. That host must be Windows; WSL2 cannot run the Windows Editor against a Linux worktree, and a CI-only loop cannot give the worker the local build and smoke-test cycle it needs.
-- **Estimate:** the Unity build and the exe smoke test add WP8 and WP9. A usable internal build takes about 13-21 person-days, or 3-4 weeks for one developer, without Feishu and without a Windows CI runner; full parity, with Feishu and Windows CI, takes about 16-26 person-days, or 3-5 weeks; add 20-30% for the chosen scope, which puts full parity at 19-34 person-days, or 4-6.5 weeks.
-- **A Windows CI runner still helps:** it can run the heavy full builds and test suites on each merge request, but it does not replace the local batchmode and exe smoke loop in the ticket directory.
-- **Recommendation:** port; start with a 2-3 day proof of concept that includes one real batchmode build and one exe smoke test on the target Windows machine, then follow WP0-WP9 in order. Confirm the Unity version, the Windows build target, the license and the smoke-test definition before committing the full schedule.
+- **Required for this project's host.** The workers must run the project's Windows-only toolchain, so the agent host must be Windows. This plan ports the deployment only; the project's own build and smoke work is out of scope.
+- **Estimate:** a usable internal build takes about 9-13 person-days: 2-2.5 weeks for one developer, including the proof of concept and end-to-end verification, without Feishu and without a Windows CI runner.
+- **Full parity** — Feishu, Windows CI, bilingual setup documentation and the hardening that keeps both platforms tested — takes about 12-18 person-days, or 3-4 weeks for one developer.
+- **Recommendation:** port the deployment; start with the 1-2 day proof of concept, then follow the staged plan below. The project's toolchain work is separate.
 
 ## What deploying on Windows means
 
@@ -62,19 +62,6 @@ The bundle already switches its two agent presets between bash and pwsh by platf
 | WSL2 and every Linux host are forbidden, and the agent must run on a given Windows machine | Required: there is no other host | Port, with the plan below |
 | Windows developers only need to open the panel or mention the bot | None: the panel is a browser application and Feishu is remote | Keep the host on Linux |
 | A prototype demo on a Windows laptop | Low: WSL2 or a small Linux VM is enough | Do not port for the demo |
-| The repository is a Unity project whose agent must run batchmode, build the exe and smoke-test it locally | Required: this project's case; the host needs Windows, Unity, the build toolchain and a license | Port, with WP8 and WP9; this is the selected path |
-| The repository is a Unity project and the Unity work can run only in CI while the agent stays on Linux | Lower cost, but it does not provide the local build and smoke loop this project needs | Keep as a complementary CI runner, not a replacement |
-
-### Unity projects
-
-A Unity project makes the host question concrete. Unity ships an Editor for Windows, macOS and Linux, but this project needs the Windows Editor and the Windows build target: the workers run Unity batchmode to compile, build the Windows player and execute a smoke test. The rest of this section records the boundary and the options that were considered.
-
-- **Local batchmode is the workflow.** The worker needs the Editor, the project's Windows build support, a license and the build scripts in its ticket directory; the exe it produces is the smoke test's subject. A CI runner cannot replace that loop, although it can also build and test every merge request.
-- **WSL2 is not a substitute.** The Windows Editor must open a Windows path, so a WSL2 checkout under `/mnt/c` would be slow, would hit file-lock and line-ending problems, and would still need Unity and the license on the Windows side. The host is Windows.
-- **A Windows CI runner is still worth having.** It can run the heavy full builds and test suites on each merge request while the agent does the local iteration; both use the same Unity version, license and build scripts.
-- **Unity is heavy.** Each fresh worktree imports its own `Library`; builds need the license, the Windows build support and often the Visual Studio/IL2CPP toolchain, disk space and `git-lfs`, and care with `.meta` files and YAML scenes and prefabs. A warm `Library` or Unity Accelerator reduces the import cost; the smoke test needs a defined pass criterion, a display or `-nographics` plan, and captured player logs.
-
-Confirm the Unity version, the Windows build target (for example Win64 with IL2CPP or Mono), the installed modules and license, the smoke-test definition and the expected build time before committing the schedule.
 
 ### Cost of support
 
@@ -82,7 +69,7 @@ A port is not a one-time cost. After it, every change must be checked on two pla
 
 ### Verdict
 
-**Necessary for this deployment.** The workers must run Unity batchmode, build the Windows exe and smoke-test it in their own ticket directories, and their skills execute Windows-only commands; the agent host therefore has to be Windows. This is the trigger the earlier analysis named, and the plan below applies. Start with the proof of concept, which includes one real build and smoke test, because Unity's license, import and build time are the parts that can move the schedule.
+**Necessary for this project's host, with a focused scope.** The workers must run the project's Windows-only toolchain, so the host cannot stay on Linux or WSL2. This plan covers the dsh-superagent deployment: service lifecycle, CLI environment, prepare, tool names, documentation and tests. It does not implement the project's Unity build, exe packaging, smoke tests or project-specific skills; those stay with the project and are only a prerequisite for using the agent. Run the 1-2 day proof of concept first; it measures the three uncertain areas (CLI invocation, graceful stop, prepare command) before the rest of the work is committed.
 
 ## Adaptation plan
 
@@ -97,7 +84,7 @@ A port is not a one-time cost. After it, every change must be checked on two pla
 
 | WP | Scope | Person-days | Depends on |
 | --- | --- | --- | --- |
-| WP0 | Proof of concept on a real Windows machine, including a Unity build and exe smoke test | 2-3 | — |
+| WP0 | Proof of concept on a real Windows machine | 1-2 | — |
 | WP1 | Service lifecycle: start, status, stop, restart, logs, lock | 2-3 | WP0 |
 | WP2 | CLI and worker environment: probes, shims, wrappers, blocked commands | 2-3 | WP0 |
 | WP3 | Prepare command, router tools, prompts and skills | 1-1.5 | WP2 |
@@ -105,26 +92,23 @@ A port is not a one-time cost. After it, every change must be checked on two pla
 | WP5 | Windows tests and CI | 2-3 | WP1-4 |
 | WP6 | Feishu on Windows, optional | 1-2 | WP2 |
 | WP7 | End-to-end verification and hardening | 1.5-2 | WP1-5 |
-| WP8 | Unity build integration on Windows | 2-4 | WP2, WP7 |
-| WP9 | Windows exe smoke-test harness | 1-2 | WP8 |
 
 ### Staged execution
 
-The work packages are the technical breakdown; the stages are the execution and acceptance order. Each stage ends with a reviewable change and a check, and the next stage starts only when the previous acceptance holds. Stages 0, 4 and 6 need a Windows machine with Unity; stages 1, 2, 3 and 5 can be built and tested on Linux with a platform argument.
+The work packages are the technical breakdown; the stages are the execution and acceptance order. Each stage ends with a reviewable change and a check, and the next stage starts only when the previous acceptance holds. Stage 0 and stage 5 need a Windows machine; stages 1-4 can be built and tested on Linux with a platform argument.
 
 | Stage | Scope | Acceptance | Windows host |
 | --- | --- | --- | --- |
-| 0 | Proof of concept on the target machine | DSH, the panel and the pwsh tool load; setup's blockers are measured; one Unity batchmode build and one exe smoke test are timed; go or no-go is recorded | Required |
-| 1 | Service lifecycle: Node service script, `service/stop`, logs, lock and tests | `pnpm check` passes; `start`, `status`, `stop` and `restart` behave as before on Linux; the stop route is unit-tested; no POSIX change | No; Windows smoke follows |
-| 2 | Worker command layer: platform command runner and probes, Win32 shims, `PATHEXT`, blocked commands, account selection | Unit tests cover the generated files and argument handling; POSIX behavior is unchanged; the generated `.cmd` files are reviewed | No |
-| 3 | Prepare, router tools, prompts and skills: `pwsh` prepare, the router allow list, the wait guard, shell-neutral wording | Tests pass; Linux keeps the `sh` path; the Windows commands are documented | No |
-| 4 | Unity build and exe smoke scripts: batchmode build, output path, smoke harness, cache and cleanup | On the stage 0 machine, a real build produces the exe and the smoke script passes and fails correctly | Required |
-| 5 | Setup and deployment documentation: Windows prerequisites, service, credentials, prepare and troubleshooting, both languages | `pnpm check` and the documentation tests pass; a person reviews the Windows path | No |
-| 6 | Windows CI and end-to-end verification, Feishu optional | A Windows runner runs `pnpm check`; a real ticket completes setup, build, smoke test, commit, push and merge request; Linux still passes | Required |
+| 0 | Proof of concept on the target machine | DSH, the panel and the pwsh tool load; setup's blockers are measured; go or no-go is recorded | Required |
+| 1 | Service lifecycle: Node service script and `service/stop` | `pnpm check` passes; start, status, stop and restart behave as before on Linux; the stop route is unit-tested; no POSIX change | No |
+| 2 | Worker command layer: platform runner and probes, Win32 shims, `PATHEXT`, blocked commands, account selection | Unit tests cover generated files and argument handling; POSIX behavior is unchanged | No |
+| 3 | Prepare, router tools, prompts and skills | Tests pass; Linux keeps the `sh` path; Windows commands are documented | No |
+| 4 | Setup and deployment documentation | `pnpm check` and the documentation tests pass; a person reviews the Windows path | No |
+| 5 | Windows CI and end-to-end verification, Feishu optional | A Windows runner runs `pnpm check`; a real ticket completes setup, prepare, push and merge request; Linux still passes | Required |
 
 ### WP0: proof of concept
 
-On a clean Windows 11 or Windows Server machine, install Node 22.19+ or 24, pnpm, git, PowerShell 7, the Unity Editor version with the Windows build support and the Visual Studio/IL2CPP toolchain if the target uses it, and the DSH version pinned in [006 Deployment](006-deployment.md). Create the `superagent` profile, add the bundle with `link:`, open the panel and confirm that the Web profile, the `pwsh` tool and the isolation settings load. Then measure the four uncertain areas: setup's `env` probe, an `execFile`/`spawn` call with a `.cmd` wrapper, the prepare command under `sh -c`, and a real Unity batchmode build plus an exe smoke test from a worktree. Exit when each has a measured answer and a rough duration; stop if DSH or Unity cannot run, because either would change the whole estimate.
+On a clean Windows 11 or Windows Server machine, install Node 22.19+ or 24, pnpm, git, PowerShell 7 and the DSH version pinned in [006 Deployment](006-deployment.md). Create the `superagent` profile, add the bundle with `link:`, open the panel and confirm that the Web profile, the `pwsh` tool and the isolation settings load. Then reproduce the three blockers on purpose: setup's `env` probe, an `execFile`/`spawn` call with a `.cmd` wrapper, and the prepare command under `sh -c`. Exit when the three have a measured answer; stop if DSH itself fails to run, because that would change the whole estimate.
 
 ### WP1: service lifecycle
 
@@ -180,34 +164,12 @@ Alternative considered: keep the wrapper model and launch `.cmd` wrappers throug
 
 A clean Windows machine, a real repository and a test ticket: setup passes; a mention creates a Ticket; the prepare command creates a worktree; the worker uses `pwsh`; the agent edits files, commits and pushes; the merge request is opened; the panel shows the result; `start`, `status`, `stop` and `restart` behave as on Linux; `stop` is graceful; logs are written. Re-run the same ticket on Linux to confirm no regression. Check the Windows-specific traps: PATH length, spaces and parentheses in paths, line endings under the isolated git configuration, executable bits on new scripts, symlinks if the repository uses them, and the 260-character path limit.
 
-### WP8: Unity build integration
-
-Required for this project. On the Windows host:
-
-- Install the exact Unity Editor version and modules the project uses, including the Windows build support and, if the target uses it, the Visual Studio/IL2CPP toolchain and the Windows SDK; activate the license for batch mode. The license is an operator step and can be the longest lead time.
-- Add the project's batch-mode commands to the repository's `AGENTS.md` so every worker runs the same build and tests: `Unity.exe -batchmode -nographics -quit -projectPath <worktree> -buildTarget Win64 -logFile <log> -executeMethod <BuildMethod>`, and the Unity Test Framework form with `-runTests`, `-testPlatform` and `-testResults`.
-- Build the player to a known output path outside the repository so it is never committed, and keep the build log with the ticket; the exe is the smoke test's input.
-- Treat a build as long-running: run it in the background, wait through `job_output`, and tell workers in the prompt that the foreground shell moves commands to a job after five seconds.
-- Plan the cache: a fresh worktree imports its own `Library`. Use a warmed template, Unity Accelerator, or a dedicated build cache; do not share one live `Library` between concurrent tickets.
-- Cover the Windows operational details: `git-lfs`, long paths, antivirus exclusions for the worktrees, Unity and the fresh exe, the 260-character path limit, file locks, and Unity YAML merges (`.meta`, scenes, prefabs).
-- Verify with the project's real build target and one EditMode or PlayMode test run; record the exact commands in the repository so the agent does not rediscover them.
-
-### WP9: Windows exe smoke test
-
-The smoke test is a project-specific definition, not a generic check. Build it with the project team:
-
-- Agree on the pass criterion: the exe starts and exits with a chosen code, reaches a known scene or log line, or passes a scripted input sequence; capture the player log and any screenshot or artifact.
-- Give the exe a command-line mode or test harness it can run unattended; prefer one that also works with `-nographics` or a virtual display. If the game needs a GPU or a visible window, run it on a machine that has one and record that in the prerequisites.
-- Wrap launch, timeout, log capture and cleanup in one script the worker can run from the ticket directory; return a nonzero exit code and the relevant log tail on failure.
-- Keep the exe and logs out of the repository; clean up old builds and stop antivirus from quarantining the fresh exe.
-- Verify the script with a deliberately failing build or smoke test, so a red result is distinguishable from a harness error.
-
 ### Alternatives
 
 - Keep the Python service script and add a PowerShell twin: lower risk for the existing POSIX path, two implementations to keep in sync.
 - Use `.cmd` wrappers plus `cmd.exe`: the smallest settings change, but argument quoting is unsafe for JSON and message text.
 - Run the worker in Git Bash on Windows: removes some shell differences but still needs the service script, adds an MSYS2 dependency the bundle does not otherwise use, and leaves the worker on the wrong shell unless the Windows presets are changed.
-- Do nothing: keep the Linux or WSL2 host; this is not viable for this project because the workers need local Unity batchmode and the exe smoke test.
+- Do nothing: keep the Linux or WSL2 host; this is not viable for this project because the host must run the project's Windows-only toolchain.
 
 ## Estimate
 
@@ -217,21 +179,17 @@ The smoke test is a project-specific definition, not a generic check. Build it w
 - No upstream DSH change; the pinned DSH version already supports Windows.
 - Feishu is optional; a GitLab or GitHub source is the minimum.
 - The estimate covers the port and its tests, not a redesign of the policy, the panel or the store.
-- This project needs the Windows Editor with the Windows build support, the Visual Studio/IL2CPP toolchain if the target uses IL2CPP, a batch-mode license, a warm `Library` or Unity Accelerator, and a GPU or display if the smoke test needs one.
-- The smoke-test definition and the Windows build target are known; if they are not, the proof of concept must define them and WP9 grows.
-- A Windows CI runner is useful for the heavy builds, but it is not required for this estimate and does not replace the local loop.
 
 | Phase | Contents | Person-days | Calendar for one developer |
 | --- | --- | --- | --- |
-| Proof of concept | WP0; one batchmode build and exe smoke test | 2-3 | 2-3 days |
-| Usable internal build without Unity | WP0-WP4 and WP7 | 9-13 | 2-2.5 weeks |
-| Usable internal build with Unity and exe smoke test | WP0-WP4 and WP7-WP9; no Feishu, no Windows CI | 13-21 | 3-4 weeks |
-| Full parity without Unity | WP0-WP7 | 12-18 | 3-4 weeks |
-| Full parity with Unity and exe smoke test | WP0-WP9 | 16-26 | 3-5 weeks |
+| Proof of concept | WP0; measure the three uncertain areas | 1-2 | 1-2 days |
+| Usable internal build | WP0-WP4 and WP7; no Feishu, no Windows CI | 9-13 | 2-2.5 weeks |
+| Full parity | WP0-WP7 | 12-18 | 3-4 weeks |
+| With contingency | Add 20-30% to full parity | 15-23 | 3.5-5 weeks |
 
 ### Calendar
 
-The proof of concept takes 2-3 days. The usable internal build with Unity and the exe smoke test is about 3-4 weeks of focused work; full parity is about 3-5 weeks. Add 20-30% for the chosen scope; full parity then reaches 19-34 person-days, or 4-6.5 weeks. Part-time work stretches the calendar roughly proportionally. If the proof of concept finds a DSH-level blocker, or Unity cannot be licensed and built in batch mode, stop and re-estimate.
+The usable internal build is about 2-2.5 weeks of focused work; the full parity version is about 3-4 weeks, and 3.5-5 weeks with the contingency. Part-time work stretches the calendar roughly proportionally. If the proof of concept finds a DSH-level blocker, stop and re-estimate; none is expected today.
 
 ## Verification
 
@@ -240,7 +198,6 @@ The proof of concept takes 2-3 days. The usable internal build with Unity and th
 - On a clean Windows machine, `pnpm check` passes, with documented Windows skips, and the service starts, reports status, stops gracefully and restarts.
 - A real ticket from the Git Source completes end to end: setup, Ticket, prepare, worker turn, commit, push, merge request, panel state and the source-conversation reply.
 - The same flow still passes on Linux with the same commit; no behavior changes for existing installations.
-- With local Unity builds, a real Unity batchmode build and the exe smoke test pass from the ticket directory: the build produces the exe, the smoke script exits nonzero on failure, and the worker starts both in the background and reads the result.
 - Documentation states the supported surface, the prerequisites and the isolation caveat.
 
 ### Test matrix
@@ -251,7 +208,6 @@ The proof of concept takes 2-3 days. The usable internal build with Unity and th
 | Service lifecycle | Required | Required | Fake DSH and HTTP in tests; real DSH in WP7 |
 | CLI invocation and blocked commands | Required | Required | Unit tests for argv, PATHEXT and `.cmd`; real CLIs in WP7 |
 | Prepare command | Required | Required | Real worktree creation in WP7 |
-| Unity build and exe smoke test | Via CI | On the Windows host | Real build and smoke test in WP7; the CI route uses the project's pipeline |
 | Feishu, if in scope | Required | Required | Bot event and message in WP7, optional |
 
 ## Risks and open decisions
@@ -266,25 +222,23 @@ The proof of concept takes 2-3 days. The usable internal build with Unity and th
 | Dual-platform drift | Windows breaks silently | Windows CI and a smoke test; platform-argument unit tests |
 | Weaker isolation | A worker can act as the operator | Keep the dedicated OS account recommendation; blocked commands remain a guardrail only |
 | Feishu's npm `.cmd` launcher | Feishu unavailable on Windows | Node launcher or native CLI; keep Feishu optional |
-| Unity licensing, Library import or GPU requirements | Builds blocked, slow or flaky | Confirm the license and runner first; warm Library or Accelerator; `-nographics`; install git-lfs; exclude worktrees from antivirus |
-| The exe smoke test needs a GPU or display, or is flaky | Red verification, false failures | Define the pass criterion; prefer `-nographics` or a test mode; run on a GPU machine when needed; capture logs and screenshots; distinguish harness errors |
 
 ### Open decisions
 
-- The smoke-test definition and pass criterion; WP9 depends on them.
-- The Windows build target and scripting backend, for example Win64 with IL2CPP or Mono, and the modules and toolchain that implies.
 - Node service script versus PowerShell twin.
 - Whether Feishu is in the first release or a follow-up.
 - Whether the account configuration moves to `configDir` settings or stays in wrapper scripts for POSIX and environment variables on Windows.
-- Whether a Windows CI runner also builds the exe and runs the smoke test; without one, the local host must do both.
+- Whether a Windows CI runner is available; without one, mark Windows as experimental.
+- Which Windows machine is the target for stage 0 and the end-to-end stage, and whether the project's toolchain prerequisites are already installed there.
 
 ## Out of scope
 
 - A Windows desktop application, per-developer agents, or a service for multiple repositories.
+- The project's Unity batchmode build, exe packaging, smoke tests, project-specific skills and CI job definitions; this plan only makes the Windows host able to run them.
 - Hardening beyond the current prototype's model: a real sandbox, secret management or multi-user isolation.
 - Changes to the DeepSeek Harness upstream, the policy model, the panel or the database format.
 - macOS and other platforms beyond the incidental bash path.
 
 ## Recommendation
 
-Port for this project. The workers must run Unity batchmode, build the Windows exe and smoke-test it locally, so the agent host is Windows. Start with the 2-3 day proof of concept on the target machine; if the build and smoke test work and the license is in place, follow WP0-WP9. Keep a Windows CI runner for the heavy full builds and test suites if one is available, but treat it as complementary to the local loop, not a replacement. Feishu remains optional and can be a follow-up.
+Port the deployment for this project. The workers must run the project's Windows-only toolchain, so the host is Windows; this plan is limited to making dsh-superagent run correctly there. Start with the 1-2 day proof of concept on the target machine, then follow WP0-WP7 and the staged order above. Keep the project's own Unity build, exe packaging and smoke-test work with the project, and keep Feishu optional. A Windows CI runner is worth adding after the port, but it is not part of the port itself.

@@ -2,16 +2,16 @@
 
 [English](../009-windows-deployment.md) | **简体中文**
 
-本文回答两个问题：dsh-superagent 是否应该支持在原生 Windows 主机上运行，以及要支持它需要做什么。对这个项目，答案是肯定的：worker 必须在自己的工单目录里运行 Unity batchmode、打 Windows exe 包并跑冒烟测试，Windows 专用的 DSH skill 也在那里运行。下面是实施路径，不是已支持的部署；分析部分也记录了在什么情况下答案会是否定的，项目变化时决策仍然可读。
+本文回答两个问题：dsh-superagent 是否应该支持在原生 Windows 主机上运行，以及要支持它需要做什么。对这个项目，主机必须是 Windows，因为它的 worker 运行仅 Windows 的工具链；本方案只覆盖 dsh-superagent 的 Windows 部署。项目自己的工具链工作——Unity batchmode 构建、exe 打包、冒烟测试、项目专用技能和 CI job 定义——不在本范围内，留给项目本身。
 
 问题在于主机，而不在于谁能使用智能体。所有用户都在浏览器中打开面板，并在来源会话里提到智能体，因此 Windows 桌面从来不需要在本地运行一份服务。
 
 ## 概要
 
-- **本项目需要。** worker 必须在自己的工单目录里运行 Unity batchmode、打 Windows exe 包并跑冒烟测试，而且它们的 DSH skill 调用仅 Windows 的工具。主机必须是 Windows；WSL2 无法让 Windows Editor 打开 Linux 工作树，纯 CI 循环也给不了 worker 所需的本地构建和冒烟测试循环。
-- **工期：** Unity 构建和 exe 冒烟测试增加了 WP8 和 WP9。可用的内部版本约 13-21 人日，即一名开发者 3-4 周，不含飞书和 Windows CI；完整对齐（含飞书和 Windows CI）约 16-26 人日，即 3-5 周；为所选范围增加 20-30%，完整对齐达到 19-34 人日，即 4-6.5 周。
-- **Windows CI runner 仍然有用：** 它可以在每个合并请求上跑较重的完整构建和测试套件，但不能替代工单目录里的本地 batchmode 和 exe 冒烟循环。
-- **建议：** 移植；先做 2-3 天的概念验证，在目标 Windows 机器上完成一次真实的 batchmode 构建和一次 exe 冒烟测试，然后按 WP0-WP9 的顺序执行。在承诺完整排期之前，确认 Unity 版本、Windows 构建目标、许可证和冒烟测试定义。
+- **本项目的主机需要。** worker 必须运行项目仅 Windows 的工具链，因此 agent 主机必须是 Windows。本方案只移植部署本身；项目自己的构建和冒烟工作不在范围内。
+- **工期：** 一个可用的内部版本约需 9-13 人日：一名开发者 2-2.5 周，包含概念验证和端到端验证，不含飞书，也不含 Windows CI runner。
+- **完整对齐**——飞书、Windows CI、双语的安装文档，以及让两个平台都持续被测试的加固——约需 12-18 人日，即一名开发者 3-4 周。
+- **建议：** 移植部署；先做 1-2 天的概念验证，然后按下面的分阶段计划执行。项目自己的工具链工作另行处理。
 
 ## “在 Windows 上部署”意味着什么
 
@@ -64,19 +64,6 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 | WSL2 和所有 Linux 主机都被禁止，而智能体必须跑在指定的 Windows 机器上 | 必须：没有其他主机 | 移植，按下面的方案执行 |
 | Windows 开发者只需要打开面板或提到机器人 | 无：面板是浏览器应用，飞书是远程的 | 把主机留在 Linux 上 |
 | 在 Windows 笔记本上做原型演示 | 低：WSL2 或一个小型 Linux 虚拟机足够 | 不要为了演示而移植 |
-| 仓库是 Unity 项目，agent 必须在本地跑 batchmode、打 exe 包并跑冒烟测试 | 必须：本项目的场景；主机需要 Windows、Unity、构建工具链和许可证 | 移植，包含 WP8 和 WP9；这是选定的路径 |
-| 仓库是 Unity 项目，Unity 工作只能放在 CI 里，agent 留在 Linux | 成本更低，但给不了本项目需要的本地构建和冒烟循环 | 作为补充的 CI runner，而不是替代 |
-
-### Unity 项目
-
-Unity 项目让主机问题变得具体。Unity 提供 Windows、macOS 和 Linux 的 Editor，但这个项目需要 Windows Editor 和 Windows 构建目标：worker 运行 Unity batchmode 来编译、打 Windows player 包并执行冒烟测试。本节其余部分记录边界和考虑过的选项。
-
-- **本地 batchmode 就是工作流。** worker 需要 Editor、项目的 Windows 构建支持、许可证和构建脚本，都在自己的工单目录里；它产出的 exe 是冒烟测试的对象。CI runner 不能替代这个循环，尽管它也可以为每个合并请求构建和测试。
-- **WSL2 不是替代品。** Windows Editor 必须打开 Windows 路径，因此 `/mnt/c` 下的 WSL2 检出会很慢，会遇到文件锁和换行符问题，而且仍然需要 Windows 侧的 Unity 和许可证。主机就是 Windows。
-- **Windows CI runner 仍然值得有。** 它可以在每个合并请求上跑较重的完整构建和测试套件，agent 做本地迭代；两边使用相同的 Unity 版本、许可证和构建脚本。
-- **Unity 很重。** 每个新工作树都会导入自己的 `Library`；构建需要许可证、Windows 构建支持，通常还需要 Visual Studio/IL2CPP 工具链、磁盘空间和 `git-lfs`，并且要小心 `.meta` 文件和 YAML 场景/预制体。热 `Library` 或 Unity Accelerator 能降低导入成本；冒烟测试需要明确的通过标准、显示或 `-nographics` 方案，以及捕获的 player 日志。
-
-在承诺排期之前，确认 Unity 版本、Windows 构建目标（例如 Win64 加 IL2CPP 或 Mono）、已安装的模块和许可证、冒烟测试定义，以及预期的构建时间。
 
 ### 支持成本
 
@@ -84,7 +71,7 @@ Unity 项目让主机问题变得具体。Unity 提供 Windows、macOS 和 Linux
 
 ### 结论
 
-**这个部署需要。** worker 必须在自己的工单目录里运行 Unity batchmode、打 Windows exe 包并跑冒烟测试，而且它们的 skill 执行仅 Windows 的命令；因此 agent 主机必须是 Windows。这正是前面分析命中的触发条件，下面的方案适用。先做概念验证，包含一次真实构建和冒烟测试，因为 Unity 的许可证、导入和构建时间是最能改变排期的部分。
+**本项目的主机需要，且范围要聚焦。** worker 必须运行项目仅 Windows 的工具链，因此主机不能留在 Linux 或 WSL2。本方案覆盖 dsh-superagent 的部署：服务生命周期、CLI 环境、准备命令、工具名、文档和测试。它不实现项目的 Unity 构建、exe 打包、冒烟测试或项目专用技能；这些留给项目，只是使用智能体的前置条件。先做 1-2 天的概念验证；它在承诺其余工作之前，先测量三个不确定的领域（CLI 调用、优雅停止、准备命令）。
 
 ## 适配方案
 
@@ -99,7 +86,7 @@ Unity 项目让主机问题变得具体。Unity 提供 Windows、macOS 和 Linux
 
 | 工作包 | 范围 | 人日 | 依赖 |
 | --- | --- | --- | --- |
-| WP0 | 在真实 Windows 机器上做概念验证，包含一次 Unity 构建和 exe 冒烟测试 | 2-3 | — |
+| WP0 | 在真实 Windows 机器上做概念验证 | 1-2 | — |
 | WP1 | 服务生命周期：start、status、stop、restart、日志、锁 | 2-3 | WP0 |
 | WP2 | CLI 与 worker 环境：探测、shim、包装、blocked commands | 2-3 | WP0 |
 | WP3 | 准备命令、路由工具、提示词与技能 | 1-1.5 | WP2 |
@@ -107,26 +94,23 @@ Unity 项目让主机问题变得具体。Unity 提供 Windows、macOS 和 Linux
 | WP5 | Windows 测试与 CI | 2-3 | WP1-4 |
 | WP6 | Windows 上的飞书，可选 | 1-2 | WP2 |
 | WP7 | 端到端验证与加固 | 1.5-2 | WP1-5 |
-| WP8 | Windows 上的 Unity 构建集成 | 2-4 | WP2、WP7 |
-| WP9 | Windows exe 冒烟测试脚本 | 1-2 | WP8 |
 
 ### 分阶段执行
 
-工作包是技术拆解；下面的阶段是执行与验收顺序。每个阶段以可审查的改动和一次检查结束，只有上一阶段的验收通过后才开始下一阶段。阶段 0、4、6 需要装有 Unity 的 Windows 机器；阶段 1、2、3、5 可以在 Linux 上用 platform 参数开发和测试。
+工作包是技术拆解；下面的阶段是执行与验收顺序。每个阶段以可审查的改动和一次检查结束，只有上一阶段的验收通过后才开始下一阶段。阶段 0 和阶段 5 需要 Windows 机器；阶段 1-4 可以在 Linux 上用 platform 参数开发和测试。
 
 | 阶段 | 范围 | 验收 | Windows 主机 |
 | --- | --- | --- | --- |
-| 0 | 在目标机器上做概念验证 | DSH、面板和 pwsh 工具加载；测量 setup 的阻塞点；完成并计时一次 Unity batchmode 构建和一次 exe 冒烟测试；记录 go/no-go | 需要 |
-| 1 | 服务生命周期：Node 服务脚本、`service/stop`、日志、锁和测试 | `pnpm check` 通过；Linux 上 `start`、`status`、`stop`、`restart` 行为不变；停止路由有单元测试；POSIX 行为无变化 | 不需要；随后做 Windows 冒烟 |
-| 2 | worker 命令层：平台命令运行器与探测、Win32 shim、`PATHEXT`、blocked commands、账号选择 | 单元测试覆盖生成的文件和参数处理；POSIX 行为不变；人工审查生成的 `.cmd` | 不需要 |
-| 3 | 准备命令、路由工具、提示词与技能：`pwsh` prepare、路由白名单、等待守卫、不限定外壳的措辞 | 测试通过；Linux 保留 `sh` 路径；Windows 命令有文档 | 不需要 |
-| 4 | Unity 构建和 exe 冒烟脚本：batchmode 构建、输出路径、冒烟脚本、缓存与清理 | 在阶段 0 的机器上，真实构建产出 exe，冒烟脚本能正确通过和失败 | 需要 |
-| 5 | 安装与部署文档：Windows 前置条件、服务、凭据、准备命令和故障排查，两种语言 | `pnpm check` 和文档测试通过；人工审查 Windows 路径 | 不需要 |
-| 6 | Windows CI 与端到端验证，飞书可选 | Windows runner 运行 `pnpm check`；真实工单完成 setup、构建、冒烟、提交、推送和合并请求；Linux 仍然通过 | 需要 |
+| 0 | 在目标机器上做概念验证 | DSH、面板和 pwsh 工具加载；测量 setup 的阻塞点；记录 go/no-go | 需要 |
+| 1 | 服务生命周期：Node 服务脚本和 `service/stop` | `pnpm check` 通过；Linux 上 start、status、stop、restart 行为不变；停止路由有单元测试；POSIX 行为无变化 | 不需要 |
+| 2 | worker 命令层：平台运行器与探测、Win32 shim、`PATHEXT`、blocked commands、账号选择 | 单元测试覆盖生成的文件和参数处理；POSIX 行为不变 | 不需要 |
+| 3 | 准备命令、路由工具、提示词与技能 | 测试通过；Linux 保留 `sh` 路径；Windows 命令有文档 | 不需要 |
+| 4 | 安装与部署文档 | `pnpm check` 和文档测试通过；人工审查 Windows 路径 | 不需要 |
+| 5 | Windows CI 与端到端验证，飞书可选 | Windows runner 运行 `pnpm check`；真实工单完成 setup、准备、推送和合并请求；Linux 仍然通过 | 需要 |
 
 ### WP0：概念验证
 
-在一台干净的 Windows 11 或 Windows Server 机器上，安装 Node 22.19+ 或 24、pnpm、git、PowerShell 7、带 Windows 构建支持的 Unity Editor（如果目标使用 IL2CPP，还包括 Visual Studio/IL2CPP 工具链），以及 [006 部署](006-deployment.md)中固定的 DSH 版本。创建 `superagent` profile，用 `link:` 添加 bundle，打开面板，确认 Web profile、`pwsh` 工具和隔离设置都能加载。然后测量四个不确定领域：setup 的 `env` 探测、用 `.cmd` 包装的 `execFile`/`spawn` 调用、`sh -c` 下的准备命令，以及从工作树执行一次真实的 Unity batchmode 构建加一次 exe 冒烟测试。每个领域都有实测答案和大致耗时后结束；如果 DSH 或 Unity 跑不起来就停止，因为任一都会改变整个估算。
+在一台干净的 Windows 11 或 Windows Server 机器上，安装 Node 22.19+ 或 24、pnpm、git、PowerShell 7，以及 [006 部署](006-deployment.md)中固定的 DSH 版本。创建 `superagent` profile，用 `link:` 添加 bundle，打开面板，确认 Web profile、`pwsh` 工具和隔离设置都能加载。然后故意复现三个阻塞点：setup 的 `env` 探测、用 `.cmd` 包装的 `execFile`/`spawn` 调用，以及 `sh -c` 下的准备命令。三个问题都有实测答案时结束；如果 DSH 本身都跑不起来就停止，因为那会改变整个估算。
 
 ### WP1：服务生命周期
 
@@ -182,34 +166,12 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 
 一台干净的 Windows 机器、一个真实仓库和一张测试工单：setup 通过；一次提及创建工单；准备命令创建工作树；worker 使用 `pwsh`；智能体编辑文件、提交并推送；合并请求被打开；面板显示结果；`start`、`status`、`stop` 和 `restart` 与 Linux 上一致；`stop` 是优雅的；日志被写入。在 Linux 上重跑同一张工单，确认没有回归。检查 Windows 特有的陷阱：PATH 长度、路径中的空格和括号、隔离 git 配置下的换行符、新脚本的可执行位、仓库使用符号链接时的行为，以及 260 字符的路径限制。
 
-### WP8：Unity 构建集成
-
-本项目需要。在 Windows 主机上：
-
-- 安装项目使用的精确 Unity Editor 版本和模块，包括 Windows 构建支持；如果目标使用 IL2CPP，还包括 Visual Studio/IL2CPP 工具链和 Windows SDK；为 batch mode 激活许可证。许可证是运营者步骤，可能是最长的前置时间。
-- 把项目的 batch mode 命令写进仓库的 `AGENTS.md`，让每个 worker 运行相同的构建和测试：`Unity.exe -batchmode -nographics -quit -projectPath <worktree> -buildTarget Win64 -logFile <log> -executeMethod <BuildMethod>`，以及 Unity Test Framework 的 `-runTests`、`-testPlatform`、`-testResults` 形式。
-- 把 player 构建到仓库之外的已知输出路径，确保它不会被提交；把构建日志和工单放在一起；exe 是冒烟测试的输入。
-- 把构建当作长时间运行：放到后台运行，通过 `job_output` 等待，并在提示词里告诉 worker，前台 shell 会在五秒后把命令转入后台。
-- 规划缓存：新工作树会导入自己的 `Library`。使用热模板、Unity Accelerator 或专用构建缓存；不要在并发工单之间共享同一个正在使用的 `Library`。
-- 覆盖 Windows 运维细节：`git-lfs`、长路径、为工作树、Unity 和新生成的 exe 配置杀毒软件排除项、260 字符路径限制、文件锁，以及 Unity YAML 合并（`.meta`、场景、预制体）。
-- 用项目真实构建目标和一次 EditMode 或 PlayMode 测试运行来验证；把确切命令记录在仓库里，避免 agent 重新摸索。
-
-### WP9：Windows exe 冒烟测试
-
-冒烟测试是项目特定的定义，不是通用检查。和项目团队一起确定：
-
-- 约定通过标准：exe 启动并以选定的退出码退出、到达已知场景或日志行，或通过脚本化的输入序列；捕获 player 日志以及任何截图或产物。
-- 给 exe 一个可以无人值守运行的命令行模式或测试入口；优先选择也能在 `-nographics` 或虚拟显示下工作的方式。如果游戏需要 GPU 或可见窗口，就在有相应条件的机器上运行，并把它写进前置条件。
-- 把启动、超时、日志捕获和清理封装成一个 worker 能从工单目录运行的脚本；失败时返回非零退出码和相关的日志尾部。
-- 不要让 exe 和日志进入仓库；清理旧构建，并阻止杀毒软件隔离新生成的 exe。
-- 用一次故意失败的构建或冒烟测试来验证脚本，使红色结果能和脚本自身的错误区分开。
-
 ### 备选方案
 
 - 保留 Python 服务脚本并增加 PowerShell 孪生脚本：对现有 POSIX 路径风险更低，但要同步维护两套实现。
 - 使用 `.cmd` 包装加 `cmd.exe`：设置改动最小，但参数引号解析对 JSON 和消息文本不安全。
 - 在 Windows 上用 Git Bash 运行 worker：消除部分外壳差异，但仍要解决服务脚本问题，并让部署依赖 bundle 本来不使用的 MSYS2 环境；除非修改 Windows preset，否则 worker 仍然跑在错误的外壳上。
-- 什么都不做：保留 Linux 或 WSL2 主机；对本项目不可行，因为需要本地 Unity batchmode 和 exe 冒烟测试。
+- 什么都不做：保留 Linux 或 WSL2 主机；对本项目不可行，因为主机必须运行项目仅 Windows 的工具链。
 
 ## 工期估算
 
@@ -219,21 +181,17 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 - 不需要改动 DSH 上游；固定的 DSH 版本已经支持 Windows。
 - 飞书是可选的；GitLab 或 GitHub 来源是底线。
 - 估算覆盖移植及其测试，不包含对策略、面板或存储的重新设计。
-- 这个项目需要带 Windows 构建支持的 Windows Editor；如果目标使用 IL2CPP，还需要 Visual Studio/IL2CPP 工具链；需要 batch mode 许可证、热 `Library` 或 Unity Accelerator；如果冒烟测试需要，还需要 GPU 或显示。
-- 冒烟测试定义和 Windows 构建目标是已知的；如果未知，概念验证必须先定义它们，WP9 也会变大。
-- Windows CI runner 对较重的构建有用，但不是本估算的前提，也不能替代本地循环。
 
 | 阶段 | 内容 | 人日 | 一名开发者的日历时间 |
 | --- | --- | --- | --- |
-| 概念验证 | WP0；一次 batchmode 构建和 exe 冒烟测试 | 2-3 | 2-3 天 |
-| 不含 Unity 的可用的内部版本 | WP0-WP4 和 WP7 | 9-13 | 2-2.5 周 |
-| 含 Unity 和 exe 冒烟的可用的内部版本 | WP0-WP4 和 WP7-WP9；不含飞书，不含 Windows CI | 13-21 | 3-4 周 |
-| 不含 Unity 的完整对齐 | WP0-WP7 | 12-18 | 3-4 周 |
-| 含 Unity 和 exe 冒烟的完整对齐 | WP0-WP9 | 16-26 | 3-5 周 |
+| 概念验证 | WP0；测量三个不确定领域 | 1-2 | 1-2 天 |
+| 可用的内部版本 | WP0-WP4 和 WP7；不含飞书，不含 Windows CI | 9-13 | 2-2.5 周 |
+| 完整对齐 | WP0-WP7 | 12-18 | 3-4 周 |
+| 含缓冲 | 在完整对齐上增加 20-30% | 15-23 | 3.5-5 周 |
 
 ### 日历
 
-概念验证需要 2-3 天。含 Unity 和 exe 冒烟的可用的内部版本约需 3-4 周的专注工作；完整对齐约需 3-5 周。为所选范围增加 20-30%；完整对齐于是达到 19-34 人日，即 4-6.5 周。兼职会大致按比例拉长日历。如果概念验证发现 DSH 层面的阻塞，或 Unity 无法授权并在 batch mode 下构建，停止并重新估算。
+可用的内部版本约需 2-2.5 周的专注工作；完整对齐版本约需 3-4 周，含缓冲为 3.5-5 周。兼职会大致按比例拉长日历。如果概念验证发现 DSH 层面的阻塞，停止并重新估算；目前预计没有。
 
 ## 验证
 
@@ -242,7 +200,6 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 - 在一台干净的 Windows 机器上，`pnpm check` 通过（带有记录在案的 Windows 跳过项），服务可以启动、报告状态、优雅停止并重启。
 - 来自 Git 来源的一张真实工单端到端完成：setup、工单、准备、worker 回合、提交、推送、合并请求、面板状态和来源会话中的答复。
 - 同一提交在 Linux 上仍然通过同一流程；现有安装的行为没有变化。
-- 带本地 Unity 构建时，从工单目录跑通一次真实的 Unity batchmode 构建和 exe 冒烟测试：构建产出 exe，冒烟脚本失败时返回非零，worker 能后台启动并读取结果。
 - 文档说明受支持的范围、前置条件和隔离方面的注意事项。
 
 ### 测试矩阵
@@ -253,7 +210,6 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 | 服务生命周期 | 必须 | 必须 | 测试中使用假 DSH 和 HTTP；WP7 中使用真实 DSH |
 | CLI 调用与 blocked commands | 必须 | 必须 | 针对 argv、PATHEXT 和 `.cmd` 的单元测试；WP7 中使用真实 CLI |
 | 准备命令 | 必须 | 必须 | WP7 中真实创建工作树 |
-| Unity 构建与 exe 冒烟测试 | 通过 CI | 在 Windows 主机上 | WP7 中真实构建和冒烟测试；CI 路线使用项目 pipeline |
 | 飞书（如果在范围内） | 必须 | 必须 | WP7 中的机器人事件与消息，可选 |
 
 ## 风险与待定决策
@@ -268,25 +224,23 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 | 双平台漂移 | Windows 悄悄失效 | Windows CI 和冒烟测试；platform 参数单元测试 |
 | 隔离更弱 | worker 可能以运营者身份行动 | 保留专用操作系统账号的建议；blocked commands 仍然只是护栏 |
 | 飞书的 npm `.cmd` 启动器 | Windows 上飞书不可用 | Node 启动器或原生 CLI；飞书保持可选 |
-| Unity 许可证、Library 导入或 GPU 要求 | 构建被阻塞、缓慢或不稳定 | 先确认许可证和 runner；热 Library 或 Accelerator；`-nographics`；安装 git-lfs；为工作树配置杀毒排除项 |
-| exe 冒烟测试需要 GPU 或显示，或不稳定 | 验证变红、误报失败 | 定义通过标准；优先 `-nographics` 或测试模式；必要时在有 GPU 的机器上运行；捕获日志和截图；区分脚本自身错误 |
 
 ### 待定决策
 
-- 冒烟测试的定义和通过标准；WP9 依赖它们。
-- Windows 构建目标和脚本后端，例如 Win64 加 IL2CPP 或 Mono，以及由此需要的模块和工具链。
 - Node 服务脚本还是 PowerShell 孪生脚本。
 - 飞书是否进入首个版本，还是作为后续工作。
 - 账号配置是改为 `configDir` 设置，还是在 POSIX 上保留包装脚本、在 Windows 上用环境变量。
-- Windows CI runner 是否也构建 exe 并跑冒烟测试；没有的话，本地主机必须两者都做。
+- 是否有可用的 Windows CI runner；没有的话，把 Windows 标为实验性。
+- 阶段 0 和端到端阶段使用哪台 Windows 机器，以及项目工具链的前置条件是否已经装好。
 
 ## 不在范围内
 
 - Windows 桌面应用、每个开发者一个智能体，或一个服务对应多个仓库。
+- 项目的 Unity batchmode 构建、exe 打包、冒烟测试、项目专用技能和 CI job 定义；本方案只让 Windows 主机具备运行它们的能力。
 - 超出当前原型模型的加固：真正的沙箱、密钥管理或多用户隔离。
 - 改动 DeepSeek Harness 上游、策略模型、面板或数据库格式。
 - macOS 以及其他超出附带 bash 路径的平台。
 
 ## 建议
 
-本项目要移植。worker 必须在本地运行 Unity batchmode、打 Windows exe 包并跑冒烟测试，因此 agent 主机是 Windows。先在目标机器上做 2-3 天的概念验证；如果构建和冒烟测试通过、许可证到位，就按 WP0-WP9 执行。如果已有 Windows CI runner，保留它跑较重的完整构建和测试套件，但把它当作本地循环的补充，而不是替代。飞书仍然是可选项，可以作为后续工作。
+为本项目移植部署。worker 必须运行项目仅 Windows 的工具链，所以主机是 Windows；本方案只限于让 dsh-superagent 在那里正确运行。先在目标机器上做 1-2 天的概念验证，然后按 WP0-WP7 和上面的阶段顺序执行。把项目自己的 Unity 构建、exe 打包和冒烟测试工作留给项目，飞书保持可选。Windows CI runner 值得在移植后补充，但它不属于移植本身。
