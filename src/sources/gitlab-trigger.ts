@@ -84,7 +84,7 @@ export function pipelineSummary(status: string, where: string, read: string): st
   const line = FAILED_PIPELINE.has(status) ? `CI failed on ${where}: pipeline ${status}`
     : RUNNING_PIPELINE.has(status) ? `CI ${status} on ${where}`
       : `CI passed on ${where}: pipeline ${status}`
-  return `${line}\nRead ${read} for the pipeline and its jobs.`
+  return `${line}\nRead ${read} for the pipeline status; use the dsh-superagent-gitlab skill's \`glab ci view\` for its jobs.`
 }
 /** Builds a trigger for a default-branch pipeline transition; it has no person to reply to, so it has no channel. */
 export function branchPipelineTrigger(host: string, repository: string, branch: string, sha: string, revision: number, status: string, url: string): Trigger {
