@@ -15,7 +15,7 @@
 | Delivery requirements | pull request 中的证据、带行数阈值的自动合并条件，以及提交作者；没有指定时，执行器以智能体账号的 no-reply 地址提交 |
 | Team skills | 智能体在需要时加载的知识，例如一个 `identities` 技能，说明哪个飞书用户对应哪个 GitHub 账号 |
 
-内置文本涵盖角色、工具使用、宿主机制、授权规则，以及 GitHub 和飞书技能。它通过标题引用团队段落，而不是重复它们。
+内置文本涵盖角色、工具使用、宿主机制、授权规则，以及 GitHub、GitLab 和飞书技能。它通过标题引用团队段落，而不是重复它们。
 
 ### 内置段落和模板
 
@@ -26,7 +26,7 @@
 | 共享指令和角色 | `runtime/shared`、`runtime/orchestrator`、`runtime/worker` |
 | 工作指令 | `runtime/subscriptions`、`runtime/replies`、`runtime/dispatch`、`runtime/work`、`runtime/admission` |
 | 交接指令 | `runtime/handoff/orchestrator`、`runtime/handoff/worker` |
-| 来源技能 | `skill/feishu`、`skill/github` |
+| 来源技能 | `skill/feishu`、`skill/github`、`skill/gitlab` |
 | 生成的段落 | `runtime/environment`、`runtime/policy`、`runtime/policy/none` |
 
 生成的段落是可编辑模板。它们必须保留这些占位符：

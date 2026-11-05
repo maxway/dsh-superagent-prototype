@@ -4,6 +4,8 @@
 
 Instructions for an agent that sets up dsh-superagent with its operator. If you are a person, ask your coding agent to read this file and follow it.
 
+The steps below use GitHub as the example. For a GitLab deployment, read GitHub as GitLab, `gh` as `glab`, and pull request as merge request; [docs/006-deployment.md](docs/006-deployment.md) has the GitLab account steps, and only the GitLab Source is enabled.
+
 ## How to run the setup
 
 The setup follows [docs/000-philosophy.md](docs/000-philosophy.md): it takes as little of the operator's attention as possible.

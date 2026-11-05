@@ -4,7 +4,7 @@ import type { Commands } from '../infra/commands.ts'
 import type { Deployment } from '../deployment.ts'
 import type { SourceRegistry } from './registry.ts'
 import type { SetupProblem } from '../setup.ts'
-import type { Family, Key } from '../kv.ts'
+import type { Key } from '../kv.ts'
 import { fill } from '../infra/text.ts'
 
 /** Fixed English health templates (`{name}` placeholders); the panel localizes each `code` in the interface language. */
@@ -41,7 +41,7 @@ export interface SourceContext {
   receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>
   atomic<T>(work: () => T): T
   /** Source-scoped KV records (such as read cursors); setting `undefined` removes an entry. */
-  state: { get<V>(key: Key<V>): V | undefined; set<V>(key: Key<V>, value: V | undefined): void; keys<V>(family: Family<V, never>): Key<V>[] }
+  state: { get<V>(key: Key<V>): V | undefined; set<V>(key: Key<V>, value: V | undefined): void; keys(family: string | { readonly prefix: string }): Key<unknown>[] }
   threads: {
     get(key: string): Thread | undefined
     subscribed(source: string): Thread[]

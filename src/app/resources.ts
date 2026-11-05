@@ -3,6 +3,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { UserError, key, latestReport, reached, runningAssignment, threadKey, type Ticket, type Trigger } from '../core/index.ts'
 import { batchOf, inputMessage, triggerMessage, workerSessionId } from '../executor/dsh.ts'
 import { readGithub } from '../sources/github-read.ts'
+import { readGitlab } from '../sources/gitlab-read.ts'
 import { feishuTriggerId } from '../sources/feishu-trigger.ts'
 import { ASSIGNMENTS, INPUTS, assignmentLine, decisionCard, decisionDetails, inputLine, newestPage, preview, textPage, threadCard, ticketCard,
   ticketDetails, triggerCard, type TicketThread } from './cards.ts'
@@ -49,6 +50,7 @@ export const RESOURCES: readonly { name: string; holds: string; executor?: true 
   { name: 'models', holds: 'model providers, the DSH default and each role\'s model' },
   { name: 'models/<provider>', holds: 'one provider\'s models' },
   { name: 'github/…', holds: 'a GitHub original, as the dsh-superagent-github skill describes', executor: true },
+  { name: 'gitlab/…', holds: 'a GitLab original, as the dsh-superagent-gitlab skill describes', executor: true },
 ]
 export const resourceGrammar = (executor: boolean): string => RESOURCES.filter(resource => !executor || resource.executor)
   .map(resource => `${resource.name}: ${resource.holds}`).join('; ')
@@ -196,6 +198,7 @@ const ROUTES: readonly Route[] = [
     return list(read, (offset, count) => models.slice(offset, offset + count))
   }],
   ['github/', read => sourcePage(read, 'github', () => readGithub(read.host.commands.withSignal(read.signal), read.resource))],
+  ['gitlab/', read => sourcePage(read, 'gitlab', () => readGitlab(read.host.commands.withSignal(read.signal), read.resource))],
   ['trigger/', async read => {
     const { host, rest, ticketId, offset } = read
     if (!rest || rest.includes('/')) throw new Error('Unknown context resource')

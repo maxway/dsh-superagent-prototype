@@ -13,7 +13,15 @@ export const testMachine = (overrides: Partial<Machine> = {}): Machine => ({
 })
 export const testDeployment = (overrides: Partial<Deployment> = {}): Deployment => ({
   ...testMachine(), repository: 'acme/widgets',
-  github: { cli: '/bin/false', login: 'agent-bot', noreply: '7+agent-bot@users.noreply.github.com' },
+  git: { provider: 'github', host: 'github.com', cli: '/bin/false', login: 'agent-bot', commitEmail: '7+agent-bot@users.noreply.github.com' },
+  feishu: { cli: '/bin/false', botId: 'ou_bot', appId: 'cli_bot', brand: 'feishu', name: 'Widgets Bot' },
+  ...overrides,
+})
+/** A GitLab deployment with the same repository shape as `testDeployment`, for Source and setup tests. */
+export const testGitlabDeployment = (overrides: Partial<Deployment> = {}): Deployment => ({
+  ...testMachine(), repository: 'acme/widgets',
+  git: { provider: 'gitlab', host: 'gitlab.com', cli: '/bin/false', login: 'agent-bot', commitEmail: '7-agent-bot@users.noreply.gitlab.com' },
+  gitlab: { host: 'https://gitlab.com', projectId: 42, defaultBranch: 'main' },
   feishu: { cli: '/bin/false', botId: 'ou_bot', appId: 'cli_bot', brand: 'feishu', name: 'Widgets Bot' },
   ...overrides,
 })

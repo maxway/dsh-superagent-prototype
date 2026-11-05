@@ -29,8 +29,8 @@ export interface Machine {
   admissionContextTimeoutMs: Volatile<number>
 }
 const MOVED: Record<string, string> = {
-  repository: 'on the GitHub Source', branchPrefix: 'in the prepare command of the Execution settings', github: 'on the GitHub Source',
-  feishu: 'on the Feishu Source', author: 'prompt text', repositoryPath: 'in the prepare command of the Execution settings',
+  repository: 'on the GitHub or GitLab Source', branchPrefix: 'in the prepare command of the Execution settings', github: 'on the GitHub Source',
+  gitlab: 'on the GitLab Source', feishu: 'on the Feishu Source', author: 'prompt text', repositoryPath: 'in the prepare command of the Execution settings',
   worktreeRoot: 'the ticket directory of the Execution settings', blockedCommands: 'in the Execution settings',
 }
 
@@ -46,13 +46,26 @@ export const GithubAccountsSchema = z.object({
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
   cli: z.string().trim().default(''),
 })
+/** A GitLab project path may contain nested groups, and `host` may name a self-managed instance. */
+export const GitlabAccountsSchema = z.object({
+  host: z.string().trim().default('https://gitlab.com'),
+  repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+)?$/, 'group/project').default(''),
+  cli: z.string().trim().default(''),
+})
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
-export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
+export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape),
+  gitlab: Object.keys(GitlabAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
 
+/** The Git host a deployment works through; exactly one is active at a time, so a Ticket always has one remote. */
+export type GitProvider = 'github' | 'gitlab'
+/** Identity shared by every Git host. `host` is the host name used for clone URLs, `cli` the account wrapper. */
+export interface GitIdentity { provider: GitProvider; protocol?: 'http' | 'https'; host: string; cli: string; login: string; commitEmail: string }
 export interface Deployment extends Machine {
   repository: string
-  github: { cli: string; login: string; noreply: string }
+  git: GitIdentity
+  /** Extra facts a GitLab deployment needs, such as the numeric project id and its default branch. */
+  gitlab?: { host: string; projectId: number; defaultBranch: string }
   feishu?: FeishuBot
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
@@ -102,7 +115,49 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
   const repository = access.name
   if (access.push !== true) throw new SetupError('repositoryReadOnly', { account: agent.login, repository })
-  return { ...machine, repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
+  return { ...machine, repository, git: { provider: 'github', host: 'github.com', cli, login: agent.login,
+    commitEmail: `${agent.id}+${agent.login}@users.noreply.github.com` } }
+}
+
+const GitlabUser = z.object({ id: z.number().int().positive(), username: z.string().regex(/^[A-Za-z0-9_.-]+$/), email: z.string().nullish() })
+/** A project as `projects/<encoded path>` returns it; access level 30 is Developer, which can push, and 40 is Maintainer. */
+const GitlabProject = z.object({
+  id: z.number().int().positive(),
+  path_with_namespace: z.string().regex(/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+$/),
+  default_branch: z.string().nullish(),
+  permissions: z.object({ project_access: z.object({ access_level: z.number() }).nullish(),
+    group_access: z.object({ access_level: z.number() }).nullish() }).nullish(),
+})
+/** Verify the agent's GitLab CLI identity and push access to the configured project, including self-managed hosts. */
+export async function resolveGitlabDeployment(machine: Machine, gitlab: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+  const { stateDir } = machine
+  const accounts = GitlabAccountsSchema.parse(gitlab ?? {})
+  const remote = accounts.repository
+  if (!remote) throw new SetupError('gitlabRepositoryUnset')
+  if (!accounts.cli) throw new SetupError('gitlabCliUnset')
+  const base = accounts.host.replace(/\/+$/, '')
+  let host = '', hostname = '', protocol: 'http' | 'https' = 'https'
+  try {
+    const url = new URL(base)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('unsupported protocol')
+    host = url.host; hostname = url.hostname; protocol = url.protocol === 'http:' ? 'http' : 'https'
+  } catch { throw new SetupError('gitlabHostInvalid', { host: accounts.host }) }
+  let cli: string
+  try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('gitlabCliMissing', { output: reason(error) }) }
+  const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('gitlabCliSignedOut', { output: reason(error) }) })
+  const agent = parsed(GitlabUser, text)
+  if (!agent) throw new SetupError('gitlabCliNoAccount')
+  // A project path may be renamed; use the canonical path GitLab returns.
+  const project = parsed(GitlabProject, await probe([cli, 'api', `projects/${encodeURIComponent(remote)}`]).catch((error: unknown) => {
+    throw new SetupError('gitlabProjectUnreadable', { account: agent.username, repository: remote, output: reason(error) })
+  }))
+  if (!project) throw new SetupError('gitlabProjectUnreported', { repository: remote })
+  const access = Math.max(project.permissions?.project_access?.access_level ?? 0, project.permissions?.group_access?.access_level ?? 0)
+  if (access < 30) throw new SetupError('gitlabProjectReadOnly', { account: agent.username, repository: project.path_with_namespace })
+  const repository = project.path_with_namespace
+  const commitEmail = agent.email || `${agent.id}-${agent.username}@${hostname === 'gitlab.com' ? 'users.noreply.gitlab.com' : hostname}`
+  return { ...machine, repository, git: { provider: 'gitlab', protocol, host, cli, login: agent.username, commitEmail },
+    gitlab: { host: base, projectId: project.id, defaultBranch: project.default_branch || 'main' } }
 }
 
 const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })

@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
+import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, resolveGitlabDeployment, type Machine, type Probe } from '../src/deployment.ts'
+import { gitProvider, setupChanged, sourceSwitched } from '../src/app/setup.ts'
+import { SettingsSchema } from '../src/policy.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 const exec = promisify(execFile)
@@ -52,15 +54,17 @@ describe('configuration schema', () => {
   })
   it('names keys the configuration does not define, and where the values of older keys live now', () => {
     const raw = minimal({ repository: 'acme/widgets', repositoryPath: '/srv/widgets', blockedCommands: [], author: { name: 'Alice' }, extra: 1 })
-    expect(() => machineOf(Config(raw))).toThrow('keys it does not use: repository (now on the GitHub Source), repositoryPath (now in the prepare command of the Execution settings), blockedCommands (now in the Execution settings), author (now prompt text), extra;')
+    expect(() => machineOf(Config(raw))).toThrow('keys it does not use: repository (now on the GitHub or GitLab Source), repositoryPath (now in the prepare command of the Execution settings), blockedCommands (now in the Execution settings), author (now prompt text), extra;')
   })
 })
 
 describe('setup', () => {
   it('reads the repository from the GitHub Source and the accounts from their CLIs, skipping the worker shims', async () => {
     const deployment = await resolveDeployment(machine(), { repository: 'acme/widgets', cli: 'gh' }, probe, path)
-    expect(deployment).toMatchObject({ repository: 'acme/widgets', github: { cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot', noreply: '7+Agent-Bot@users.noreply.github.com' } })
-    expect(deployment.github).toEqual({ cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot', noreply: '7+Agent-Bot@users.noreply.github.com' })
+    expect(deployment).toMatchObject({ repository: 'acme/widgets', git: { provider: 'github', host: 'github.com', cli: join(dir, 'bin', 'gh'),
+      login: 'Agent-Bot', commitEmail: '7+Agent-Bot@users.noreply.github.com' } })
+    expect(deployment.git).toEqual({ provider: 'github', host: 'github.com', cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot',
+      commitEmail: '7+Agent-Bot@users.noreply.github.com' })
     expect(deployment).not.toHaveProperty('feishu')
     // A renamed repository is still resolved by its old name; notifications carry GitHub's current full_name.
     expect((await resolveDeployment(machine(), { repository: 'acme/gadgets', cli: 'gh' }, probe, path)).repository).toBe('acme/widgets')
@@ -97,5 +101,51 @@ describe('setup', () => {
     await refuses('feishuNoBot')
     program(join(dir, 'bin', 'lark-cli'), 'echo "not configured" >&2; exit 1')
     await refuses('feishuCliFailed', { output: expect.stringContaining('not configured') })
+  })
+  it('restarts setup when a Git Source is switched on or off, even when its fields stay the same', () => {
+    const base = SettingsSchema.parse({ sources: { github: { enabled: true, config: { repository: 'acme/widgets', cli: 'gh' } },
+      gitlab: { enabled: false, config: { repository: 'acme/widgets', cli: 'glab' } } } })
+    const switched = SettingsSchema.parse({ sources: { ...base.sources, github: { enabled: false, config: base.sources.github!.config },
+      gitlab: { enabled: true, config: base.sources.gitlab!.config } } })
+    expect(sourceSwitched(base, switched)).toBe(true)
+    expect(setupChanged(base, switched)).toBe(false)
+    const moved = SettingsSchema.parse({ sources: { ...base.sources, gitlab: { enabled: false, config: { ...base.sources.gitlab!.config, host: 'https://gitlab.example.com' } } } })
+    expect(setupChanged(base, moved)).toBe(true)
+    expect(sourceSwitched(base, moved)).toBe(false)
+  })
+  it('uses the one enabled Git Source, and refuses none or an ambiguous pair', () => {
+    const settings = (sources: Record<string, unknown>) => SettingsSchema.parse({ sources })
+    expect(gitProvider(settings({}))).toBe('github')
+    expect(gitProvider(settings({}), kind => kind === 'gitlab')).toBe('gitlab')
+    expect(gitProvider(settings({ github: { enabled: false, config: {} } }), kind => kind === 'gitlab')).toBe('gitlab')
+    expect(() => gitProvider(settings({ gitlab: { enabled: false, config: {} } }), kind => kind === 'gitlab')).toThrow('No Git Source')
+    expect(gitProvider(settings({ gitlab: { enabled: true, config: { repository: 'acme/widgets', cli: 'glab' } } }))).toBe('gitlab')
+    expect(gitProvider(settings({ github: { enabled: false, config: {} }, gitlab: { enabled: true, config: {} } }))).toBe('gitlab')
+    expect(() => gitProvider(settings({ github: { enabled: false, config: {} }, gitlab: { enabled: false, config: {} } }))).toThrow('No Git Source')
+    expect(() => gitProvider(settings({ github: { enabled: true, config: {} }, gitlab: { enabled: true, config: {} } }))).toThrow('Both the GitHub and GitLab')
+    expect(gitProvider(settings({ github: { enabled: true, config: {} }, gitlab: { enabled: true, config: { repository: 'acme/widgets', cli: 'glab' } } }))).toBe('gitlab')
+    expect(() => gitProvider(settings({ github: { enabled: true, config: { repository: 'acme/gadgets', cli: 'gh' } },
+      gitlab: { enabled: true, config: { repository: 'acme/widgets', cli: 'glab' } } }))).toThrow('Both the GitHub and GitLab')
+  })
+  it('reads the GitLab project and account from glab, including a self-managed host and a renamed project', async () => {
+    const glab = (file: string, access = 30): string => program(file, `case "$*" in\n  "api user") echo '{"id":7,"username":"agent-bot","email":null}' ;;\n  "api projects/"*) echo '{"id":42,"path_with_namespace":"acme/widgets","default_branch":"main","permissions":{"project_access":{"access_level":${access}}}}' ;;\n  *) exit 1 ;;\nesac`)
+    glab(join(dir, 'bin', 'glab'))
+    const deployment = await resolveGitlabDeployment(machine(), { host: 'https://gitlab.example.com:8443/', repository: 'acme/gadgets', cli: 'glab' }, probe, path)
+    expect(deployment).toMatchObject({ repository: 'acme/widgets', gitlab: { host: 'https://gitlab.example.com:8443', projectId: 42, defaultBranch: 'main' },
+      git: { provider: 'gitlab', protocol: 'https', host: 'gitlab.example.com:8443', cli: join(dir, 'bin', 'glab'), login: 'agent-bot',
+        commitEmail: '7-agent-bot@gitlab.example.com' } })
+    const http = await resolveGitlabDeployment(machine(), { host: 'http://gitlab.example.com/', repository: 'acme/gadgets', cli: 'glab' }, probe, path)
+    expect(http).toMatchObject({ repository: 'acme/widgets', gitlab: { host: 'http://gitlab.example.com', projectId: 42 },
+      git: { provider: 'gitlab', protocol: 'http', host: 'gitlab.example.com' } })
+    glab(join(dir, 'bin', 'glab-reader'), 20)
+    const needs = (place: string, code: string, values: Record<string, unknown>, gitlab: unknown) =>
+      expect(resolveGitlabDeployment(machine(), gitlab, probe, path)).rejects.toEqual(setupError(place, code, values))
+    await needs('gitlab', 'gitlabRepositoryUnset', {}, { cli: 'glab' })
+    await needs('gitlab', 'gitlabCliUnset', {}, { repository: 'acme/widgets' })
+    await needs('gitlab', 'gitlabHostInvalid', { host: 'not-a-url' }, { repository: 'acme/widgets', cli: 'glab', host: 'not-a-url' })
+    await needs('gitlab', 'gitlabHostInvalid', { host: 'ssh://gitlab.example.com' }, { repository: 'acme/widgets', cli: 'glab', host: 'ssh://gitlab.example.com' })
+    await needs('gitlab', 'gitlabProjectReadOnly', { account: 'agent-bot', repository: 'acme/widgets' }, { repository: 'acme/widgets', cli: join(dir, 'bin', 'glab-reader') })
+    await needs('gitlab', 'gitlabCliMissing', { output: expect.stringContaining('is not an executable file') }, { repository: 'acme/widgets', cli: join(dir, 'bin', 'missing') })
+    await needs('gitlab', 'gitlabCliSignedOut', { output: expect.stringContaining('Command failed') }, { repository: 'acme/widgets', cli: program(join(dir, 'bin', 'glab-broken'), 'exit 1') })
   })
 })

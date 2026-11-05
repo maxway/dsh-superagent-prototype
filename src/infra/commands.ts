@@ -73,7 +73,7 @@ export class Commands {
     } catch (error) { throw commandError(error, program) }
   }
   /** Runs the agent's GitHub CLI and parses its JSON output; callers should prefer `api`, which is restricted to the configured repository and validates output. */
-  async gh<T>(args: string[]): Promise<T> { return JSON.parse(await this.run(this.deployment.github.cli, args)) as T }
+  async gh<T>(args: string[]): Promise<T> { return JSON.parse(await this.run(this.deployment.git.cli, args)) as T }
   /**
    * Calls the GitHub API on a path within the configured repository, validating JSON output when a schema is provided
    * or returning raw CLI output (such as raw files or `--include` headers) when omitted.
@@ -82,7 +82,7 @@ export class Commands {
   async api<T>(schema: z.ZodType<T>, path: string, ...flags: string[]): Promise<T>
   async api(path: string, ...flags: string[]): Promise<string>
   async api<T>(schema: z.ZodType<T> | string, ...rest: string[]): Promise<T | string> {
-    if (typeof schema === 'string') return this.run(this.deployment.github.cli, ['api', this.path(schema), ...rest])
+    if (typeof schema === 'string') return this.run(this.deployment.git.cli, ['api', this.path(schema), ...rest])
     const [path = '', ...flags] = rest
     return schema.parse(await this.gh(['api', this.path(path), ...flags]))
   }
@@ -95,6 +95,39 @@ export class Commands {
     const outside = /^\/|^[a-z]+:|(^|\/)\.\.?(\/|\?|$)/i.test(path)
     if (outside) throw new Error('GitHub calls are restricted to the configured repository')
     return path ? `repos/${this.repository}/${path}` : `repos/${this.repository}`
+  }
+  /** Runs the agent's GitLab CLI and parses its JSON output; callers should prefer `glabApi`, which restricts paths to the configured project. */
+  async glab<T>(args: string[]): Promise<T> { return JSON.parse(await this.run(this.deployment.git.cli, args)) as T }
+  /**
+   * Calls the GitLab API on a path within the configured project, validating JSON output when a schema is provided
+   * or returning raw CLI output when omitted.
+   * @throws CliError with GitLab's HTTP status as `code` on failure.
+   */
+  async glabApi<T>(schema: z.ZodType<T>, path: string, ...flags: string[]): Promise<T>
+  async glabApi(path: string, ...flags: string[]): Promise<string>
+  async glabApi<T>(schema: z.ZodType<T> | string, ...rest: string[]): Promise<T | string> {
+    if (typeof schema === 'string') return this.run(this.deployment.git.cli, ['api', this.glabPath(schema), ...rest])
+    const [path = '', ...flags] = rest
+    return schema.parse(await this.glab(['api', this.glabPath(path), ...flags]))
+  }
+  /** Fetches every page of a GitLab API list within the configured project, skipping items that fail schema validation. */
+  async glabPages<T>(item: z.ZodType<T>, path: string, tally?: Tally): Promise<T[]> {
+    const items: T[] = []
+    for (let page = 1; page <= 100; page += 1) {
+      const listed = await this.glabApi(z.array(z.unknown()), `${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`)
+      items.push(...validItems(item, listed, tally))
+      if (listed.length < 100) break
+    }
+    return items
+  }
+  private glabPath(path: string): string {
+    const outside = /^\/|^[a-z]+:|(^|\/)\.\.?(?=\/|\?|$|%2f)|%2e/i.test(path)
+    const project = this.deployment.gitlab
+    const prefix = project ? `projects/${project.projectId}` : ''
+    if (!prefix || outside || !(path === prefix || path.startsWith(`${prefix}/`) || path.startsWith(`${prefix}?`))) {
+      throw new Error('GitLab calls are restricted to the configured project')
+    }
+    return path
   }
   /**
    * Runs the Feishu bot's `lark-cli` and returns the JSON `data` payload.

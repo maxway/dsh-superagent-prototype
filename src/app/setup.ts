@@ -1,7 +1,7 @@
 /** Probes repository and account CLIs, configures the worker execution environment and command shims, and tracks setup readiness. */
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
-import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
+import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, resolveGitlabDeployment, workerProbe, type Deployment, type Machine } from '../deployment.ts'
 import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import type { Settings, SettingsBlock } from '../policy.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
@@ -11,11 +11,41 @@ export interface SetupHost {
   readonly machine: Machine
   readonly lifetime: AbortSignal
   restart(): void
+  /** Whether a Source kind is installed; a plugin-only GitLab profile has no saved Source block yet. */
+  installed?(kind: string): boolean
 }
 
 const setupFields = (settings: Settings) =>
   JSON.stringify(Object.entries(SETUP_FIELDS).map(([id, keys]) => keys.map(key => settings.sources[id]?.config[key] ?? '')))
 export const setupChanged = (before: Settings, after: Settings): boolean => setupFields(before) !== setupFields(after)
+/** Whether a Source's on/off switch changed; a switch also needs a fresh setup even when its fields stay the same. */
+const sourceEnabled = (settings: Settings) => JSON.stringify(Object.keys(SETUP_FIELDS).map(id => settings.sources[id]?.enabled ?? true))
+export const sourceSwitched = (before: Settings, after: Settings): boolean => sourceEnabled(before) !== sourceEnabled(after)
+
+/**
+ * The one Git Source a deployment uses: an enabled GitHub or GitLab Source. When both are enabled, the one whose
+ * repository is configured wins; configuring both or neither is ambiguous and refused.
+ */
+export function gitProvider(settings: Pick<Settings, 'sources'>, installed: (kind: string) => boolean = () => true): 'github' | 'gitlab' {
+  const gitlab = settings.sources.gitlab, github = settings.sources.github
+  const gitlabOn = gitlab?.enabled === true, githubOn = github?.enabled === true
+  const configured = (source: { config: Record<string, unknown> }): boolean => {
+    const repository = source.config.repository
+    return typeof repository === 'string' && repository !== ''
+  }
+  if (!gitlabOn && !githubOn && !gitlab && !github) return installed('gitlab') && !installed('github') ? 'gitlab' : 'github'
+  if (gitlabOn && githubOn) {
+    if (configured(gitlab!) === configured(github!)) throw new SetupError('multipleGitSources')
+    return configured(gitlab!) ? 'gitlab' : 'github'
+  }
+  if (!gitlabOn && github?.enabled === false) {
+    // A plugin-only GitLab installation has no saved GitLab block yet; otherwise GitHub was explicitly disabled.
+    if (!gitlab && installed('gitlab') && !installed('github')) return 'gitlab'
+    throw new SetupError('gitSourceUnset')
+  }
+  if (!gitlabOn && gitlab?.enabled === false && !github && !installed('github')) throw new SetupError('gitSourceUnset')
+  return gitlabOn ? 'gitlab' : 'github'
+}
 
 /**
  * Resolves the target repository, GitHub account, and optional Feishu bot by probing CLIs, then writes and applies the isolated git and shim environment used by worker processes.
@@ -59,10 +89,15 @@ export class Setup {
   restart(): void { setTimeout(this.host.restart, 0) }
   /** Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks. */
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
+    // A Source being switched off needs no working account; switching away from a broken host must stay possible.
+    if (block.startsWith('source:') && settings.sources[block.slice(7)]?.enabled === false) return
     const { machine } = this.host
     const check = block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
+      : block === 'source:gitlab' ? resolveGitlabDeployment(machine, settings.sources.gitlab?.config, this.probe())
       : resolveDeployment(machine, settings.sources.github?.config, this.probe())
     await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
+    // An enabled Git Source must leave exactly one provider configured, so the save fails before the restart would.
+    if (block.startsWith('source:') && block !== 'source:feishu') gitProvider(settings, this.host.installed)
   }
   async blockCommands(blocked: readonly string[]): Promise<void> {
     if (this.resolved) await writeEnvironment(this.resolved, blocked)
@@ -76,7 +111,12 @@ export class Setup {
   private async resolve(settings: Settings): Promise<Deployment> {
     const { context, machine, lifetime } = this.host
     const probe = this.probe()
-    const deployment = await resolveDeployment(machine, settings.sources.github?.config, probe)
+    // One Git Source is active at a time: a Ticket always works against one remote.
+    this.feishuProblem = undefined
+    const provider = gitProvider(settings, this.host.installed)
+    const deployment = provider === 'gitlab'
+      ? await resolveGitlabDeployment(machine, settings.sources.gitlab?.config, probe)
+      : await resolveDeployment(machine, settings.sources.github?.config, probe)
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.feishuProblem = error.problem

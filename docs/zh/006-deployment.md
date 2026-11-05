@@ -23,8 +23,8 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
 ## 前置条件
 
 - Node.js 22.19+ 或 24+、pnpm、git 2.32+、Python 3.8+ 和 tmux
-- GitHub CLI（`gh`）2.48 或更高版本。来源的 CLI 字段必须指向 `gh` 或 `lark-cli` 的包装脚本；宿主依赖它们的子命令和输出格式。
-- github.com 上的一个仓库；不支持 GitHub Enterprise Server。要为每个工单创建检出，请保留一个本地克隆，让准备命令能从其中添加工作树。如果该仓库使用 Git LFS，请安装 `git-lfs`。
+- 使用 GitHub 部署时，GitHub CLI（`gh`）2.48 或更高版本；使用 GitLab 部署时，GitLab CLI（`glab`）。来源的 CLI 字段必须指向 `gh`、`glab` 或 `lark-cli` 的包装脚本；宿主依赖它们的子命令和输出格式。
+- github.com 上的一个仓库，或 gitlab.com / 自建实例上的一个 GitLab 项目；不支持 GitHub Enterprise Server。要为每个工单创建检出，请保留一个本地克隆，让准备命令能从其中添加工作树。如果该仓库使用 Git LFS，请安装 `git-lfs`。
 - 为 DeepSeek Harness 配置的模型服务商。dsh-superagent 使用该 profile 的默认模型，除非评估或执行设置指定了另一个。
 - 使用飞书时：`lark-cli`（已用 1.0.90 测试），以及一个带机器人的飞书或 Lark 应用
 
@@ -47,6 +47,28 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
    ```
 
    以智能体账号登录；最后一条命令会打印其登录名。dsh-superagent 也以同样的方式读取登录名。
+
+### 智能体 GitLab 账号（GitLab 部署）
+
+1. 为智能体创建一个 GitLab 用户账号，并在项目上授予至少 Developer 角色；GitLab 免费版的 Developer 角色即可推送分支和创建合并请求。
+2. 给它一个只使用自己凭据的 GitLab CLI：
+
+   ```sh
+   mkdir -p ~/.local/bin
+   cat > ~/.local/bin/glab-agent <<'EOF'
+   #!/bin/sh
+   GLAB_CONFIG_DIR="$HOME/.config/glab-agent" exec glab "$@"
+   EOF
+   chmod +x ~/.local/bin/glab-agent
+   glab-agent auth login --hostname gitlab.example.com
+   glab-agent api user
+   ```
+
+   这里要写自建实例的 host，不是 `gitlab.com`；来源里的 GitLab 地址必须使用同一 host 和协议：HTTPS 写 `https://gitlab.example.com`，HTTP 写 `http://gitlab.example.com`，worker 的 git credential helper 会按这个协议配置。`glab auth git-credential` 需要 glab 1.36 或更新版本；可用 `glab-agent auth git-credential --help` 检查，命令不存在就升级 glab。实例使用私有 CA 时，让 glab 和 worker 的 git 都信任它（git 可在服务环境里设置 `GIT_SSL_CAINFO`，或把 CA 装进操作系统信任库）。
+
+3. 一个部署只有一个生效的 Git 来源。在 profile 的 `cordis.patch.yml` 中启用 `dsh-superagent-gitlab` 并禁用 `dsh-superagent-github`；两者只能启用一个。在 **来源** 中设置 GitLab 地址、项目（`group/project`）和包装脚本路径。
+
+从一个 Git 宿主切换到另一个时，旧宿主上已有的工单会保留：请先完成或停止它们。状态目录会保留两个宿主的记录，切回时可以继续使用。
 
 ### 飞书机器人（可选）
 
@@ -146,12 +168,19 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 安装配置必须成功，轮询或工作才会开始。概览会列出缺失的要求，并链接到对应的设置。更改设置会再次运行安装配置。如果你在应用之外修复了某些东西，例如 CLI 登录，请选择 **重新检查**。
 
-1. **来源。** 设置 GitHub 仓库（`owner/name`）和智能体 CLI，例如 `/home/me/.local/bin/gh-agent`。请求通常通过智能体账号的通知到达。提到该账号的新 Issue 或评论会在下一次轮询时到达；通过编辑已有 Issue 正文来添加提及则不会。请改为发表新评论。使用飞书时，设置机器人 CLI、群、每个群的接收全部消息或仅提及模式，以及是否接收私信。
-2. **策略。** 两条示例规则可以编辑或删除。在 **在各来源上** 下，添加可以请求工作的 GitHub 账号和飞书用户；在名单里有人之前，任何请求都不能成为工单。使用飞书时，可以选择一个群来同步名单，在启动时和 **立即同步** 时进行。
-3. **执行。** 目录根路径和一个准备命令。要让每个工单都有一份仓库检出：
+1. **来源。** 只启用一个 Git 来源。GitHub 部署设置仓库（`owner/name`）和智能体 CLI，例如 `/home/me/.local/bin/gh-agent`；请求通常通过智能体账号的通知到达，提到该账号的新 Issue 或评论会在下一次轮询时到达，通过编辑已有 Issue 正文来添加提及则不会，请改为发表新评论。GitLab 部署启用 GitLab 来源、禁用 GitHub 来源，并设置 GitLab 地址、项目和智能体 CLI（例如 `/home/me/.local/bin/glab-agent`）；它从启用时开始扫描项目里的 Issue、合并请求、note 和流水线变化。使用飞书时，设置机器人 CLI、群、每个群的接收全部消息或仅提及模式，以及是否接收私信。
+2. **策略。** 两条示例规则可以编辑或删除。在 **在各来源上** 下，添加可以请求工作的 GitHub 或 GitLab 账号以及飞书用户；在名单里有人之前，任何请求都不能成为工单。使用飞书时，可以选择一个群来同步名单，在启动时和 **立即同步** 时进行。
+3. **执行。** 目录根路径和一个准备命令。要让每个工单都有一份仓库检出，GitHub 部署使用：
 
    ```sh
    git -C /home/me/src/widgets fetch --no-tags "https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "${DSH_SUPERAGENT_GITHUB_PR_HEAD:-HEAD}:refs/dsh-superagent/$DSH_SUPERAGENT_TICKET" &&
+   git -C /home/me/src/widgets worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
+   ```
+
+   GitLab 部署使用 GitLab 变量：
+
+   ```sh
+   git -C /home/me/src/widgets fetch --no-tags "$DSH_SUPERAGENT_GITLAB_HOST/$DSH_SUPERAGENT_GITLAB_PROJECT.git" "${DSH_SUPERAGENT_GITLAB_MR_HEAD:-HEAD}:refs/dsh-superagent/$DSH_SUPERAGENT_TICKET" &&
    git -C /home/me/src/widgets worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
    ```
 
@@ -219,12 +248,12 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 安装配置使用 DeepSeek Harness 的子进程服务，和执行器的 shell 一样。它会移除名称包含 KEY、PASSWORD、SECRET 或 TOKEN 的环境变量。
 
-安装配置会验证 GitHub 仓库和智能体的推送权限，写入执行器环境，并检查 git 对 github.com 只使用智能体凭据。飞书安装配置失败只会停用飞书来源。
+安装配置会验证当前 Git 宿主的仓库或项目和智能体的推送权限，写入执行器环境，并检查 git 对该宿主只使用智能体凭据。飞书安装配置失败只会停用飞书来源。
 
 安装配置写入的进程环境：
 
 - **命令 shim** 位于 `<stateDir>/worker-bin`，在 `PATH` 中排在最前：`gh` 运行智能体的 CLI；`lark-cli` 运行机器人的 CLI；被禁止的命令会失败。shim 在运行目标之前会把自身目录从 `PATH` 中移除。
-- **git 配置**位于 `<stateDir>/worker-gitconfig`：替换运营者的全局和系统 git 配置。它选择智能体 CLI 作为 github.com 的凭据助手，把 GitHub SSH 地址改写为 HTTPS，并定义 Git LFS 过滤器。个人 git 设置（例如 HTTP 代理）不生效。这里不设置提交身份，git 绝不会提示输入凭据，`GH_TOKEN` 和 `GITHUB_TOKEN` 会被移除。
+- **git 配置**位于 `<stateDir>/worker-gitconfig`：替换运营者的全局和系统 git 配置。它选择智能体 CLI 作为当前宿主的凭据助手，把该宿主的 SSH 地址改写为 HTTPS，并定义 Git LFS 过滤器。个人 git 设置（例如 HTTP 代理）不生效。这里不设置提交身份，git 绝不会提示输入凭据，`GH_TOKEN`、`GITHUB_TOKEN`、`GLAB_TOKEN` 和 `GITLAB_TOKEN` 会被移除。
 
 `worker-bin` 或 `worker-gitconfig` 中不是 dsh-superagent 写入的文件会阻止安装配置。如果工单目录位于一个自身配置添加了凭据的 git 仓库中，该工单会失败。
 
@@ -259,7 +288,7 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 | `@… cannot read …` 或 `@… cannot push to …` | 给智能体账号授予仓库写权限 |
 | `The GitHub Source names no repository.` | 在 GitHub 卡片上设置仓库，`owner/name` |
 | 工单失败并报 `The prepare command failed: …` | 输出会指出原因，例如错误的克隆路径；修正命令，然后重试该工单 |
-| `git does not read the github.com credential configuration dsh-superagent writes` | 安装 git 2.32 或更高版本 |
+| `git does not read the credential configuration dsh-superagent writes` | 安装 git 2.32 或更高版本 |
 | 工单失败并报 `The git configuration of the repository in … sets …` | 从克隆的 `.git/config` 中移除所指的凭据或 `http.*.extraheader` 设置 |
 | `… was not written by dsh-superagent` | 把所指的文件移出 `<stateDir>/worker-bin` 或 `<stateDir>/worker-gitconfig`，或选择另一个 `stateDir` |
 | `The bot lark-cli allows user identities` | 让飞书来源指向一个仅机器人配置，如上面的飞书机器人所述 |
