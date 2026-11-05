@@ -1,15 +1,15 @@
 # 009 Windows deployment
 
-This document answers two questions: whether dsh-superagent should run on a native Windows host, and what that would take. It is an analysis and a conditional plan, not a supported deployment path. The supported deployment remains Linux, including WSL2, as [006 Deployment](006-deployment.md) describes.
+This document answers two questions: whether dsh-superagent should run on a native Windows host, and what that would take. For this project the host must be Windows because its workers run a Windows-only toolchain; this plan covers only the dsh-superagent Windows deployment. The project's own toolchain work — Unity batchmode builds, exe packaging, smoke tests, project-specific skills and CI job definitions — is outside this scope and stays with the project.
 
 The question is about the host, not about who can use the agent. Every user opens the panel in a browser and mentions the agent in the Source conversation, so a Windows desktop never needs a local copy of the service.
 
 ## Summary
 
-- **Not necessary for the current deployment.** One long-running service per repository on any Linux host, including WSL2, already serves Windows users. Porting is worth doing only for a concrete Windows-only need, listed under [Is it necessary?](#is-it-necessary).
-- **If approved**, a usable internal build takes about 9-13 person-days: 2-2.5 weeks for one developer, including the proof of concept and end-to-end verification, without Feishu and without a Windows CI runner.
+- **Required for this project's host.** The workers must run the project's Windows-only toolchain, so the agent host must be Windows. This plan ports the deployment only; the project's own build and smoke work is out of scope.
+- **Estimate:** a usable internal build takes about 9-13 person-days: 2-2.5 weeks for one developer, including the proof of concept and end-to-end verification, without Feishu and without a Windows CI runner.
 - **Full parity** — Feishu, Windows CI, bilingual setup documentation and the hardening that keeps both platforms tested — takes about 12-18 person-days, or 3-4 weeks for one developer.
-- **Recommendation:** do not port now. Run a 1-2 day proof of concept only when a trigger appears, then decide from the measured result.
+- **Recommendation:** port the deployment; start with the 1-2 day proof of concept, then follow the staged plan below. The project's toolchain work is separate.
 
 ## What deploying on Windows means
 
@@ -69,7 +69,7 @@ A port is not a one-time cost. After it, every change must be checked on two pla
 
 ### Verdict
 
-**Not necessary now.** The current Linux/WSL2 deployment covers Windows users. Revisit the decision only on a concrete trigger: a Windows-only toolchain the workers must run, a hard no-WSL/no-Linux-host constraint, or a product requirement for a Windows installer. When that happens, run the 1-2 day proof of concept first; it measures the three uncertain areas (CLI invocation, graceful stop, prepare command) before the rest of the work is committed.
+**Necessary for this project's host, with a focused scope.** The workers must run the project's Windows-only toolchain, so the host cannot stay on Linux or WSL2. This plan covers the dsh-superagent deployment: service lifecycle, CLI environment, prepare, tool names, documentation and tests. It does not implement the project's Unity build, exe packaging, smoke tests or project-specific skills; those stay with the project and are only a prerequisite for using the agent. Run the 1-2 day proof of concept first; it measures the three uncertain areas (CLI invocation, graceful stop, prepare command) before the rest of the work is committed.
 
 ## Adaptation plan
 
@@ -93,9 +93,22 @@ A port is not a one-time cost. After it, every change must be checked on two pla
 | WP6 | Feishu on Windows, optional | 1-2 | WP2 |
 | WP7 | End-to-end verification and hardening | 1.5-2 | WP1-5 |
 
+### Staged execution
+
+The work packages are the technical breakdown; the stages are the execution and acceptance order. Each stage ends with a reviewable change and a check, and the next stage starts only when the previous acceptance holds. Stage 0 and stage 5 need a Windows machine; stages 1-4 can be built and tested on Linux with a platform argument.
+
+| Stage | Scope | Acceptance | Windows host |
+| --- | --- | --- | --- |
+| 0 | Proof of concept on the target machine | DSH, the panel and the pwsh tool load; setup's blockers are measured; go or no-go is recorded | Required |
+| 1 | Service lifecycle: Node service script and `service/stop` | `pnpm check`; a real DSH stop test through the route; status JSON, exit codes, markers, logs and locks unchanged; Windows start/stop smoke deferred to stage 0/5 | No on Linux; Windows smoke needs a host |
+| 2 | Worker command layer: platform runner and probes, Win32 shims, `PATHEXT`, blocked commands, account selection | Unit tests cover generated files and argument handling; POSIX behavior is unchanged | No |
+| 3 | Prepare, router tools, prompts and skills | Tests pass; Linux keeps the `sh` path; Windows commands are documented | No |
+| 4 | Setup and deployment documentation | `pnpm check` and the documentation tests pass; a person reviews the Windows path | No |
+| 5 | Windows CI and end-to-end verification, Feishu optional | A Windows runner runs `pnpm check`; a real ticket completes setup, prepare, push and merge request; Linux still passes | Required |
+
 ### WP0: proof of concept
 
-On a clean Windows 11 or Windows Server machine, install Node 22.19+ or 24, pnpm, git, PowerShell 7 and the DSH version pinned in [006 Deployment](006-deployment.md). Create the `superagent` profile, add the bundle with `link:`, open the panel and confirm that the Web profile, the `pwsh` tool and the isolation settings load. Then reproduce the three blockers on purpose: setup's `env` probe, an `execFile`/`spawn` call with a `.cmd` wrapper, and the prepare command under `sh -c`. Exit when the three have a measured answer; stop if DSH itself fails to run, because that would change the whole estimate.
+On a clean Windows 11 or Windows Server machine, install Node 22.19+ or 24, pnpm, git, PowerShell 7 and the DSH version pinned in [006 Deployment](006-deployment.md). Create the `superagent` profile, add the bundle with `link:`, open the panel and confirm that the Web profile, the `pwsh` tool and the isolation settings load. Then reproduce the three blockers on purpose: setup's `env` probe, an `execFile`/`spawn` call with a `.cmd` wrapper, and the prepare command under `sh -c`. Exit when the three have a measured answer; stop if DSH itself fails to run, because that would change the whole estimate. The target is the operator's local Windows machine; the agent process runs on Linux and cannot operate it directly, so the operator runs these commands or provides a remote channel.
 
 ### WP1: service lifecycle
 
@@ -105,6 +118,13 @@ Replace the Python service script with one cross-platform Node script (recommend
 - Status: read the PID file and the management API; detect duplicates; keep the four exit codes.
 - Stop and restart: call a new loopback management route, `POST service/stop`, which asks the plugin to exit through `ctx.appExit(0)` after the response is sent; the current DSH shutdown path then disposes the profile. This is the portable graceful stop: Windows cannot deliver `SIGINT` across processes, and `os.kill(pid, SIGINT)` would terminate the process instead. On POSIX the script may keep `SIGINT` as a fallback.
 - Lock and logs: an exclusive control lock, for example `proper-lockfile`, already a dependency, and log pruning as today.
+
+Self-review findings before implementation:
+
+- **Stop timing.** DSH's launcher force-exits five seconds after `appExit` or `SIGINT` (`PROCESS_SHUTDOWN_TIMEOUT_MS = 5_000` in the profile boot), while the Executor drain is bounded at ten seconds (`SHUTDOWN_STOP_MS = 10_000`). An immediate `ctx.appExit(0)` route would cut a mid-turn worker off and cannot support the "five minutes" claim in [006 Deployment](006-deployment.md). The route answers, drains through `Runtime.stop()`, then calls `ctx.appExit(0)`; the documented bound is the drain plus the launcher grace. **Decision: option A.** Keep the ten-second drain and accept the roughly fifteen-second stop; a longer drain that lets long turns finish is a separate feature, not this port.
+- **Windows start.** `dsh` is an npm `.cmd` on Windows; a plain `spawn('dsh')` fails. Resolve it with `where dsh`, launch through `cmd.exe /d /s /c` detached, redirect the log, and record or discover the Node PID with `Get-CimInstance`; there is no `ps` or `tmux`. Add a Windows start/stop smoke or defer it to stage 0/5.
+- **Route verification and fallback.** The current unit test only checks that the host method is called; an integration test must start a DSH profile on Linux, POST `service/stop`, see the response and observe the exit. If `appExit` is absent, the route should refuse with 500 instead of returning `stopping: true` and hanging.
+- **Compatibility and test budget.** Replacing the 250-line Python script and its 300-line test suite with Node needs golden tests for the status JSON, exit codes, markers, logs and locks; budget three to four person-days for WP1, not two to three.
 
 The fallback is a PowerShell twin plus the same `service/stop` route, for example through a Windows service wrapper; it is faster to write but leaves two service implementations to maintain. The `tests/service-script.spec.ts` suite is rewritten around injected process and HTTP fakes so it runs on both platforms.
 
@@ -156,7 +176,7 @@ A clean Windows machine, a real repository and a test ticket: setup passes; a me
 - Keep the Python service script and add a PowerShell twin: lower risk for the existing POSIX path, two implementations to keep in sync.
 - Use `.cmd` wrappers plus `cmd.exe`: the smallest settings change, but argument quoting is unsafe for JSON and message text.
 - Run the worker in Git Bash on Windows: removes some shell differences but still needs the service script, adds an MSYS2 dependency the bundle does not otherwise use, and leaves the worker on the wrong shell unless the Windows presets are changed.
-- Do nothing: keep the Linux or WSL2 host, which is the recommendation unless the necessity test passes.
+- Do nothing: keep the Linux or WSL2 host; this is not viable for this project because the host must run the project's Windows-only toolchain.
 
 ## Estimate
 
@@ -212,19 +232,20 @@ The usable internal build is about 2-2.5 weeks of focused work; the full parity 
 
 ### Open decisions
 
-- Whether to port at all; the necessity test above is the gate.
 - Node service script versus PowerShell twin.
 - Whether Feishu is in the first release or a follow-up.
 - Whether the account configuration moves to `configDir` settings or stays in wrapper scripts for POSIX and environment variables on Windows.
 - Whether a Windows CI runner is available; without one, mark Windows as experimental.
+- Whether the operator can provide remote access to the local Windows machine for the POC, and whether its project-toolchain prerequisites are installed.
 
 ## Out of scope
 
 - A Windows desktop application, per-developer agents, or a service for multiple repositories.
+- The project's Unity batchmode build, exe packaging, smoke tests, project-specific skills and CI job definitions; this plan only makes the Windows host able to run them.
 - Hardening beyond the current prototype's model: a real sandbox, secret management or multi-user isolation.
 - Changes to the DeepSeek Harness upstream, the policy model, the panel or the database format.
 - macOS and other platforms beyond the incidental bash path.
 
 ## Recommendation
 
-Do not port now. The agent is a shared service, and Windows users already reach it through the panel and Feishu; the current Linux or WSL2 host is sufficient. Keep this plan for the moment a Windows-only toolchain, a hard no-WSL or no-Linux-host constraint, or a Windows product requirement appears; then start with the proof of concept and use the measured result to choose between the internal build and full parity.
+Port the deployment for this project. The workers must run the project's Windows-only toolchain, so the host is Windows; this plan is limited to making dsh-superagent run correctly there. Start with the 1-2 day proof of concept on the target machine, then follow WP0-WP7 and the staged order above. Keep the project's own Unity build, exe packaging and smoke-test work with the project, and keep Feishu optional. A Windows CI runner is worth adding after the port, but it is not part of the port itself.

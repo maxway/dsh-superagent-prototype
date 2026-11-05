@@ -2,16 +2,16 @@
 
 [English](../009-windows-deployment.md) | **简体中文**
 
-本文回答两个问题：dsh-superagent 是否应该支持在原生 Windows 主机上运行，以及要支持它需要做什么。这是一份分析与有条件的方案，不是已支持的部署路径。当前受支持的部署仍然是 Linux，包括 WSL2，见 [006 部署](006-deployment.md)。
+本文回答两个问题：dsh-superagent 是否应该支持在原生 Windows 主机上运行，以及要支持它需要做什么。对这个项目，主机必须是 Windows，因为它的 worker 运行仅 Windows 的工具链；本方案只覆盖 dsh-superagent 的 Windows 部署。项目自己的工具链工作——Unity batchmode 构建、exe 打包、冒烟测试、项目专用技能和 CI job 定义——不在本范围内，留给项目本身。
 
 问题在于主机，而不在于谁能使用智能体。所有用户都在浏览器中打开面板，并在来源会话里提到智能体，因此 Windows 桌面从来不需要在本地运行一份服务。
 
 ## 概要
 
-- **当前部署没有必要。** 每个仓库一个常驻服务，跑在任意 Linux 主机（包括 WSL2）上，已经能完全服务 Windows 用户。只有出现具体的、仅 Windows 才有的需求时，移植才值得做，见[有没有必要？](#有没有必要)。
-- **如果批准**，一个可用的内部版本约需 9-13 人日：一名开发者 2-2.5 周，包含概念验证和端到端验证，不含飞书，也不含 Windows CI runner。
+- **本项目的主机需要。** worker 必须运行项目仅 Windows 的工具链，因此 agent 主机必须是 Windows。本方案只移植部署本身；项目自己的构建和冒烟工作不在范围内。
+- **工期：** 一个可用的内部版本约需 9-13 人日：一名开发者 2-2.5 周，包含概念验证和端到端验证，不含飞书，也不含 Windows CI runner。
 - **完整对齐**——飞书、Windows CI、双语的安装文档，以及让两个平台都持续被测试的加固——约需 12-18 人日，即一名开发者 3-4 周。
-- **建议：** 现在不要移植。只有当触发条件出现时，才做 1-2 天的概念验证，然后用实测结果决定。
+- **建议：** 移植部署；先做 1-2 天的概念验证，然后按下面的分阶段计划执行。项目自己的工具链工作另行处理。
 
 ## “在 Windows 上部署”意味着什么
 
@@ -71,7 +71,7 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 
 ### 结论
 
-**现在没有必要。** 当前的 Linux/WSL2 部署已经覆盖 Windows 用户。只有出现具体触发条件时才重新考虑：worker 必须运行的仅 Windows 工具链、硬性的不能用 WSL 或没有 Linux 主机，或者产品上要求 Windows 安装包。出现这些条件时，先做 1-2 天的概念验证；它在承诺其余工作之前，先测量三个不确定的领域（CLI 调用、优雅停止、准备命令）。
+**本项目的主机需要，且范围要聚焦。** worker 必须运行项目仅 Windows 的工具链，因此主机不能留在 Linux 或 WSL2。本方案覆盖 dsh-superagent 的部署：服务生命周期、CLI 环境、准备命令、工具名、文档和测试。它不实现项目的 Unity 构建、exe 打包、冒烟测试或项目专用技能；这些留给项目，只是使用智能体的前置条件。先做 1-2 天的概念验证；它在承诺其余工作之前，先测量三个不确定的领域（CLI 调用、优雅停止、准备命令）。
 
 ## 适配方案
 
@@ -95,9 +95,22 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 | WP6 | Windows 上的飞书，可选 | 1-2 | WP2 |
 | WP7 | 端到端验证与加固 | 1.5-2 | WP1-5 |
 
+### 分阶段执行
+
+工作包是技术拆解；下面的阶段是执行与验收顺序。每个阶段以可审查的改动和一次检查结束，只有上一阶段的验收通过后才开始下一阶段。阶段 0 和阶段 5 需要 Windows 机器；阶段 1-4 可以在 Linux 上用 platform 参数开发和测试。
+
+| 阶段 | 范围 | 验收 | Windows 主机 |
+| --- | --- | --- | --- |
+| 0 | 在目标机器上做概念验证 | DSH、面板和 pwsh 工具加载；测量 setup 的阻塞点；记录 go/no-go | 需要 |
+| 1 | 服务生命周期：Node 服务脚本和 `service/stop` | `pnpm check`；真实的 DSH 停止集成测试；状态 JSON、退出码、标记、日志和锁不变；Windows 启停冒烟推迟到阶段 0/5 | Linux 上不需要；Windows 冒烟需要主机 |
+| 2 | worker 命令层：平台运行器与探测、Win32 shim、`PATHEXT`、blocked commands、账号选择 | 单元测试覆盖生成的文件和参数处理；POSIX 行为不变 | 不需要 |
+| 3 | 准备命令、路由工具、提示词与技能 | 测试通过；Linux 保留 `sh` 路径；Windows 命令有文档 | 不需要 |
+| 4 | 安装与部署文档 | `pnpm check` 和文档测试通过；人工审查 Windows 路径 | 不需要 |
+| 5 | Windows CI 与端到端验证，飞书可选 | Windows runner 运行 `pnpm check`；真实工单完成 setup、准备、推送和合并请求；Linux 仍然通过 | 需要 |
+
 ### WP0：概念验证
 
-在一台干净的 Windows 11 或 Windows Server 机器上，安装 Node 22.19+ 或 24、pnpm、git、PowerShell 7，以及 [006 部署](006-deployment.md)中固定的 DSH 版本。创建 `superagent` profile，用 `link:` 添加 bundle，打开面板，确认 Web profile、`pwsh` 工具和隔离设置都能加载。然后故意复现三个阻塞点：setup 的 `env` 探测、用 `.cmd` 包装的 `execFile`/`spawn` 调用，以及 `sh -c` 下的准备命令。三个问题都有实测答案时结束；如果 DSH 本身都跑不起来就停止，因为那会改变整个估算。
+在一台干净的 Windows 11 或 Windows Server 机器上，安装 Node 22.19+ 或 24、pnpm、git、PowerShell 7，以及 [006 部署](006-deployment.md)中固定的 DSH 版本。创建 `superagent` profile，用 `link:` 添加 bundle，打开面板，确认 Web profile、`pwsh` 工具和隔离设置都能加载。然后故意复现三个阻塞点：setup 的 `env` 探测、用 `.cmd` 包装的 `execFile`/`spawn` 调用，以及 `sh -c` 下的准备命令。三个问题都有实测答案时结束；如果 DSH 本身都跑不起来就停止，因为那会改变整个估算。目标机器是运营者的本机 Windows；agent 进程跑在 Linux 上，无法直接操作它，因此这些命令由运营者执行，或提供远程通道。
 
 ### WP1：服务生命周期
 
@@ -107,6 +120,13 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 - 状态：读取 PID 文件和管理 API；检测重复实例；保留四个退出码。
 - 停止与重启：调用一个新的本地回环管理路由 `POST service/stop`，它让插件在响应发出后通过 `ctx.appExit(0)` 退出；随后 DSH 现有的关闭路径会释放 profile。这是可移植的优雅停止：Windows 不能跨进程发送 `SIGINT`，而 `os.kill(pid, SIGINT)` 会直接终止进程。在 POSIX 上，脚本可以保留 `SIGINT` 作为后备。
 - 锁与日志：使用独占的控制锁，例如已经是依赖的 `proper-lockfile`，以及像今天一样清理日志。
+
+实现前的自 review 发现：
+
+- **停止时序。** DSH 启动器在 `appExit` 或 `SIGINT` 之后五秒强制退出（profile boot 中的 `PROCESS_SHUTDOWN_TIMEOUT_MS = 5_000`），而执行器 drain 的上限是十秒（`SHUTDOWN_STOP_MS = 10_000`）。如果路由立即调用 `ctx.appExit(0)`，会切断正在回合中的 worker，也无法支撑 [006 部署](006-deployment.md)里“五分钟”的说法。路由应先响应，再通过 `Runtime.stop()` drain，最后调用 `ctx.appExit(0)`；文档中的上限是 drain 加上启动器宽限。**决定：方案 A。** 保留十秒 drain，接受约十五秒的停止；让长回合自然结束的更久 drain 是另一个特性，不属于本次移植。
+- **Windows 启动。** Windows 上的 `dsh` 是 npm 的 `.cmd`，直接 `spawn('dsh')` 会失败。用 `where dsh` 解析，经 `cmd.exe /d /s /c` 以 detached 方式启动，重定向日志，并用 `Get-CimInstance` 记录或发现 Node PID；没有 `ps` 或 `tmux`。增加 Windows 启停冒烟，或推迟到阶段 0/5。
+- **路由验证与后备。** 当前单元测试只检查宿主方法被调用；集成测试必须启动一个 Linux 上的 DSH profile，POST `service/stop`，看到响应并观察到进程退出。如果没有 `appExit`，路由应返回 500，而不是返回 `stopping: true` 后挂起。
+- **兼容与测试预算。** 用 Node 替换 250 行 Python 脚本及其 300 行测试，需要覆盖状态 JSON、退出码、标记、日志和锁的黄金测试；WP1 应预算三到四个人日，而不是两到三个。
 
 备选方案是 PowerShell 孪生脚本加同一个 `service/stop` 路由，例如通过一个 Windows 服务包装器；写起来更快，但会留下两套服务实现需要维护。`tests/service-script.spec.ts` 测试套件会围绕注入的进程与 HTTP 假实现重写，使它在两个平台上都能运行。
 
@@ -158,7 +178,7 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 - 保留 Python 服务脚本并增加 PowerShell 孪生脚本：对现有 POSIX 路径风险更低，但要同步维护两套实现。
 - 使用 `.cmd` 包装加 `cmd.exe`：设置改动最小，但参数引号解析对 JSON 和消息文本不安全。
 - 在 Windows 上用 Git Bash 运行 worker：消除部分外壳差异，但仍要解决服务脚本问题，并让部署依赖 bundle 本来不使用的 MSYS2 环境；除非修改 Windows preset，否则 worker 仍然跑在错误的外壳上。
-- 什么都不做：保留 Linux 或 WSL2 主机，除非必要性测试通过，否则这就是建议。
+- 什么都不做：保留 Linux 或 WSL2 主机；对本项目不可行，因为主机必须运行项目仅 Windows 的工具链。
 
 ## 工期估算
 
@@ -214,19 +234,20 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 
 ### 待定决策
 
-- 是否要移植；上面的必要性测试是门槛。
 - Node 服务脚本还是 PowerShell 孪生脚本。
 - 飞书是否进入首个版本，还是作为后续工作。
 - 账号配置是改为 `configDir` 设置，还是在 POSIX 上保留包装脚本、在 Windows 上用环境变量。
 - 是否有可用的 Windows CI runner；没有的话，把 Windows 标为实验性。
+- 运营者能否为 POC 提供本机 Windows 的远程访问，以及项目工具链的前置条件是否已经装好。
 
 ## 不在范围内
 
 - Windows 桌面应用、每个开发者一个智能体，或一个服务对应多个仓库。
+- 项目的 Unity batchmode 构建、exe 打包、冒烟测试、项目专用技能和 CI job 定义；本方案只让 Windows 主机具备运行它们的能力。
 - 超出当前原型模型的加固：真正的沙箱、密钥管理或多用户隔离。
 - 改动 DeepSeek Harness 上游、策略模型、面板或数据库格式。
 - macOS 以及其他超出附带 bash 路径的平台。
 
 ## 建议
 
-现在不要移植。智能体是共享服务，Windows 用户已经可以通过面板和飞书使用它；当前的 Linux 或 WSL2 主机足够。把这份方案留到出现仅 Windows 工具链、硬性的不能用 WSL 或没有 Linux 主机，或者产品上要求 Windows 的时候；届时先做概念验证，用实测结果在内部版本和完整对齐之间做选择。
+为本项目移植部署。worker 必须运行项目仅 Windows 的工具链，所以主机是 Windows；本方案只限于让 dsh-superagent 在那里正确运行。先在目标机器上做 1-2 天的概念验证，然后按 WP0-WP7 和上面的阶段顺序执行。把项目自己的 Unity 构建、exe 打包和冒烟测试工作留给项目，飞书保持可选。Windows CI runner 值得在移植后补充，但它不属于移植本身。
