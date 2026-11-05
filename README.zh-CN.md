@@ -31,6 +31,7 @@ dsh-superagent 是一个面向单个 Git 仓库（GitHub 或 GitLab）的主动�
 - [006 部署](docs/zh/006-deployment.md)：手动安装配置、配置、升级和故障排查
 - [007 架构](docs/zh/007-architecture.md)
 - [008 实操手册](docs/zh/008-cookbook.md)：新增一个来源
+- [009 Windows 部署](docs/zh/009-windows-deployment.md)：必要性、适配方案与工期估算
 
 ## 开发
 
