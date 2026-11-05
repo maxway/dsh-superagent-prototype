@@ -62,11 +62,11 @@ Other Inputs, such as CI results, wait for a normal slot. A launch waits in `wor
 
 ### Off-peak scheduling
 
-A Ticket may be marked off-peak when its source says the work is not urgent; the accept records it as the Ticket's `offPeak` attribute. Its Executor starts each new Assignment only inside the daily window in the Execution settings (`executor.offPeak`, with `enabled`, `start` and `end` as `HH:MM`, and an IANA `timezone`). The window is off by default and may wrap past midnight. Neither an Assignment already running nor a wake of an idle worker is deferred, so the work is not cut when the window closes.
+A Ticket may be marked off-peak when Superagent judges the work complex and not urgent; the accept records it as the Ticket's `offPeak` attribute. Its Executor starts each new Assignment only inside the daily window in the Execution settings (`executor.offPeak`, with `enabled`, `start` and `end` as `HH:MM`, and an IANA `timezone`). The window is off by default and may wrap past midnight. Neither an Assignment already running nor a wake of an idle worker is deferred, so the work is not cut when the window closes.
 
 Outside the window a pending Assignment waits in `working / queued` without holding a worker slot. Its `launch` effect keeps its place in the queue and becomes due at the window opening, or within a minute when the window changes, so restarts and pauses are handled by the effect queue. A Ticket without the mark, and every Ticket while the window is disabled, starts as usual.
 
-The window is a deployment fact, such as Alibaba Cloud's valley-price period, so it is off until an operator sets it. The panel's Execution settings edit it, and the main Session may save the same `executor` block when a person explicitly asks for a configuration change.
+The window is a deployment fact, so it is off until an operator sets it. Alibaba Cloud Model Studio (百炼) bills DeepSeek at off-peak rates from 22:00 to 08:00 Beijing time (peak 08:00–22:00), and the default window matches that period. The panel's Execution settings edit it, and the main Session may save the same `executor` block when a person explicitly asks for a configuration change.
 
 ### Execution variables
 
