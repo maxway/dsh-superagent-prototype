@@ -130,7 +130,7 @@ scripts/dsh-superagent status
 
 `start` 在 tmux 会话 `dsh-superagent` 中运行 `dsh --profile superagent`；其他 profile 则使用 `dsh-<profile>`。它最多等待一分钟，让运行时变为就绪或报告安装配置要求。首次运行时，它会打印缺失的安装配置信息。它会拒绝重复的实例，包括从这个脚本之外启动的实例。
 
-`stop` 和 `restart` 请求优雅关闭，并最多等待执行器五分钟。它们绝不会强制杀死进程，也不会碰其他 tmux 会话。
+`stop` 和 `restart` 请求优雅关闭，并最多等待进程五分钟退出。DSH 启动器会在请求后五秒强制退出，因此正在回合中的 worker 可能被打断；Windows 计划的阶段 1 会先 drain 执行器再退出。它们绝不会强制杀死进程，也不会碰其他 tmux 会话。
 
 `status` 打印进程 id、健康状况和安装配置问题。要使用其他 profile 或端口，请用 `--profile` 和 `--url`，或设置 `DSH_SUPERAGENT_PROFILE` 和 `DSH_SUPERAGENT_URL`。
 

@@ -128,7 +128,7 @@ scripts/dsh-superagent status
 
 `start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script.
 
-`stop` and `restart` request graceful shutdown and wait up to five minutes for Executors. They never force-kill the process or touch other tmux sessions.
+`stop` and `restart` request a graceful shutdown and wait up to five minutes for the process to exit. DSH's launcher force-exits five seconds after the request, so a worker in the middle of a turn can be interrupted; the Windows plan's stage 1 drains the Executors before exit. They never force-kill the process or touch other tmux sessions.
 
 `status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`.
 
