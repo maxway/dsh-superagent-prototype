@@ -5,12 +5,12 @@ import { CliError, Commands } from '../src/infra/commands.ts'
 import { KV } from '../src/kv.ts'
 import { testGitlabDeployment } from './fixtures/deployment.ts'
 import { gitlabKind, pollRound, type GitlabConfig } from '../src/sources/gitlab.ts'
-import { branchPipelineTrigger, gitlabChannel, gitlabThread, issueTrigger, mergeRequestTrigger, noteTrigger, type GitlabIssue, type GitlabMergeRequest,
-  type GitlabNote } from '../src/sources/gitlab-trigger.ts'
+import { branchPipelineTrigger, gitlabChannel, gitlabThread, issueTrigger, mergeRequestTrigger, noteTrigger,
+  type GitlabIssue, type GitlabMergeRequest, type GitlabNote } from '../src/sources/gitlab-trigger.ts'
 import { claimMergeRequest, mergeRequestEndNotices, observeMergeRequest } from '../src/sources/gitlab-pull.ts'
 import { changeOf } from '../src/sources/git-change.ts'
 import { sendGitlab } from '../src/sources/gitlab-channel.ts'
-import { gitlabThreadContext, readGitlab, readGitlabRepositoryPath } from '../src/sources/gitlab-read.ts'
+import { gitlabThreadContext, pipelineFact, readGitlab, readGitlabRepositoryPath } from '../src/sources/gitlab-read.ts'
 import type { SourceContext } from '../src/sources/host.ts'
 
 const deployment = testGitlabDeployment()
@@ -127,6 +127,25 @@ it('reads a merge request description, its notes, a discussion and its head pipe
     expect(await readGitlab(h.commands, 'gitlab/mrs/7/discussions/disc-1')).toMatchObject({ messages: [{ id: '11' }] })
     expect(await readGitlab(h.commands, 'gitlab/mrs/7/checks')).toMatchObject({ pipeline: { id: 9, status: 'failed' } })
   })
+  it.each(['success', 'failed'] as const)('reads a %s pipeline in merge request checks', async status => {
+    const h = context()
+    glab(h.commands, {
+      'projects/42/merge_requests/7': mr({ head_pipeline: { id: 9, status, web_url: 'https://gitlab.com/p/9' } }),
+      'projects/42/pipelines/9': { id: 9, status, web_url: 'https://gitlab.com/p/9', sha: 'abc' },
+    })
+    await expect(readGitlab(h.commands, 'gitlab/mrs/7/checks')).resolves.toMatchObject({
+      pipeline: { id: 9, status }, mr: { iid: 7, head_pipeline: { id: 9, status } },
+    })
+  })
+  it('propagates a failed pipeline checks API read', async () => {
+    const h = context()
+    const reads = glab(h.commands, {
+      'projects/42/merge_requests/7': mr({ head_pipeline: { id: 9, status: 'failed', web_url: 'https://gitlab.com/p/9' } }),
+      'projects/42/pipelines/9': () => { throw new CliError('503 Service Unavailable', 503) },
+    })
+    await expect(readGitlab(h.commands, 'gitlab/mrs/7/checks')).rejects.toThrow('503 Service Unavailable')
+    expect(reads).toEqual(['projects/42/merge_requests/7', 'projects/42/pipelines/9'])
+  })
   it('reads a subscribed Thread with its description first and its notes after it', async () => {
     const h = context()
     glab(h.commands, { 'projects/42/issues/5': issue(), 'projects/42/issues/5/notes': [note()] })
@@ -239,6 +258,26 @@ describe('gitlab polling', () => {
     await pollRound(h.ctx)
     const triggers = (h.ctx.receive as ReturnType<typeof vi.fn>).mock.calls.map(([trigger]) => trigger as Trigger)
     expect(triggers.some(trigger => trigger.meta.ci === true && trigger.meta.revision === 1)).toBe(true)
+  })
+  it.each([
+    { status: 'success', summary: 'CI passed on MR !7' },
+    { status: 'failed', summary: 'CI failed on MR !7' },
+  ] as const)('uses the $status MR pipeline result for trigger text and thread facts', async ({ status, summary }) => {
+    const h = context({ config: (() => config({ observeCi: true })) as SourceContext['config'] })
+    h.state.set(KV.gitlab.since, new Date(Date.now() - 3_600_000).toISOString())
+    h.state.set(KV.gitlab.ci('mr', 7), { status: 'pending', revision: 0, id: 1 })
+    glab(h.commands, {
+      'projects/42/issues': [],
+      'projects/42/merge_requests': [mr({ author: { id: 9, username: 'agent-bot' }, head_pipeline: { id: 2, status, web_url: 'https://gitlab.com/p/2' } })],
+      'projects/42/merge_requests/7/notes': [],
+      'projects/42/pipelines': [],
+    })
+    await pollRound(h.ctx)
+    const triggers = (h.ctx.receive as ReturnType<typeof vi.fn>).mock.calls.map(([trigger]) => trigger as Trigger)
+    const trigger = triggers.find(item => item.meta.ci === true)
+    expect(trigger).toMatchObject({ meta: { ci: true, status, revision: 1 }, text: expect.stringContaining(summary) })
+    expect(trigger?.text).toContain('gitlab/mrs/7/checks')
+    expect(h.ctx.threads.describe).toHaveBeenCalledWith('gitlab:mr:7', { facts: { ci: pipelineFact(status) } })
   })
   it('fetches a merge request detail when the list omits its head pipeline', async () => {
     const h = context({ config: (() => config({ observeCi: true })) as SourceContext['config'] })
