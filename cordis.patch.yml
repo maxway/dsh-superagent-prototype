@@ -87,8 +87,11 @@
               compaction: true
               toolResultPruner: true
             config:
+              # 0.4 × the 1M window (~419k tokens), earlier than the ~599k cap the 384k output reservation imposes.
               - id: compaction-basic
                 name: '@deepseek-ai/dsh-compaction-basic'
+                config:
+                  thresholdRatio: 0.4
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
               - id: tool-result-pruner

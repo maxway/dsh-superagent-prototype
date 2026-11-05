@@ -38,6 +38,8 @@ it('defines the worker preset Executor Sessions run under, with a shell that mov
   expect(named('@deepseek-ai/dsh-pwsh-sandbox')).toEqual([{ timeoutMs: 5000, maxTimeoutMs: 5000 }])
   expect(named('@deepseek-ai/dsh-tool-jobs')).toEqual([{ waitTimeoutMs: 5000, maxWaitTimeoutMs: 5000 }])
   expect(named('@deepseek-ai/dsh-tool-web')).toEqual([expect.objectContaining({ fetch: false })])
+  // Compact at 0.4 of the 1M window so a long Ticket stays well below the window cap.
+  expect(named('@deepseek-ai/dsh-compaction-basic')).toEqual([{ thresholdRatio: 0.4 }])
   // Spawned subagents run under standard, whose shell moves a command to the background only after 60 s; forked ones, which would run under
   // this preset, are left out.
   expect(named('@deepseek-ai/dsh-tool-subagent')).toEqual([expect.objectContaining({ provider: 'spawn', agentPreset: 'standard' })])
