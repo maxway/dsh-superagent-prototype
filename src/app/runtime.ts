@@ -196,13 +196,15 @@ export class Runtime extends Service implements SourceHost {
     return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, ...trigger ? { trigger } : {} })
   }
   checkSetup(): void { this.setup.check() }
-  /** Ask DSH's launcher to exit after the current HTTP response, so the service script can stop without a POSIX signal. */
+  /** Ask the plugin to drain Executors and then let DSH's launcher exit, after the current HTTP response. */
   requestShutdown(): void {
     const exit = (this.ctx as unknown as { get(name: string): unknown }).get('appExit')
-    // Let the route's response flush before the launcher disposes the tree.
+    if (typeof exit !== 'function') throw new Error('The launcher does not provide an exit hook; stop is unavailable')
+    // Let the route's response flush before the drain closes the HTTP server.
     setTimeout(() => {
-      if (typeof exit === 'function') (exit as (code?: number) => void)(0)
-      else process.emit('SIGINT')
+      void this.stop().catch((error: unknown) => {
+        this.ctx.logger.warn('dsh-superagent stop drain failed: %s', String(error))
+      }).finally(() => { (exit as (code?: number) => void)(0) })
     }, 50)
   }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }

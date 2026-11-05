@@ -59,6 +59,12 @@ it('asks the host to shut down through the management API', async () => {
   expect(calls).toBe(1)
 })
 
+it('refuses a stop when the launcher has no exit hook', async () => {
+  const call = serve({ requestShutdown: () => { throw new Error('The launcher does not provide an exit hook; stop is unavailable') } })
+  expect(await call('POST', 'service/stop')).toEqual({ status: 500,
+    body: { error: 'The launcher does not provide an exit hook; stop is unavailable' } })
+})
+
 it('decodes path parameters and parses each route\'s query', async () => {
   const seen: unknown[] = []
   const call = serve({
