@@ -1,8 +1,11 @@
 /**
  * Signals that an effect cannot run right now, such as when processing is paused or all worker slots are full.
- * Effects reschedules the row after the initial retry delay without incrementing its failure count, and DshExecutor throws it from launch and delivery handlers.
+ * Effects reschedules the row after `delayMs` when it gives one, or after the initial retry delay otherwise, without
+ * incrementing its failure count, and DshExecutor throws it from launch and delivery handlers.
  */
-export class Later extends Error {}
+export class Later extends Error {
+  constructor(message?: string, readonly delayMs?: number) { super(message) }
+}
 /** Consecutive failures before an effect kind reports an error, matching the Sources poll failure threshold. */
 export const FAILURES_BEFORE_ERROR = 3
 import type { HealthBoard, HealthEntry } from '../infra/health.ts'
@@ -136,7 +139,9 @@ export class Effects {
     // Leave running rows untouched on shutdown so they retry on the next start.
     else if (this.stopped) return
     else if (failure.error instanceof Later) {
-      this.store.db.prepare(`UPDATE effect SET due = ? WHERE ${own}`).run(this.now() + handler.retry[0], ...ownRow)
+      // A caller that knows when the block ends (such as an off-peak window) names the delay; others retry after the first backoff.
+      const delay = Math.max(0, failure.error.delayMs ?? handler.retry[0])
+      this.store.db.prepare(`UPDATE effect SET due = ? WHERE ${own}`).run(this.now() + delay, ...ownRow)
     } else {
       const delay = Math.min(handler.retry[1], handler.retry[0] * 2 ** Math.min(row.attempts, 16))
       this.store.db.prepare(`UPDATE effect SET attempts = attempts + 1, error = ?, due = ? WHERE ${own}`)

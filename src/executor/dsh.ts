@@ -17,6 +17,7 @@ import type { Sessions } from '../app/sessions.ts'
 import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
 import type { HealthEntry } from '../infra/health.ts'
+import { offPeakWait } from '../offpeak.ts'
 import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
 
 const now = (): string => new Date().toISOString()
@@ -34,6 +35,8 @@ const BACKGROUND_LIMIT_MS = 30 * 60_000
 const SHUTDOWN_STOP_MS = 10_000
 /** How long a worker that goes on after a passing failure waits for a worker slot, or for processing to resume, between looks. */
 const SLOT_WAIT_MS = 5000
+/** How often a launch held for the off-peak window re-reads the settings, so a changed window takes effect soon. */
+const OFFPEAK_RECHECK_MS = 60_000
 /** True when an input comes from a person (a non-context human trigger or a direct text input such as a status request). */
 const fromPerson = (input?: TicketInput): boolean => input?.kind === 'trigger' ? !!input.human && !input.context : input?.kind === 'text'
 /**
@@ -266,11 +269,15 @@ export class DshExecutor implements Executor {
   }
   /** Enqueues a `delivery` effect to steer pending inputs into `ticket`'s running worker session. */
   deliver(ticket: Ticket, _assignment: Assignment): void { this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id }) }
-  /** Launches a queued assignment unless its ticket ended or a newer assignment replaced it meanwhile. */
+  /** Launches a queued assignment unless its ticket ended, a newer assignment replaced it, or it is deferred outside the off-peak window. */
   private async launchQueued({ ticketId, assignmentId }: { ticketId: string; assignmentId: string }): Promise<void> {
     const ticket = this.host.store.tickets.get(ticketId)
     const assignment = ticket && latestAssignment(ticket)
     if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== 'pending') return
+    // An off-peak ticket starts no new Assignment while the window is closed: the launch keeps its place in the effect queue,
+    // holds no worker slot, and is re-read periodically so a changed window applies without a restart.
+    const wait = ticket.offPeak ? offPeakWait(this.host.store.settings().executor.offPeak, Date.now()) : 0
+    if (wait > 0) throw new Later('Waiting for the off-peak window', Math.min(wait, OFFPEAK_RECHECK_MS))
     this.slots.reserve(ticketId, 'launch')
     try { await this.launch(ticket, assignment); this.transient.delete(`launch:${assignmentId}`) }
     catch (error) {

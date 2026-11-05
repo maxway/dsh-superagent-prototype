@@ -233,7 +233,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 - `source:github`、`source:feishu`：`{"enabled": true, "config": {…}}`。GitHub 的配置有 `repository` 和 `cli`，以及开关 `observeIssues`、`observePulls`、`observeComments` 和 `observeCi`，默认关闭，它们接收仓库中每个新 Issue、新 pull request 和评论，以及默认分支的 CI；飞书的配置有 `cli`、`chats`（形如 `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]`，或 `"all"`）、`directMessages`，以及 `otherChats`（`"none"` 或 `"mentions"`）。
 - `policy`：`{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`。`bots` 列出其消息可以成为推断候选的机器人。`admission` 行以群 id 为键；飞书还用 `other` 或 `direct`，GitHub 用 `issues`、`pulls`、`comments` 或 `ci`；未设置的单元格取默认值（见 [002 授权机制](002-authorization.md)）。
 - `eval`：`mode`、`timeoutSeconds` 和 `model`。
-- `executor`：`model`、`maxWorkers`、`directory`、`prepare` 和 `blockedCommands`。处理暂停是一个单独的设置 `paused`，由 `POST executor/pause` 设置。
+- `executor`：`model`、`maxWorkers`、`offPeak`、`directory`、`prepare` 和 `blockedCommands`。`offPeak` 默认是 `{"enabled": false, "start": "22:00", "end": "08:00", "timezone": "Asia/Shanghai"}`：以不紧急接单的工单只在该每日窗口内启动新的派工（见 [003 执行](003-execution.md)）。处理暂停是一个单独的设置 `paused`，由 `POST executor/pause` 设置。
 
 更改仓库或 CLI 会先运行相应的安装配置检查。检查失败会返回 400，详情在 `setup` 中。账号更改成功，或在安装配置待处理期间的任何保存，都会返回 `restarting: true`。应用重启期间，API 暂时不可用。
 

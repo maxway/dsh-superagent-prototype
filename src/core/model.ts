@@ -301,6 +301,11 @@ export interface Ticket {
   updatedAt: string
   /** The Triggers it was accepted from: the one that started it, and the batch its Eval held. */
   origin: { triggerId: string; triggerIds: string[] }
+  /**
+   * The work is not urgent: its Executor starts each new Assignment only inside the configured off-peak window
+   * (`executor.offPeak`), so a deployment can run it when computing costs less. A running turn is never interrupted.
+   */
+  offPeak?: true
   /** What its Executor chose: its short name, directory and assignment text. */
   execution?: Execution
   /** The latest failed delivery of an Input to its worker, until a delivery succeeds. */
