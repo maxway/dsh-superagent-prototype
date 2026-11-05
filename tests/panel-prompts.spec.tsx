@@ -60,6 +60,22 @@ it('shows a built-in skill with the CLI notes in the full prompt, editable as a 
   expect(all('.dt-nav-item').map(item => item.textContent)).toContain('dsh-superagent-testing')
 })
 
+it('shows the GitLab built-in skill label and content in Prompts', async () => {
+  server.setup.accounts = { ...server.setup.accounts!, provider: 'gitlab' }
+  at({ page: 'settings', query: { group: 'prompts' } })
+  await mount()
+  expect(all('.dt-prompt-nav .dt-nav-item > span').map(item => item.textContent)).toContain(zh['promptPart.skill/gitlab'])
+  await click(tab(zh.promptViewFull))
+  await act(async () => {
+    const select = field<HTMLSelectElement>(zh.promptPreviewTarget)
+    select.value = 'skill/gitlab'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await settle()
+  expect(text()).toContain('Use `glab` for every GitLab operation.')
+  expect(all('.dt-preview-part[data-editable] b').map(name => name.textContent)).toEqual([zh['promptPart.skill/gitlab']])
+})
+
 it('loads all defaults into the draft from the history without saving them', async () => {
   server.prompts.current = promptVersion(0, { ...defaultPrompts(), scope: 'Old scope' })
   at({ page: 'settings', query: { group: 'prompts' } })
