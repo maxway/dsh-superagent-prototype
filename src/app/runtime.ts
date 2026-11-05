@@ -196,6 +196,17 @@ export class Runtime extends Service implements SourceHost {
     return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, ...trigger ? { trigger } : {} })
   }
   checkSetup(): void { this.setup.check() }
+  /** Ask the plugin to drain Executors and then let DSH's launcher exit, after the current HTTP response. */
+  requestShutdown(): void {
+    const exit = (this.ctx as unknown as { get(name: string): unknown }).get('appExit')
+    if (typeof exit !== 'function') throw new Error('The launcher does not provide an exit hook; stop is unavailable')
+    // Let the route's response flush before the drain closes the HTTP server.
+    setTimeout(() => {
+      void this.stop().catch((error: unknown) => {
+        this.ctx.logger.warn('dsh-superagent stop drain failed: %s', String(error))
+      }).finally(() => { (exit as (code?: number) => void)(0) })
+    }, 50)
+  }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
   idle(): Promise<void> { return this.passes.idle() }
   pump(): Promise<void> { return this.passes.pump() }
@@ -228,7 +239,7 @@ export class Runtime extends Service implements SourceHost {
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
-      checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog() }
+      checkSetup: () => { setup.check() }, requestShutdown: () => runtime.requestShutdown(), requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog() }
   }
   /** Idempotent stop; concurrent or repeated calls share the same shutdown promise. */
   stop(): Promise<void> { return this.stopping ??= this.shutdown() }

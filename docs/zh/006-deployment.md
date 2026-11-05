@@ -130,7 +130,7 @@ scripts/dsh-superagent status
 
 `start` 在 tmux 会话 `dsh-superagent` 中运行 `dsh --profile superagent`；其他 profile 则使用 `dsh-<profile>`。它最多等待一分钟，让运行时变为就绪或报告安装配置要求。首次运行时，它会打印缺失的安装配置信息。它会拒绝重复的实例，包括从这个脚本之外启动的实例。
 
-`stop` 和 `restart` 请求优雅关闭，并最多等待执行器五分钟。它们绝不会强制杀死进程，也不会碰其他 tmux 会话。
+`stop` 和 `restart` 请求优雅 drain，并最多等待进程五分钟退出。执行器 drain 的上限是十秒，DSH 启动器再加五秒宽限，因此停止通常约十五秒完成；drain 之后仍在回合中的 worker 可能被打断。它们绝不会强制杀死进程，也不会碰其他 tmux 会话。
 
 `status` 打印进程 id、健康状况和安装配置问题。要使用其他 profile 或端口，请用 `--profile` 和 `--url`，或设置 `DSH_SUPERAGENT_PROFILE` 和 `DSH_SUPERAGENT_URL`。
 
@@ -205,6 +205,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 | `PUT settings/<block>`，带 `{"value": …, "revision": n}` | 保存一个块：`saved`、该块的新 `revision`、`policy_changed` 和 `restarting`。`value` 是整个块，与 `GET settings` 中的形式相同；缺失的键取默认值 |
 | `POST executor/pause`，带 `{"paused": true}` 或 `false` | 暂停或恢复处理：`paused` |
 | `POST setup/check` | 通过重启 dsh-superagent 再次运行安装配置：`restarting: true`。安装配置没有可修复项时拒绝 |
+| `POST service/stop` | 请求 dsh-superagent 先 drain 执行器（上限十秒），再通过 DSH 启动器退出：`stopping: true`。启动器没有退出钩子时返回 500；服务脚本用它来避免依赖 POSIX 信号 |
 | `POST policy-sync/<source id>` | 立即同步该来源的允许名单：`policy`，即保存的来源部分 |
 | `GET prompts`、`PUT prompts`，带 `{"config", "baseRevision"}` | 读取提示词配置：`current`，带有 `revision` 和 `config`；`defaults`；`sections`，即团队段落，按 Session 读取的顺序排列；`skillName`，团队技能名称的模式；`builtin`，团队技能不能使用的名称；以及 `skillPrefix`，Session 加载技能名称时使用的前缀。或保存它：新的 `revision` |
 | `POST tickets/<id>/retry`、`POST tickets/<id>/stop` | 重试或停止一个工单，与面板的行为一致 |
