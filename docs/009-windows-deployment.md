@@ -108,6 +108,20 @@ A port is not a one-time cost. After it, every change must be checked on two pla
 | WP8 | Unity build integration on Windows | 2-4 | WP2, WP7 |
 | WP9 | Windows exe smoke-test harness | 1-2 | WP8 |
 
+### Staged execution
+
+The work packages are the technical breakdown; the stages are the execution and acceptance order. Each stage ends with a reviewable change and a check, and the next stage starts only when the previous acceptance holds. Stages 0, 4 and 6 need a Windows machine with Unity; stages 1, 2, 3 and 5 can be built and tested on Linux with a platform argument.
+
+| Stage | Scope | Acceptance | Windows host |
+| --- | --- | --- | --- |
+| 0 | Proof of concept on the target machine | DSH, the panel and the pwsh tool load; setup's blockers are measured; one Unity batchmode build and one exe smoke test are timed; go or no-go is recorded | Required |
+| 1 | Service lifecycle: Node service script, `service/stop`, logs, lock and tests | `pnpm check` passes; `start`, `status`, `stop` and `restart` behave as before on Linux; the stop route is unit-tested; no POSIX change | No; Windows smoke follows |
+| 2 | Worker command layer: platform command runner and probes, Win32 shims, `PATHEXT`, blocked commands, account selection | Unit tests cover the generated files and argument handling; POSIX behavior is unchanged; the generated `.cmd` files are reviewed | No |
+| 3 | Prepare, router tools, prompts and skills: `pwsh` prepare, the router allow list, the wait guard, shell-neutral wording | Tests pass; Linux keeps the `sh` path; the Windows commands are documented | No |
+| 4 | Unity build and exe smoke scripts: batchmode build, output path, smoke harness, cache and cleanup | On the stage 0 machine, a real build produces the exe and the smoke script passes and fails correctly | Required |
+| 5 | Setup and deployment documentation: Windows prerequisites, service, credentials, prepare and troubleshooting, both languages | `pnpm check` and the documentation tests pass; a person reviews the Windows path | No |
+| 6 | Windows CI and end-to-end verification, Feishu optional | A Windows runner runs `pnpm check`; a real ticket completes setup, build, smoke test, commit, push and merge request; Linux still passes | Required |
+
 ### WP0: proof of concept
 
 On a clean Windows 11 or Windows Server machine, install Node 22.19+ or 24, pnpm, git, PowerShell 7, the Unity Editor version with the Windows build support and the Visual Studio/IL2CPP toolchain if the target uses it, and the DSH version pinned in [006 Deployment](006-deployment.md). Create the `superagent` profile, add the bundle with `link:`, open the panel and confirm that the Web profile, the `pwsh` tool and the isolation settings load. Then measure the four uncertain areas: setup's `env` probe, an `execFile`/`spawn` call with a `.cmd` wrapper, the prepare command under `sh -c`, and a real Unity batchmode build plus an exe smoke test from a worktree. Exit when each has a measured answer and a rough duration; stop if DSH or Unity cannot run, because either would change the whole estimate.

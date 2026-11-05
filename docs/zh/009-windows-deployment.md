@@ -110,6 +110,20 @@ Unity 项目让主机问题变得具体。Unity 提供 Windows、macOS 和 Linux
 | WP8 | Windows 上的 Unity 构建集成 | 2-4 | WP2、WP7 |
 | WP9 | Windows exe 冒烟测试脚本 | 1-2 | WP8 |
 
+### 分阶段执行
+
+工作包是技术拆解；下面的阶段是执行与验收顺序。每个阶段以可审查的改动和一次检查结束，只有上一阶段的验收通过后才开始下一阶段。阶段 0、4、6 需要装有 Unity 的 Windows 机器；阶段 1、2、3、5 可以在 Linux 上用 platform 参数开发和测试。
+
+| 阶段 | 范围 | 验收 | Windows 主机 |
+| --- | --- | --- | --- |
+| 0 | 在目标机器上做概念验证 | DSH、面板和 pwsh 工具加载；测量 setup 的阻塞点；完成并计时一次 Unity batchmode 构建和一次 exe 冒烟测试；记录 go/no-go | 需要 |
+| 1 | 服务生命周期：Node 服务脚本、`service/stop`、日志、锁和测试 | `pnpm check` 通过；Linux 上 `start`、`status`、`stop`、`restart` 行为不变；停止路由有单元测试；POSIX 行为无变化 | 不需要；随后做 Windows 冒烟 |
+| 2 | worker 命令层：平台命令运行器与探测、Win32 shim、`PATHEXT`、blocked commands、账号选择 | 单元测试覆盖生成的文件和参数处理；POSIX 行为不变；人工审查生成的 `.cmd` | 不需要 |
+| 3 | 准备命令、路由工具、提示词与技能：`pwsh` prepare、路由白名单、等待守卫、不限定外壳的措辞 | 测试通过；Linux 保留 `sh` 路径；Windows 命令有文档 | 不需要 |
+| 4 | Unity 构建和 exe 冒烟脚本：batchmode 构建、输出路径、冒烟脚本、缓存与清理 | 在阶段 0 的机器上，真实构建产出 exe，冒烟脚本能正确通过和失败 | 需要 |
+| 5 | 安装与部署文档：Windows 前置条件、服务、凭据、准备命令和故障排查，两种语言 | `pnpm check` 和文档测试通过；人工审查 Windows 路径 | 不需要 |
+| 6 | Windows CI 与端到端验证，飞书可选 | Windows runner 运行 `pnpm check`；真实工单完成 setup、构建、冒烟、提交、推送和合并请求；Linux 仍然通过 | 需要 |
+
 ### WP0：概念验证
 
 在一台干净的 Windows 11 或 Windows Server 机器上，安装 Node 22.19+ 或 24、pnpm、git、PowerShell 7、带 Windows 构建支持的 Unity Editor（如果目标使用 IL2CPP，还包括 Visual Studio/IL2CPP 工具链），以及 [006 部署](006-deployment.md)中固定的 DSH 版本。创建 `superagent` profile，用 `link:` 添加 bundle，打开面板，确认 Web profile、`pwsh` 工具和隔离设置都能加载。然后测量四个不确定领域：setup 的 `env` 探测、用 `.cmd` 包装的 `execFile`/`spawn` 调用、`sh -c` 下的准备命令，以及从工作树执行一次真实的 Unity batchmode 构建加一次 exe 冒烟测试。每个领域都有实测答案和大致耗时后结束；如果 DSH 或 Unity 跑不起来就停止，因为任一都会改变整个估算。
