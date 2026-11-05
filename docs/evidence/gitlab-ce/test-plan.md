@@ -155,7 +155,7 @@ GIT_CONFIG_GLOBAL="$TMP/gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
 - 幂等检查只读最近 100 条 note。
 - `gitlab/.../checks` 只到 pipeline，不到单个 job。
 - 404 note POST 会重试；目标被删除时可能持续重试。
-- 真实 CE 已验证 Issue 评论→回复、CLI smoke、默认分支 CI 变化、人类作者 MR Trigger、MR-head pending pipeline detail/ID 变化、停服及运行中重启后的评论补读，以及 Sources 启用前后截图。Prompts 的 GitLab 技能标签有 after 截图与 mock 覆盖，但 base-before 视觉证据缺失。项目无 Runner，真实 job 成功/失败仍未实测；pipeline 汇总 success/failed 和 checks API 失败已由 mock 覆盖（见第 13 节）。其他 CE 形态未验证，PR 保持 draft。
+- 真实 CE 已验证 Issue 评论→回复、CLI smoke、默认分支 CI 变化、人类作者 MR Trigger、MR-head pending pipeline detail/ID 变化、停服及运行中重启后的评论补读，以及 Sources 启用前后截图。Prompts 的 GitLab 技能标签有 after 截图与 mock 覆盖，但 base-before 视觉证据缺失。项目无 Runner，真实 job 成功/失败仍未实测；pipeline 汇总 success/failed 和 checks API 失败已由 mock 覆盖（见第 13 节）。其他 CE 形态未验证；PR 进入人工评审，以上作为已知限制记录。
 
 ## 13. 本次实测记录
 
