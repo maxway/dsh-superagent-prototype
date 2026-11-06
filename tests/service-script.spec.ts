@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 let root: string
 let server: Server | undefined
@@ -70,6 +70,9 @@ async function answering(state: unknown = READY, always = false): Promise<string
 const status = async (profile: string, url = 'http://127.0.0.1:9') =>
   JSON.parse((await run('status', '--profile', profile, '--url', url)).stdout) as { pids: number[]; manually_stopped: boolean }
 
+// These cases drive the POSIX control path with stubbed `ps`, `tmux` and `dsh` shell scripts. The Windows start/stop
+// path is covered by the platform-specific unit test below and by the real Windows smoke run in deployment stage 5.
+describe.skipIf(process.platform === 'win32')('POSIX service lifecycle', () => {
 it('refuses to stop when two processes serve the profile, before it writes the stop marker', async () => {
   processes(service(sleeper()), `${sleeper()} node node /opt/dsh --profile=superagent`)
   expect(await run('stop')).toMatchObject({ code: 1, stderr: expect.stringContaining('Multiple dsh-superagent processes found') })
@@ -228,6 +231,7 @@ it('refuses a second control operation while one holds the profile\'s lock', asy
   expect(await run('status')).toMatchObject({ code: 1,
     stderr: expect.stringContaining('Another dsh-superagent control operation is in progress') })
 }, 20_000)
+})
 it('exposes the platform-specific process, start and argument forms', async () => {
   const module = pathToFileURL(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')).href
   const script = `import(${JSON.stringify(module)}).then(m => console.log(JSON.stringify({
@@ -249,6 +253,8 @@ it('exposes the platform-specific process, start and argument forms', async () =
   expect(value.command).toBe("umask 077; export DSH_HOME=/tmp/home; unset HOME; export PATH=/usr/bin; unset TMUX TMUX_PANE; exec /opt/dsh --profile superagent --no-open >> '/tmp/log file.log' 2>&1")
   expect(value.argv).toMatchObject({ action: 'start', profile: 'one', timeout: 5, respect_stop: true })
 })
+// The remaining cases also drive the POSIX control path with stubbed shell binaries.
+describe.skipIf(process.platform === 'win32')('POSIX service lifecycle (continued)', () => {
 it('refuses to start a service while no process runs it but something answers at its URL', async () => {
   const url = await answering(READY, true)
   expect(await run('start', '--url', url, '--timeout', '5'))
@@ -289,3 +295,4 @@ it('does not signal a process that took the recorded service PID, and keeps a st
   expect(await run('stop', '--stop-timeout', '1')).toMatchObject({ code: 1, stderr: expect.stringContaining('Graceful stop timed out') })
   expect(existsSync(join(control('superagent'), 'manually-stopped'))).toBe(true)
 }, 20_000)
+})

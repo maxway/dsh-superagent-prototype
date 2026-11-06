@@ -9,7 +9,7 @@ The question is about the host, not about who can use the agent. Every user open
 - **Required for this project's host.** The workers must run the project's Windows-only toolchain, so the agent host must be Windows. This plan ports the deployment only; the project's own build and smoke work is out of scope.
 - **Estimate:** a usable internal build takes about 9-13 person-days: 2-2.5 weeks for one developer, including the proof of concept and end-to-end verification, without Feishu and without a Windows CI runner.
 - **Full parity** — Feishu, Windows CI, bilingual setup documentation and the hardening that keeps both platforms tested — takes about 12-18 person-days, or 3-4 weeks for one developer.
-- **Status (2026-11-06):** stages 1-3 are implemented and tested on Linux; stage 4 adds the bilingual setup and deployment documentation. The proof of concept, a Windows runner and the end-to-end run are not done, so Windows remains experimental and the Feishu Source is not supported there.
+- **Status (2026-11-06):** stages 1-4 are implemented and tested on Linux. A manual Windows run of `pnpm check` now passes with documented POSIX-only skips, and the proof of concept's native-path blocker is fixed. A Windows runner, the end-to-end run and Feishu are still missing, so Windows remains experimental and the Feishu Source is not supported there.
 - **Recommendation:** port the deployment; start with the 1-2 day proof of concept, then follow the staged plan below. The project's toolchain work is separate.
 
 ## What deploying on Windows means
@@ -56,11 +56,13 @@ The bundle already switches its two agent presets between bash and pwsh by platf
 
 The table above is the assessment this plan started from. Stages 1-4 have since addressed these gaps:
 
+- **Stage 0 (partial).** The proof of concept on the operator's Windows machine found two blockers: `stateDir` and `executor.directory` rejected native `C:\...` paths, and the setup probe passed its environment through a POSIX `env` executable. Both fixes are in main. A real Windows start/stop smoke and the prepare probe against a target repository still belong to stage 5.
 - **Stage 1.** `scripts/dsh-superagent` is a Node script. POSIX keeps tmux and `SIGINT`; Windows starts a detached process and stops through `POST /orchestrator/api/service/stop`. The POSIX path passed a real start/stop test; the Windows path has unit tests only.
 - **Stage 2.** The worker command layer resolves `PATHEXT`, writes `.cmd` guardrails only for blocked and inactive commands, and selects the agent account with `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR` and `LARKSUITE_CLI_CONFIG_DIR`; probes and git credentials use native argv.
 - **Stage 3.** The prepare command runs through `sh -c` on POSIX and `pwsh -NoProfile -NonInteractive -Command` on Windows; the router accepts `pwsh`; prompts and skills are shell-neutral.
-- **Stage 4.** This documentation change adds the Windows setup and deployment path in both languages.
-- **Not done.** Stage 0's proof of concept, a Windows runner running `pnpm check`, and stage 5's end-to-end run. The Feishu Source is still unsupported on Windows (WP6). Windows therefore remains experimental; do not call it supported until stage 5 passes.
+- **Stage 4.** Added the Windows setup and deployment path in both languages.
+- **Stage 5 (partial).** `pnpm check` passes on a Windows host (Windows 10 19045, Node.js 24.21.0, pnpm 11.7.0) with the POSIX-only suites skipped for the reasons recorded in [the stage 5 evidence](evidence/windows-stage5/). A Windows CI runner and the end-to-end run against a scratch GitLab project are not done.
+- **Not done.** Stage 5's Windows runner and end-to-end run, and the Feishu Source on Windows (WP6). Windows therefore remains experimental; do not call it supported until stage 5 passes.
 
 ## Is it necessary?
 

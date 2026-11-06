@@ -838,7 +838,9 @@ it('reports GitHub as failing only after the configured number of consecutive fa
   expect(githubKind.schema.parse({})).toEqual({ repository: '', cli: '', configDir: '', pollSeconds: 60, failuresBeforeError: 3, observeIssues: false,
     observePulls: false, observeComments: false, observeCi: false })
 })
-describe('feishu event consumer', () => {
+// The Feishu Source is not supported on Windows yet (WP6): lark-cli from npm is a .cmd that the long-running spooler
+// cannot launch directly. The GitLab and GitHub Sources are unaffected.
+describe.skipIf(process.platform === 'win32')('feishu event consumer', () => {
   let dir: string
   let controller: AbortController
   let running: Promise<unknown> | undefined

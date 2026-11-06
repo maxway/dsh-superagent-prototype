@@ -12,7 +12,7 @@
 
 插件配置保存状态目录和本机上限。其他一切都用面板：仓库和账号在来源中设置，允许名单在策略中设置，执行器（worker）目录和命令在执行中设置。
 
-Windows 主机目前是实验性的。服务控制、worker 命令层、准备命令和路由工具的 Windows 路径已经实现，并只在 Linux 上做了单元测试；还没有 Windows runner 或端到端运行验证过它们（Windows 部署计划的阶段 5）。Windows 主机支持 Git 来源，但暂不支持飞书来源。在 Windows 上，worker 和路由 Session 使用 `pwsh` 工具而不是 `bash`，准备命令也通过 PowerShell 7 运行。下面某一步在 Windows 上不同时，会给出它的 Windows 写法。
+Windows 主机目前是实验性的。服务控制、worker 命令层、准备命令和路由工具的 Windows 路径已经实现。测试套件现已在 Windows 主机上通过，并有记录在案的 POSIX 专用跳过项；但还没有 Windows runner 或端到端运行验证过部署本身（Windows 部署计划的阶段 5）。Windows 主机支持 Git 来源，但暂不支持飞书来源。在 Windows 上，worker 和路由 Session 使用 `pwsh` 工具而不是 `bash`，准备命令也通过 PowerShell 7 运行。下面某一步在 Windows 上不同时，会给出它的 Windows 写法。
 
 ### 权限与隔离
 

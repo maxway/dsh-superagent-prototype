@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Config, FeishuBotSchema, GithubAccountsSchema, GitlabAccountsSchema, executable, machineOf, resolveDeployment, resolveFeishuBot,
-  resolveGitlabDeployment, type Machine, type Probe } from '../src/deployment.ts'
+import { Config, FeishuBotSchema, GithubAccountsSchema, GitlabAccountsSchema, absolutePathPattern, executable, machineOf, resolveDeployment,
+  resolveFeishuBot, resolveGitlabDeployment, type Machine, type Probe } from '../src/deployment.ts'
 import { gitProvider, setupChanged, sourceSwitched } from '../src/app/setup.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { testConfigDirs } from './fixtures/deployment.ts'
@@ -29,12 +29,12 @@ const setupError = (place: string, code: string, values: Record<string, unknown>
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'deployment-'))
   mkdirSync(join(dir, 'bin')); mkdirSync(join(dir, 'state', 'worker-bin'), { recursive: true }); mkdirSync(join(dir, 'widgets', 'src'), { recursive: true })
-  path = [join(dir, 'state-link', 'worker-bin'), `${join(dir, 'state', 'worker-bin')}/`, join(dir, 'bin'), '/usr/bin', '/bin'].join(':')
+  path = [join(dir, 'state-link', 'worker-bin'), `${join(dir, 'state', 'worker-bin')}/`, join(dir, 'bin'), '/usr/bin', '/bin'].join(delimiter)
   gh(join(dir, 'bin', 'gh'), 'Agent-Bot')
   program(join(dir, 'bin', 'lark-cli'), lark({ appId: 'cli_bot', brand: 'lark', identities: { bot: { status: 'ready' } } }))
   // Stale worker shims with the same binary name must be skipped regardless of PATH normalization or symlinks.
   program(join(dir, 'state', 'worker-bin', 'gh'))
-  symlinkSync(join(dir, 'state'), join(dir, 'state-link'))
+  symlinkSync(join(dir, 'state'), join(dir, 'state-link'), process.platform === 'win32' ? 'junction' : undefined)
   await exec('git', ['init', '-q', join(dir, 'widgets')], { env: gitEnv() })
   await exec('git', ['-C', join(dir, 'widgets'), 'remote', 'add', 'origin', 'git@github.com:acme/widgets.git'], { env: gitEnv() })
 })
@@ -44,6 +44,14 @@ afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 vi.setConfig({ testTimeout: 30_000 })
 
 describe('configuration schema', () => {
+  it('accepts native absolute paths on each platform', () => {
+    expect(absolutePathPattern('win32').test('C:\\Users\\me\\state')).toBe(true)
+    expect(absolutePathPattern('win32').test('C:/Users/me/state')).toBe(true)
+    expect(absolutePathPattern('win32').test('\\\\server\\share')).toBe(true)
+    expect(absolutePathPattern('win32').test('relative\\dir')).toBe(false)
+    expect(absolutePathPattern('linux').test('/home/me/state')).toBe(true)
+    expect(absolutePathPattern('linux').test('C:\\Users\\me\\state')).toBe(false)
+  })
   it('requires only the state directory and reads the editable fields through references', () => {
     expect(() => Config({})).toThrow('stateDir')
     const read = machineOf(Config({ stateDir: join(dir, 'state') }))
@@ -61,7 +69,9 @@ describe('configuration schema', () => {
 })
 
 describe('setup', () => {
-  it('reads the repository from the GitHub Source and the accounts from their CLIs, skipping the worker shims', async () => {
+  // These cases stand POSIX shell scripts in for the CLIs. Windows resolves native `.exe`/`.cmd` CLIs instead (tested by the
+  // PATHEXT case below) and the stage 5 end-to-end run exercises the real Windows CLIs.
+  it.skipIf(process.platform === 'win32')('reads the repository from the GitHub Source and the accounts from their CLIs, skipping the worker shims', async () => {
     const deployment = await resolveDeployment(machine(), { repository: 'acme/widgets', cli: 'gh' }, probe, path)
     expect(deployment).toMatchObject({ repository: 'acme/widgets', git: { provider: 'github', host: 'github.com', cli: join(dir, 'bin', 'gh'),
       login: 'Agent-Bot', commitEmail: '7+Agent-Bot@users.noreply.github.com' } })
@@ -71,7 +81,7 @@ describe('setup', () => {
     // A renamed repository is still resolved by its old name; notifications carry GitHub's current full_name.
     expect((await resolveDeployment(machine(), { repository: 'acme/gadgets', cli: 'gh' }, probe, path)).repository).toBe('acme/widgets')
   })
-  it('names what setup needs and where it is set', async () => {
+  it.skipIf(process.platform === 'win32')('names what setup needs and where it is set', async () => {
     const needs = (place: string, code: string, values: Record<string, unknown>, github: unknown) =>
       expect(resolveDeployment(machine(), github, probe, path)).rejects.toEqual(setupError(place, code, values))
     const repository = 'acme/widgets'
@@ -89,7 +99,7 @@ describe('setup', () => {
     await needs('github', 'agentCliNoAccount', {}, { repository, cli: program(join(dir, 'bin', 'gh-anonymous'), `echo '{}'`) })
     expect(() => executable('nothing-here', join(dir, 'bin'))).toThrow('nothing-here is not an executable file on PATH')
   })
-  it('reads the Feishu bot from a bot-only lark-cli, or finds none when the Feishu Source names no CLI', async () => {
+  it.skipIf(process.platform === 'win32')('reads the Feishu bot from a bot-only lark-cli, or finds none when the Feishu Source names no CLI', async () => {
     expect(await resolveFeishuBot(machine(), {}, probe, path)).toBeUndefined()
     expect(await resolveFeishuBot(machine(), { cli: 'lark-cli' }, probe, path)).toEqual({ cli: join(dir, 'bin', 'lark-cli'), configDir: testConfigDirs.lark,
       appId: 'cli_bot', brand: 'lark', botId: 'ou_bot', name: 'Widgets Bot' })
@@ -130,7 +140,7 @@ describe('setup', () => {
     expect(() => gitProvider(settings({ github: { enabled: true, config: { repository: 'acme/gadgets', cli: 'gh' } },
       gitlab: { enabled: true, config: { repository: 'acme/widgets', cli: 'glab' } } }))).toThrow('Both the GitHub and GitLab')
   })
-  it('reads the GitLab project and account from glab, including a self-managed host and a renamed project', async () => {
+  it.skipIf(process.platform === 'win32')('reads the GitLab project and account from glab, including a self-managed host and a renamed project', async () => {
     const glab = (file: string, access = 30): string => program(file, `case "$*" in\n  "api user") echo '{"id":7,"username":"agent-bot","email":null}' ;;\n  "api projects/"*) echo '{"id":42,"path_with_namespace":"acme/widgets","default_branch":"main","permissions":{"project_access":{"access_level":${access}}}}' ;;\n  *) exit 1 ;;\nesac`)
     glab(join(dir, 'bin', 'glab'))
     const deployment = await resolveGitlabDeployment(machine(), { host: 'https://gitlab.example.com:8443/', repository: 'acme/gadgets', cli: 'glab' }, probe, path)
@@ -165,7 +175,20 @@ describe('account configuration directories', () => {
   })
   it('passes each account directory to its setup probe through the child environment', async () => {
     const called: { argv: string[]; env?: Record<string, string> }[] = []
-    const recording: Probe = async (argv, env) => { called.push({ argv, env }); return probe(argv) }
+    // Keep the environment assertion platform-neutral: Windows cannot run the POSIX shell stand-ins, so it gets canned
+    // outputs from the same probe calls.
+    const recording: Probe = async (argv, env) => {
+      called.push({ argv: [...argv], env })
+      if (process.platform !== 'win32') return probe(argv)
+      const command = argv.slice(1).join(' ')
+      if (command === 'api user') return '{"login":"agent-bot","id":7}'
+      if (command.startsWith('api repos/')) return '{"name":"acme/widgets","push":true}'
+      if (command.startsWith('api projects/')) return '{"id":42,"path_with_namespace":"acme/widgets","default_branch":"main","permissions":{"project_access":{"access_level":30}}}'
+      if (command === 'auth status') return JSON.stringify({ appId: 'cli_bot', brand: 'feishu', identities: { bot: { status: 'ready' } } })
+      if (command === 'config strict-mode') return 'strict-mode: bot (source: profile)'
+      if (command.startsWith('api GET /open-apis/bot/v3/info')) return JSON.stringify({ bot: { open_id: 'ou_bot', app_name: 'Widgets Bot' }, code: 0 })
+      return ''
+    }
     const configDir = join(dir, 'agent-config')
     await resolveDeployment(machine(), { repository: 'acme/widgets', cli: 'gh', configDir }, recording, path)
     expect(called.length).toBe(2)
@@ -185,7 +208,7 @@ describe('executable lookup', () => {
     chmodSync(exe, 0o644)
     expect(executable('tool', join(dir, 'bin'), undefined, 'win32')).toBe(exe)
     // POSIX still requires the execute bit, so the same file is not an executable there.
-    expect(() => executable('tool', join(dir, 'bin'))).toThrow('tool is not an executable file on PATH')
+    if (process.platform !== 'win32') expect(() => executable('tool', join(dir, 'bin'))).toThrow('tool is not an executable file on PATH')
     // PATHEXT order prefers .exe over .cmd.
     writeFileSync(join(dir, 'bin', 'tool.cmd'), '')
     expect(executable('tool', join(dir, 'bin'), undefined, 'win32')).toBe(exe)

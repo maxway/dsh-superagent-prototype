@@ -10,7 +10,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
 
-Windows hosts are experimental. The Windows paths for service control, the worker command layer, the prepare command and the router tools are implemented and unit-tested on Linux, but no Windows runner or end-to-end run has verified them yet (stage 5 of the Windows deployment plan). A Windows host supports the Git Sources; the Feishu Source is not supported there yet. Workers and the router use the `pwsh` tool instead of `bash` there, and the prepare command runs through PowerShell 7. Where a step below differs on Windows, its Windows form is given.
+Windows hosts are experimental. The Windows paths for service control, the worker command layer, the prepare command and the router tools are implemented. The test suite now passes on a Windows host with documented POSIX-only skips, but no Windows runner or end-to-end run has verified the deployment yet (stage 5 of the Windows deployment plan). A Windows host supports the Git Sources; the Feishu Source is not supported there yet. Workers and the router use the `pwsh` tool instead of `bash` there, and the prepare command runs through PowerShell 7. Where a step below differs on Windows, its Windows form is given.
 
 ### Permissions and isolation
 

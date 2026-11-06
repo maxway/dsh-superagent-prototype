@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, type Settings } from '../src/policy.ts'
+import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, isAbsolutePath,
+  type Settings } from '../src/policy.ts'
 import type { MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
@@ -10,6 +11,14 @@ import type { Thread, Ticket, Trigger } from '../src/core/index.ts'
 const MEMBER = 'ou_alice'
 const CHAT = 'oc_team'
 const OBSERVED = 'oc_1111111111111111111111111111'
+
+it('accepts native absolute paths on each platform', () => {
+  expect(isAbsolutePath('C:\\Users\\me\\state', 'win32')).toBe(true)
+  expect(isAbsolutePath('\\\\server\\share', 'win32')).toBe(true)
+  expect(isAbsolutePath('/home/me/state', 'linux')).toBe(true)
+  expect(isAbsolutePath('C:\\Users\\me\\state', 'linux')).toBe(false)
+  expect(isAbsolutePath('relative\\dir', 'win32')).toBe(false)
+})
 const feishuSource = (config: { chats: { chatId: string; listen: 'mentions' | 'all' }[]; directMessages: boolean }, enabled = true) => ({ enabled, config })
 const base = SettingsSchema.parse({
   policy: { sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'Alice' }] } } },
