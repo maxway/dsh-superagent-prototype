@@ -1,6 +1,6 @@
 /** Deferring a Ticket's Assignments to the configured off-peak window (docs/003). */
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { Ticket } from '../src/core/index.ts'
+import type { Ticket, Trigger } from '../src/core/index.ts'
 import type { OffPeakWindow } from '../src/offpeak.ts'
 import { startRuntime, feishu, type Host } from './fixtures/host.ts'
 
@@ -14,8 +14,13 @@ function setWindow(window: Partial<OffPeakWindow>) {
   h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor,
     offPeak: { enabled: true, start: '22:00', end: '08:00', timezone: 'Asia/Shanghai', ...window } } })
 }
+/** A GitHub Issue mention from an allowed sender, for the source-based default. */
+function github(id: string, text: string): Trigger {
+  return { id: `github:${id}`, source: 'github', threads: [{ source: 'github', id: `github:${id}` }],
+    actor: { source: 'github', id: 'alice' }, human: true, addressed: 'mention', at: '2026-09-09T00:00:00Z', text, meta: {} }
+}
 /** Accept `trigger` with the routing fields given, outside the runtime's main-turn helpers. */
-async function accept(trigger: ReturnType<typeof feishu>, extra: Record<string, unknown> = {}): Promise<Ticket> {
+async function accept(trigger: Trigger, extra: Record<string, unknown> = {}): Promise<Ticket> {
   h.runtime.receive(trigger)
   await h.runtime.idle()
   const result = await h.route({ kind: 'accept', trigger_id: trigger.id, title: 'Fix', worktree_name: 'fix-one', acknowledgement: '收到。', ...extra })
@@ -61,6 +66,17 @@ it('launches a Ticket not marked off-peak at once, outside the window', async ()
   const ticket = await accept(feishu('1', '@bot 修一下'))
   expect(ticket.offPeak).toBeUndefined()
   expect(ticketState(ticket)).toBe('running')
+})
+
+it('defers a GitHub request by default and honours an explicit override for urgent work', async () => {
+  setWindow({ enabled: true, start: '22:00', end: '08:00' })
+  vi.useFakeTimers({ toFake: ['Date'], now: Date.parse('2026-09-09T04:00:00Z') })
+  const deferred = await accept(github('1', 'Upgrade the parser to the new grammar'))
+  expect(deferred.offPeak).toBe(true)
+  expect(ticketState(deferred)).toBe('pending')
+  const urgent = await accept(github('2', 'The production build is broken'), { off_peak: false })
+  expect(urgent.offPeak).toBeUndefined()
+  expect(ticketState(urgent)).toBe('running')
 })
 
 /** The state of a Ticket's latest Assignment, read fresh from the store. */

@@ -302,7 +302,7 @@ export interface Ticket {
   /** The Triggers it was accepted from: the one that started it, and the batch its Eval held. */
   origin: { triggerId: string; triggerIds: string[] }
   /**
-   * The work is not urgent: its Executor starts each new Assignment only inside the configured off-peak window
+   * Deferred work: its Executor starts each new Assignment only inside the configured off-peak window
    * (`executor.offPeak`), so a deployment can run it when computing costs less. A running turn is never interrupted.
    */
   offPeak?: true

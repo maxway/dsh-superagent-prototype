@@ -4,6 +4,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
 import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
   from '../../core/index.ts'
+import { offPeakByDefault } from '../../offpeak.ts'
 import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
@@ -52,7 +53,7 @@ const RouteItemSchema = z.object({
   worktree_name: z.string().nullish().describe(`accept: ${WorktreeNameSchema.description ?? ''}`),
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It may ask the one question that must be answered before the work starts. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
-  off_peak: z.boolean().nullish().describe('accept: true when you judge the work complex and not urgent: a long, multi-step change with no incident, outage, deadline or person waiting now. Its Executor starts each new Assignment only inside the configured window; leave quick, urgent or unclear work unmarked.'),
+  off_peak: z.boolean().nullish().describe('accept: whether the Ticket waits for the configured off-peak window. Omit it to follow the source default: a Feishu request is not deferred unless the work is clearly deferrable (long and multi-step, with no incident, outage, deadline or person waiting now); a GitLab or GitHub request is deferred unless it is clearly urgent (an incident, outage, deadline or person waiting now). true or false overrides that default. Its Executor starts each new Assignment only inside the window.'),
   reason: z.string().nullish().describe('ignore and stop: why, at most 500 characters; an ignore needs it.'),
 }).strict()
 type RouteItem = z.infer<typeof RouteItemSchema>
@@ -96,8 +97,10 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
   switch (item.kind) {
     case 'accept': {
       const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
+      const source = host.store.triggers.get(item.trigger_id)?.source
+      const offPeak = item.off_peak ?? (source !== undefined && offPeakByDefault(source))
       const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: 'explicitRouted' },
-        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...(item.off_peak ? { offPeak: true as const } : {}), ...note })
+        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...(offPeak ? { offPeak: true as const } : {}), ...note })
       // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
       if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }
       if (decision.id === before) {
@@ -127,7 +130,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
 function routeTool(host: MainToolsHost): Tool {
   return tool({
     name: 'orchestrator_route',
-    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. An accept marks complex non-urgent work off-peak. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
+    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. An accept follows the source\'s off-peak default unless an explicit off_peak overrides it. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
     schema: z.object({ decisions: z.array(RouteItemSchema).min(1).max(20) }).strict(),
     execute: async ({ decisions }) => {
       const decided = new Map<string, string>()

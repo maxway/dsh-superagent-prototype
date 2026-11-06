@@ -32,6 +32,14 @@ function localMinutes(window: Pick<OffPeakWindow, 'timezone'>, at: number): numb
   const value = (type: 'hour' | 'minute'): number => Number(parts.find(part => part.type === type)?.value ?? 0)
   return value('hour') * 60 + value('minute')
 }
+/**
+ * Whether a new Ticket from `source` is deferred when the routing decision leaves the choice open: a Feishu
+ * request starts immediately unless it is clearly deferrable, while GitLab and GitHub work defaults to the
+ * window unless it is clearly urgent. The routing tool lets an explicit `off_peak` override this default.
+ */
+export function offPeakByDefault(source: string): boolean {
+  return source === 'github' || source === 'gitlab'
+}
 /** Whether `at` falls inside the window's daily period; an overnight window wraps past midnight. A disabled window is never inside. */
 export function insideOffPeak(window: OffPeakWindow, at: number): boolean {
   if (!window.enabled) return false

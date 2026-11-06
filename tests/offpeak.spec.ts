@@ -1,6 +1,6 @@
 /** The off-peak window schema and the daily time arithmetic the Executor uses to hold launches. */
 import { expect, it } from 'vitest'
-import { OffPeakWindowSchema, insideOffPeak, isTimeZone, offPeakWait, type OffPeakWindow } from '../src/offpeak.ts'
+import { OffPeakWindowSchema, insideOffPeak, isTimeZone, offPeakByDefault, offPeakWait, type OffPeakWindow } from '../src/offpeak.ts'
 import { SettingsSchema } from '../src/policy.ts'
 
 /** Parse a window with the schema defaults and the overrides given. */
@@ -58,6 +58,13 @@ it('never holds a launch while the window is disabled', () => {
   const disabled = window({ enabled: false })
   expect(insideOffPeak(disabled, shanghai('12:00'))).toBe(false)
   expect(offPeakWait(disabled, shanghai('12:00'))).toBe(0)
+})
+
+it('defers GitLab and GitHub work by default and leaves Feishu work immediate unless marked', () => {
+  expect(offPeakByDefault('feishu')).toBe(false)
+  expect(offPeakByDefault('github')).toBe(true)
+  expect(offPeakByDefault('gitlab')).toBe(true)
+  expect(offPeakByDefault('other')).toBe(false)
 })
 
 it('rejects a malformed clock, an empty or 24-hour window, an unknown time zone, and unknown fields', () => {
