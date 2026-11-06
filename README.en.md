@@ -29,9 +29,9 @@ Runs the service directly on a native Windows host, without WSL, tmux or Python.
 
 #### Off-peak scheduling
 
-Moves complex, non-urgent Tickets into the model's off-peak billing window to lower the cost of long tasks.
+Schedules Tickets into the model's off-peak billing window by source, lowering the cost of long tasks.
 
-- The official prototype has no such scheduling; this fork can mark those Tickets as `offPeak`, and their Executor starts each new Assignment only inside the daily window in the Execution settings.
+- The official prototype has no such scheduling; this fork can mark Tickets as `offPeak`, and their Executor starts each new Assignment only inside the daily window in the Execution settings. Feishu requests default to immediate execution unless clearly deferrable; GitLab and GitHub requests default to the window unless clearly urgent.
 - The window is off by default, configurable by start time, end time and IANA time zone, and may cross midnight; the default `22:00`–`08:00` (`Asia/Shanghai`) matches the off-peak billing period in Beijing time.
 
 ### Special note
