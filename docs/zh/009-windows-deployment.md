@@ -11,7 +11,7 @@
 - **本项目的主机需要。** worker 必须运行项目仅 Windows 的工具链，因此 agent 主机必须是 Windows。本方案只移植部署本身；项目自己的构建和冒烟工作不在范围内。
 - **工期：** 一个可用的内部版本约需 9-13 人日：一名开发者 2-2.5 周，包含概念验证和端到端验证，不含飞书，也不含 Windows CI runner。
 - **完整对齐**——飞书、Windows CI、双语的安装文档，以及让两个平台都持续被测试的加固——约需 12-18 人日，即一名开发者 3-4 周。
-- **状态（2026-11-06）：** 可用的内部版本已经完成。阶段 1-5 均已实现，在 Windows 上手工运行 `pnpm check` 通过，并有记录在案的 POSIX 专用跳过项。概念验证发现的原生路径阻塞已修复，服务脚本的真实 Windows 启动/状态/停止/重启冒烟已通过，针对临时项目 `ngd/dsh-superagent-test` 的真实工单还完成了端到端流程：Issue、工单、准备命令、PowerShell worker、提交、推送、合并请求和来源回复。完整对齐仍缺 Windows CI runner 与可选的飞书来源（WP6）；没有 runner，Windows 仍是实验性的，飞书来源在 Windows 上不受支持。
+- **状态（2026-11-07）：** 可用的内部版本已经完成，阶段 5 也已端到端验证。阶段 1-5 均已实现；项目 Windows runner 为合并请求和默认分支运行 `pnpm check`，手工 Windows 运行也通过，并有记录在案的 POSIX 专用跳过项。概念验证发现的原生路径阻塞已修复，服务脚本的真实 Windows 启动/状态/停止/重启冒烟已通过，针对临时项目 `ngd/dsh-superagent-test` 的真实工单还完成了端到端流程：Issue、工单、准备命令、PowerShell worker、提交、推送、合并请求和来源回复。只剩可选的飞书来源（WP6），因此飞书来源在 Windows 上不受支持。
 - **建议：** 移植部署；先做 1-2 天的概念验证，然后按下面的分阶段计划执行。项目自己的工具链工作另行处理。
 
 ## “在 Windows 上部署”意味着什么
@@ -55,7 +55,7 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 
 [006 部署](006-deployment.md) 在写这份方案时只记录了 POSIX 路径，因此即使手工在 Windows 上启动服务，setup 也会在轮询之前失败。阶段 4 补上了 Windows 指引；下面的状态记录还缺什么。
 
-### 实现状态（2026-11-06）
+### 实现状态（2026-11-07）
 
 上表是这份方案开始时所做的评估。阶段 1-5 此后已处理这些缺口：
 
@@ -64,8 +64,8 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 - **阶段 2。** worker 命令层解析 `PATHEXT`，只为被禁止和未启用的命令生成 `.cmd` 护栏，并用 `GH_CONFIG_DIR`、`GLAB_CONFIG_DIR` 和 `LARKSUITE_CLI_CONFIG_DIR` 选择智能体账号；探测和 git 凭据都走原生 argv。
 - **阶段 3。** 准备命令在 POSIX 上走 `sh -c`，在 Windows 上走 `pwsh -NoProfile -NonInteractive -Command`；路由 Session 接受 `pwsh`；提示词和技能已不依赖具体 shell。
 - **阶段 4。** 补上两种语言的 Windows 安装与部署路径。
-- **阶段 5（端到端已验证；CI runner 未完成）。** `pnpm check` 已在 Windows 主机（Windows 10 19045、Node.js 24.21.0、pnpm 11.7.0）上通过，POSIX 专用套件按[阶段 5 证据](../evidence/windows-stage5/)中记录的原因跳过；服务脚本的真实 Windows 启动/状态/停止/重启冒烟也已通过。针对临时 GitLab 项目 `ngd/dsh-superagent-test` 的真实工单还完成了完整流程：隔离的 `stage5-e2e` profile 把人发在 Issue #1 中的提及接受为工单，PowerShell 准备命令创建了工作树，`pwsh` worker 修改了 `README.md`，提交 `a2412af`，推送分支，打开合并请求 !1 并在 Issue #1 中回复；面板把该工单显示为等待人工合并。本次运行记录在[阶段 5 证据](../evidence/windows-stage5/)中。本阶段最后一个验收项，Windows CI runner，仍然缺失。
-- **剩余工作。** Windows CI runner（阶段 5 验收项）以及 Windows 上的飞书来源（WP6，可选）。端到端候选 profile 需要自己的模型提供方配置；没有该配置的 profile 会报 `MISSING_CREDENTIAL`，无法研判请求。在 runner 能让 Windows 路径在每次改动时都被测试之前，Windows 仍是实验性的；飞书来源在 Windows 上不受支持。这两项都不阻塞可用的内部版本。
+- **阶段 5（已完成）。** `pnpm check` 已在 Windows 主机（Windows 10 19045、Node.js 24.21.0、pnpm 11.7.0）上通过，POSIX 专用套件按[阶段 5 证据](../evidence/windows-stage5/)中记录的原因跳过；服务脚本的真实 Windows 启动/状态/停止/重启冒烟也已通过。针对临时 GitLab 项目 `ngd/dsh-superagent-test` 的真实工单还完成了完整流程：隔离的 `stage5-e2e` profile 把人发在 Issue #1 中的提及接受为工单，PowerShell 准备命令创建了工作树，`pwsh` worker 修改了 `README.md`，提交 `a2412af`，推送分支，打开合并请求 !1 并在 Issue #1 中回复；面板把该工单显示为等待人工合并。本次运行记录在[阶段 5 证据](../evidence/windows-stage5/)中。Windows CI runner 已就位：项目专用的 `windows-workstation-dd` runner（tag `windows`，shell executor，位于运营者 Windows 工作站的 `D:\dsh-ci`）为合并请求和默认分支运行 `.gitlab-ci.yml` 中的 `windows-check` job。它的首次运行发现并修复了文档测试中的换行假设：默认 Windows 检出使用 CRLF，测试现在会先规范化。CI 运行记录在[阶段 5 证据](../evidence/windows-stage5/)中。
+- **剩余工作。** Windows 上的飞书来源（WP6，可选）。端到端候选 profile 需要自己的模型提供方配置；没有该配置的 profile 会报 `MISSING_CREDENTIAL`，无法研判请求。Windows 主机支持 Git 来源；飞书来源不受支持。
 
 ## 有没有必要？
 
@@ -81,7 +81,7 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 
 ### 支持成本
 
-移植不是一次性成本。移植之后，每次改动都要在两个平台上检查；worker 外壳不同（`bash` 和 `pwsh`），所以提示词、技能和测试都需要能识别平台的文本；必须有一个 Windows runner 来保证它不会悄悄退化；而且隔离能力更弱，因为 blocked-command shim 只是护栏，真正的边界仍然是专用的操作系统账号。对于一个仓库、一个共享服务的研究原型来说，除非上面某个场景确实成立，否则这份成本换来的价值很小。
+移植不是一次性成本。移植之后，每次改动都要在两个平台上检查；worker 外壳不同（`bash` 和 `pwsh`），所以提示词、技能和测试都需要能识别平台的文本；必须让 Windows runner 持续运行来保证它不会悄悄退化；而且隔离能力更弱，因为 blocked-command shim 只是护栏，真正的边界仍然是专用的操作系统账号。对于一个仓库、一个共享服务的研究原型来说，除非上面某个场景确实成立，否则这份成本换来的价值很小。
 
 ### 结论
 
@@ -253,11 +253,12 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 - 账号选择使用 `GH_CONFIG_DIR`、`GLAB_CONFIG_DIR` 和 `LARKSUITE_CLI_CONFIG_DIR` 环境变量，并辅以可选的 `configDir` 来源设置；Git CLI 不再使用 `.cmd` 包装脚本（阶段 2）。
 - Git CLI 使用原生可执行文件和 argv，准备命令使用平台 shell（阶段 2-3）。
 - 飞书不进入首个版本；Windows 主机只支持 Git 来源（阶段 4-5）。
+- 项目专用的 Windows runner 在 CI 中为合并请求和默认分支运行 `pnpm check`（阶段 5）。
 - 运营者为概念验证和端到端运行提供了 Windows 机器与远程访问（阶段 0 和 5）。
 
 ### 剩余问题
 
-- 是否提供 Windows CI runner。没有它，本方案就把 Windows 标为实验性；这是阶段 5 唯一未满足的验收项，需要为项目注册一个 runner。
+- 是否把 Windows CI runner 从运营者工作站迁移到专用 CI 主机，并使用专用 Windows 账号。目前它是 `D:\dsh-ci` 下的用户级 shell runner，随登录启动，因此以运营者凭据运行 job，且无人登录时会停止。
 - 在 Windows 主机取代 POSIX 生产主机之前，是否需要 Windows 上的飞书支持（WP6）。该功能尚未实现，而测试主机不得启用飞书，因此无法在那里验证。
 
 ## 不在范围内
@@ -270,4 +271,4 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 
 ## 建议
 
-为本项目移植部署。worker 必须运行项目仅 Windows 的工具链，所以主机是 Windows；本方案只限于让 dsh-superagent 在那里正确运行。先在目标机器上做 1-2 天的概念验证，然后按 WP0-WP7 和上面的阶段顺序执行。把项目自己的 Unity 构建、exe 打包和冒烟测试工作留给项目，飞书保持可选。Windows CI runner 值得在移植后补充，但它不属于移植本身。
+为本项目移植部署。worker 必须运行项目仅 Windows 的工具链，所以主机是 Windows；本方案只限于让 dsh-superagent 在那里正确运行。先在目标机器上做 1-2 天的概念验证，然后按 WP0-WP7 和上面的阶段顺序执行。把项目自己的 Unity 构建、exe 打包和冒烟测试工作留给项目，飞书保持可选。Windows CI runner 已就位；保持其运行，并在把它当作发布门禁之前迁移到专用主机。

@@ -19,7 +19,7 @@
 
 ## Windows 主机
 
-Windows 支持目前是实验性的：代码路径已经实现并在 Windows 上测试过，真实的工单也已在临时项目上完成端到端流程，但 Windows CI runner 仍然缺失（[docs/zh/009-windows-deployment.md](docs/zh/009-windows-deployment.md) 的阶段 5）。Windows 主机只运行一个 Git 来源；暂不支持飞书来源。按下面编号的步骤操作，并把以下差异考虑进去。
+Windows 支持以原型质量覆盖 Git 来源：代码路径已经实现并在 Windows 上测试过，测试套件在 CI 中由项目的 Windows runner 运行，真实的工单也已在临时项目上完成端到端流程。暂不支持飞书来源（[docs/zh/009-windows-deployment.md](docs/zh/009-windows-deployment.md)，WP6）。Windows 主机只运行一个 Git 来源。按下面编号的步骤操作，并把以下差异考虑进去。
 
 - **前置条件：** Windows 10/11 或 Windows Server，Node.js 22.19+ 或 24+、pnpm、Git for Windows 2.32+、PowerShell 7（`pwsh` 在 `PATH` 上），以及原生的 `gh.exe` 或 `glab.exe`。不需要 tmux、Python 或 WSL。
 - **探测：** 在 PowerShell 中运行 `node -v; pnpm -v; git --version; gh --version; dsh --version`、`Get-Command pwsh` 和 `Get-ChildItem "$env:USERPROFILE\.dsh\profiles\*\cordis.patch.yml"`。不需要 `tmux` 和 `python3`。

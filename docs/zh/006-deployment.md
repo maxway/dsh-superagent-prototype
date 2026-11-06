@@ -12,7 +12,7 @@
 
 插件配置保存状态目录和本机上限。其他一切都用面板：仓库和账号在来源中设置，允许名单在策略中设置，执行器（worker）目录和命令在执行中设置。
 
-Windows 主机目前是实验性的。服务控制、worker 命令层、准备命令和路由工具的 Windows 路径已经实现。测试套件已在 Windows 主机上通过，并有记录在案的 POSIX 专用跳过项；真实的 Windows 启动/状态/停止/重启冒烟已通过；针对临时 GitLab 项目的真实工单也完成了端到端流程：Issue、工单、准备、PowerShell worker、提交、推送、合并请求和来源回复。Windows CI runner 和飞书来源仍然缺失（Windows 部署计划的阶段 5）。Windows 主机支持 Git 来源，但暂不支持飞书来源。在 Windows 上，worker 和路由 Session 使用 `pwsh` 工具而不是 `bash`，准备命令也通过 PowerShell 7 运行。下面某一步在 Windows 上不同时，会给出它的 Windows 写法。
+Windows 主机以原型质量支持 Git 来源。服务控制、worker 命令层、准备命令和路由工具的 Windows 路径已经实现。测试套件在 CI 中由项目的 Windows runner 运行，并通过记录在案的 POSIX 专用跳过项；真实的 Windows 启动/状态/停止/重启冒烟已通过；针对临时 GitLab 项目的真实工单也完成了端到端流程：Issue、工单、准备、PowerShell worker、提交、推送、合并请求和来源回复。飞书来源仍然缺失（Windows 部署计划的 WP6），暂不支持。在 Windows 上，worker 和路由 Session 使用 `pwsh` 工具而不是 `bash`，准备命令也通过 PowerShell 7 运行。下面某一步在 Windows 上不同时，会给出它的 Windows 写法。
 
 ### 权限与隔离
 
@@ -20,7 +20,7 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
 
 在 Web UI 中打开一个空白的托管 Session 时，可能会选中该 profile 的默认预设。dsh-superagent 会在第一轮之前恢复其角色专用预设。
 
-两个预设都以运营者的操作系统用户身份、以 `danger-full-access` 运行，并读取已订阅线程中的消息。账号包装器默认选择智能体的凭据；它们不隔离进程。执行器可以按路径执行程序，并读取运营者的主目录。若要隔离，请使用一个只包含智能体凭据的专用操作系统账号。Windows 上同样如此，而且没有操作系统沙箱：`.cmd` shim 只是拦截命令，因此请为服务使用一个只持有智能体凭据和仓库访问权限的专用 Windows 账号。Windows 路径已在临时项目上通过端到端运行；Windows CI runner 仍然缺失。
+两个预设都以运营者的操作系统用户身份、以 `danger-full-access` 运行，并读取已订阅线程中的消息。账号包装器默认选择智能体的凭据；它们不隔离进程。执行器可以按路径执行程序，并读取运营者的主目录。若要隔离，请使用一个只包含智能体凭据的专用操作系统账号。Windows 上同样如此，而且没有操作系统沙箱：`.cmd` shim 只是拦截命令，因此请为服务使用一个只持有智能体凭据和仓库访问权限的专用 Windows 账号。Windows 路径已在临时项目上通过端到端运行，测试套件也在 CI 中运行；隔离方面的注意事项仍然适用。
 
 ## 前置条件
 
