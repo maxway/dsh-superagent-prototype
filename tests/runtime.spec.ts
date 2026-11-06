@@ -8,9 +8,10 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'v
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { Runtime } from '../src/app/runtime.ts'
+import { shellTool } from '../src/app/sessions.ts'
 import { jobRegistry } from './fixtures/host.ts'
 import { evalsHealth } from '../src/app/views/overview.ts'
-import { mandateInstructions } from '../src/executor/dsh.ts'
+import { mandateInstructions, prepareArgv } from '../src/executor/dsh.ts'
 import { masterPrompt } from '../src/app/context.ts'
 import { reference, testConfigDirs, testMachine } from './fixtures/deployment.ts'
 import type { Machine } from '../src/deployment.ts'
@@ -1485,6 +1486,25 @@ it('refuses the main Session a bash command that runs sleep and a long job wait,
   expect(masterPrompt).toContain('Worker reports, follow_up notices, new candidates and a background job\'s end, with its output, arrive by themselves as messages')
 })
 
+it('guards the Windows shell like bash and runs prepare commands through the platform shell', async () => {
+  const main = guards.get(runtime.masterId)!
+  const pwsh = (command: string, args: Record<string, unknown> = {}) => ({ name: 'pwsh', arguments: { command, description: 'x', ...args } })
+  for (const command of ['Start-Sleep -Seconds 60', 'Get-ChildItem; Start-Sleep 5', 'if ($x) { Start-Sleep 5 }', '& sleep 5'])
+    expect(main(pwsh(command)), command).toMatch(/^Reports, follow_up notices, new candidates and a background job's end/)
+  for (const command of ['Get-ChildItem', 'Write-Output "Start-Sleep"', 'Start-SleepJob'] )
+    expect(main(pwsh(command)), command).toBeUndefined()
+  expect(main(pwsh('Get-ChildItem', { timeoutMs: 120_000 }))).toMatch(/^Reports/)
+  expect(main(pwsh('Get-ChildItem', { timeoutMs: 20_000 }))).toBeUndefined()
+  // The guard covers the shell tools by name, and the worker keeps both.
+  const { sessionId } = await acceptedTicket()
+  expect(guards.get(sessionId)!(pwsh('Start-Sleep 60'))).toBeUndefined()
+  expect(shellTool('linux')).toBe('bash')
+  expect(shellTool('win32')).toBe('pwsh')
+  expect(prepareArgv('git status', 'linux')).toEqual(['sh', '-c', 'git status'])
+  expect(prepareArgv('git worktree add $env:DSH_SUPERAGENT_DIR', 'win32'))
+    .toEqual(['pwsh', '-NoProfile', '-NonInteractive', '-Command', 'git worktree add $env:DSH_SUPERAGENT_DIR'])
+})
+
 it('reads the main Session\'s preset from a registry with or without presetForSession, and takes standard\'s caps when it cannot', async () => {
   const watch = { name: 'bash', arguments: { command: 'gh pr checks 7 --watch', description: 'x' } }
   const route = { name: 'orchestrator_route', arguments: { decisions: [] } }
@@ -1516,7 +1536,7 @@ it('refuses an ended ticket\'s worker its tools, and restricts the main Session 
   expect(guards.get(sessionId)!()).toBeUndefined()
   runtime.engine.stopTicket(ticket.id)
   expect(guards.get(sessionId)!()).toBe('Ticket ended; new work needs a new authorized ticket')
-  expect(restricts.get(runtime.masterId)).toEqual([{ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }])
+  expect(restricts.get(runtime.masterId)).toEqual([{ allow: ['skill', shellTool(), 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }])
   // A worker keeps only the profile's work tools: none that ask a person, change the profile, schedule or start work outside
   // the worker slots, reach other Sessions or edit documents, whenever they were registered.
   expect(restricts.get(sessionId)).toEqual([{ allow: ['read', 'read_image', 'grep', 'bash', 'job_output', 'job_list', 'job_kill', 'web_search', 'skill'] }])
