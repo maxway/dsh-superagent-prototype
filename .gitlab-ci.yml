@@ -1,0 +1,18 @@
+# Windows CI for dsh-superagent.
+#
+# The project has no Linux runner; the only registered runner is the Windows
+# workstation runner with the `windows` tag (see docs/009-windows-deployment.md).
+# Run the same command the deployment documents as the acceptance check.
+windows-check:
+  stage: test
+  tags:
+    - windows
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  timeout: 30m
+  script:
+    - node --version
+    - pnpm --version
+    - pnpm install --frozen-lockfile
+    - pnpm check
