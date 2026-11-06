@@ -16,6 +16,7 @@
 
 - 官方原型只接入 GitHub；本 fork 增加了可切换的 GitLab 来源，每个部署在 GitHub 与 GitLab 之间二选一。
 - GitLab 来源轮询项目中的 Issue、合并请求、note 和流水线，在原 note 中回复，把合并请求绑定到工单，并把 CI 状态送回执行器。
+- 可选配置 GitLab webhook：来源自动在项目里创建或更新 webhook，事件到达时立即触发同步；不配置时退化为轮询，适合有固定 IP 的部署。
 - 支持自建 GitLab，包括通过 HTTP 提供的实例；提交、推送、合并请求、评审回复和 CI 修复通过 `glab` 完成。
 
 #### Windows 原生部署

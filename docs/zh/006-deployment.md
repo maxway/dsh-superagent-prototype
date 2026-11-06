@@ -53,7 +53,7 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
 
 ### 智能体 GitLab 账号（GitLab 部署）
 
-1. 为智能体创建一个 GitLab 用户账号，并在项目上授予至少 Developer 角色；GitLab 免费版的 Developer 角色即可推送分支和创建合并请求。
+1. 为智能体创建一个 GitLab 用户账号，并在项目上授予至少 Developer 角色；GitLab 免费版的 Developer 角色即可推送分支和创建合并请求。如果要使用可选的 GitLab webhook，还需要 Maintainer 角色。
 2. 给它一个只使用自己凭据的 GitLab CLI：
 
    ```sh
@@ -92,6 +92,15 @@ $env:GLAB_CONFIG_DIR = "$env:USERPROFILE\.config\glab-agent"
 glab auth login --hostname gitlab.example.com
 glab api user
 ```
+
+### GitLab webhook（可选）
+
+GitLab 来源默认按 `pollSeconds`（默认 60 秒）轮询，变更最长要一个轮询间隔才会被处理。如果部署主机有一个 GitLab 能访问、且长期不变的地址（通常是固定 IP 或固定域名），可以让 GitLab 的事件直接唤醒一次同步，把延迟降到几秒；不配置时来源仍按轮询工作。
+
+1. 在 **来源** 的 **Webhook 地址** 填入 GitLab 能访问的完整地址，例如 `http://192.168.1.20:3084/gitlab/webhook`。其中的路径就是监听路径。高级字段 **Webhook 监听端口**（默认 3084）和 **Webhook 监听地址**（默认 `0.0.0.0`）决定本机监听；若 HTTPS 由反向代理终止，Webhook 地址写代理的地址，监听端口仍是这个本机端口。
+2. 智能体账号需要项目上的 **Maintainer** 角色，因为只有它能管理项目的 webhook。设置保存后，来源会在下一次轮询时（通常一分钟内）在项目里自动创建或更新这个 webhook，并订阅 Issue、合并请求、评论和流水线事件；token 由 dsh-superagent 生成并保存在状态目录，无需手工在 GitLab 中填写。
+3. 在防火墙中只允许 GitLab 访问这个端口。监听器只在配置的路径上接受 POST，token 不匹配返回 401；它不解析事件内容，收到事件后让下一次轮询立刻开始，因此轮询和各类读取仍是唯一的数据来源。如果地址是私有 IP，自建 GitLab 还要在管理区允许对本地网络的出站请求（并允许这个地址），否则 GitLab 会拒绝投递。
+4. `pollSeconds` 继续作为兜底：webhook 未配置、被 GitLab 停用或配置失败时，来源按轮询工作；配置失败会显示在来源健康状态里，并按五分钟重试。清空 **Webhook 地址** 会停用并删除这个来源创建的项目 webhook。
 
 ### 飞书机器人（可选）
 
@@ -214,7 +223,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 安装配置必须成功，轮询或工作才会开始。概览会列出缺失的要求，并链接到对应的设置。更改设置会再次运行安装配置。如果你在应用之外修复了某些东西，例如 CLI 登录，请选择 **重新检查**。
 
-1. **来源。** 只启用一个 Git 来源。GitHub 部署设置仓库（`owner/name`）和智能体 CLI，例如 `/home/me/.local/bin/gh-agent`；请求通常通过智能体账号的通知到达，提到该账号的新 Issue 或评论会在下一次轮询时到达，通过编辑已有 Issue 正文来添加提及则不会，请改为发表新评论。GitLab 部署启用 GitLab 来源、禁用 GitHub 来源，并设置 GitLab 地址、项目和智能体 CLI（例如 `/home/me/.local/bin/glab-agent`）；它从启用时开始扫描项目里的 Issue、合并请求、note 和流水线变化。使用飞书时，设置机器人 CLI、群、每个群的接收全部消息或仅提及模式，以及是否接收私信。Windows 上把 CLI 设为原生 `gh` 或 `glab`，并设置高级的配置目录字段而不是包装脚本路径；见上面的 Windows 凭据。
+1. **来源。** 只启用一个 Git 来源。GitHub 部署设置仓库（`owner/name`）和智能体 CLI，例如 `/home/me/.local/bin/gh-agent`；请求通常通过智能体账号的通知到达，提到该账号的新 Issue 或评论会在下一次轮询时到达，通过编辑已有 Issue 正文来添加提及则不会，请改为发表新评论。GitLab 部署启用 GitLab 来源、禁用 GitHub 来源，并设置 GitLab 地址、项目和智能体 CLI（例如 `/home/me/.local/bin/glab-agent`）；它从启用时开始扫描项目里的 Issue、合并请求、note 和流水线变化。可选地设置 **Webhook 地址** 让 GitLab 事件立即触发同步（见上面的 GitLab webhook 一节），留空则退化为 `pollSeconds` 轮询。使用飞书时，设置机器人 CLI、群、每个群的接收全部消息或仅提及模式，以及是否接收私信。Windows 上把 CLI 设为原生 `gh` 或 `glab`，并设置高级的配置目录字段而不是包装脚本路径；见上面的 Windows 凭据。
 2. **策略。** 两条示例规则可以编辑或删除。在 **在各来源上** 下，添加可以请求工作的 GitHub 或 GitLab 账号以及飞书用户；在名单里有人之前，任何请求都不能成为工单。使用飞书时，可以选择一个群来同步名单，在启动时和 **立即同步** 时进行。
 3. **执行。** 目录根路径和一个准备命令。要让每个工单都有一份仓库检出，GitHub 部署使用：
 
@@ -281,7 +290,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 | `evals` | 过去一小时内未完成、之后没有得到研判或不再提示的评估 |
 | `assessment`、`launch`、`delivery`、`relay`、`notice`、`reply` | 在 [003 执行](003-execution.md) 中描述的已存储工作；送达统计等待中的工作，而回复涵盖渠道消息 |
 | `worker` | 执行器 Session 的事件处理；在首次失败后出现 |
-| `github`、`feishu` | 来源轮询和事件 |
+| `github`、`gitlab`、`feishu` | 来源轮询、webhook 和事件 |
 | `sync:<source id>` | 允许名单同步 |
 
 拒绝会带一个状态码和 `error`（其英文文本）：
@@ -293,7 +302,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 这些块：
 
-- `source:github`、`source:gitlab`、`source:feishu`：`{"enabled": true, "config": {…}}`。GitHub 的配置有 `repository`、`cli` 和高级的 `configDir`（即选择智能体账号的 `GH_CONFIG_DIR`），以及开关 `observeIssues`、`observePulls`、`observeComments` 和 `observeCi`，默认关闭，它们接收仓库中每个新 Issue、新 pull request 和评论，以及默认分支的 CI。GitLab 的配置有 `host`、写作 `group/project` 的 `repository`、`cli`、`configDir`（`GLAB_CONFIG_DIR`）、`pollSeconds`、`failuresBeforeError` 和同样的 observe 开关。飞书的配置有 `cli`、`configDir`（`LARKSUITE_CLI_CONFIG_DIR`）、`chats`（形如 `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]`，或 `"all"`）、`directMessages`，以及 `otherChats`（`"none"` 或 `"mentions"`）。
+- `source:github`、`source:gitlab`、`source:feishu`：`{"enabled": true, "config": {…}}`。GitHub 的配置有 `repository`、`cli` 和高级的 `configDir`（即选择智能体账号的 `GH_CONFIG_DIR`），以及开关 `observeIssues`、`observePulls`、`observeComments` 和 `observeCi`，默认关闭，它们接收仓库中每个新 Issue、新 pull request 和评论，以及默认分支的 CI。GitLab 的配置有 `host`、写作 `group/project` 的 `repository`、`cli`、`configDir`（`GLAB_CONFIG_DIR`）、可选的 `webhookUrl`、高级的 `webhookPort`（默认 3084）和 `webhookBind`（默认 `0.0.0.0`）、`pollSeconds`、`failuresBeforeError` 和同样的 observe 开关。飞书的配置有 `cli`、`configDir`（`LARKSUITE_CLI_CONFIG_DIR`）、`chats`（形如 `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]`，或 `"all"`）、`directMessages`，以及 `otherChats`（`"none"` 或 `"mentions"`）。
 - `policy`：`{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`。`bots` 列出其消息可以成为推断候选的机器人。`admission` 行以群 id 为键；飞书还用 `other` 或 `direct`，GitHub 用 `issues`、`pulls`、`comments` 或 `ci`；未设置的单元格取默认值（见 [002 授权机制](002-authorization.md)）。
 - `eval`：`mode`、`timeoutSeconds` 和 `model`。
 - `executor`：`model`、`maxWorkers`、`offPeak`、`directory`、`prepare` 和 `blockedCommands`。`offPeak` 默认是 `{"enabled": false, "start": "22:00", "end": "08:00", "timezone": "Asia/Shanghai"}`：Superagent 判断为复杂且不紧急的工单只在该每日窗口内启动新的派工（见 [003 执行](003-execution.md)）。阿里云百炼的 DeepSeek 按北京时间 22:00 至次日 08:00 的闲时价计费，忙时为 08:00 至 22:00（[计费说明](https://help.aliyun.com/zh/model-studio/billing-for-model-studio)），默认值与该时段一致。处理暂停是一个单独的设置 `paused`，由 `POST executor/pause` 设置。

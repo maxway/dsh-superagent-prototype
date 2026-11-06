@@ -51,7 +51,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 ### Agent GitLab account (GitLab deployments)
 
-1. Create a GitLab user account for the agent and give it at least the Developer role on the project; the GitLab Free plan's Developer role can push branches and open merge requests.
+1. Create a GitLab user account for the agent and give it at least the Developer role on the project; the GitLab Free plan's Developer role can push branches and open merge requests. The optional GitLab webhook also needs the Maintainer role.
 2. Give it a GitLab CLI that uses only its own credentials:
 
    ```sh
@@ -90,6 +90,15 @@ $env:GLAB_CONFIG_DIR = "$env:USERPROFILE\.config\glab-agent"
 glab auth login --hostname gitlab.example.com
 glab api user
 ```
+
+### GitLab webhook (optional)
+
+The GitLab Source polls every `pollSeconds` (60 by default), so a change waits up to one polling interval. When the deployment host has a stable address that GitLab can reach (usually a fixed IP or a fixed hostname), GitLab events can wake one sync immediately and cut that latency to seconds; without it the Source keeps polling.
+
+1. Enter the full address GitLab can reach in the Source's **Webhook URL**, for example `http://192.168.1.20:3084/gitlab/webhook`. Its path is the listening path. The advanced **Webhook listening port** (default 3084) and **Webhook listening address** (default `0.0.0.0`) choose the local listener; when a reverse proxy terminates HTTPS, put the proxy's address in the Webhook URL and keep this local port.
+2. The agent account needs the project's **Maintainer** role, because only that role manages project hooks. After the settings are saved, the Source creates or updates that project hook on its next poll (usually within a minute) and subscribes it to Issue, merge request, note and pipeline events; dsh-superagent generates the token and keeps it in the state directory, so nothing is entered in GitLab by hand.
+3. Allow only GitLab through the firewall to this port. The listener accepts POST only on the configured path and answers 401 for a wrong token; it does not parse the payload, it makes the next polling round start at once, so polling and the API reads remain the only data source. When the address is a private IP, the self-managed GitLab must also allow outbound requests to the local network (and this address) in its admin area, or it refuses delivery.
+4. `pollSeconds` remains the fallback: without the webhook, or when GitLab disables it or its configuration fails, the Source keeps polling; a configuration failure appears in the Source's health and is retried every five minutes. Clearing **Webhook URL** disables and deletes the project hook this Source created.
 
 ### Feishu bot (optional)
 
@@ -212,7 +221,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 Setup must succeed before polling or work starts. Overview lists missing requirements and links to their settings. A settings change runs setup again. If you fix something outside the application, such as CLI authentication, choose **Check again**.
 
-1. **Sources.** Enable exactly one Git Source. For GitHub, set the repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For GitLab, enable the GitLab Source, disable the GitHub one, and set the GitLab URL, project and agent CLI, for example `/home/me/.local/bin/glab-agent`; its project scan reads Issues, merge requests, notes and pipeline changes since the Source was switched on. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages. On Windows, set the CLI to the native `gh` or `glab` and set the advanced configuration directory instead of a wrapper path; see Windows credentials above.
+1. **Sources.** Enable exactly one Git Source. For GitHub, set the repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For GitLab, enable the GitLab Source, disable the GitHub one, and set the GitLab URL, project and agent CLI, for example `/home/me/.local/bin/glab-agent`; its project scan reads Issues, merge requests, notes and pipeline changes since the Source was switched on. Optionally set **Webhook URL** so GitLab events trigger a sync immediately (see GitLab webhook above); leaving it empty falls back to `pollSeconds` polling. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages. On Windows, set the CLI to the native `gh` or `glab` and set the advanced configuration directory instead of a wrapper path; see Windows credentials above.
 2. **Policy.** The two example rules can be edited or removed. Under **On each Source**, add the GitHub or GitLab accounts and Feishu users who may ask for work; until a list has someone, no request can become a Ticket. With Feishu, a chat can be chosen to sync the list from, at startup and on **Sync now**.
 3. **Execution.** The directory root and a prepare command. To give each Ticket a checkout of the repository on GitHub:
 
@@ -279,7 +288,7 @@ Health entries are grouped by responsibility:
 | `evals` | Unavailable Evals from the last hour with no later judgement or dismissal |
 | `assessment`, `launch`, `delivery`, `relay`, `notice`, `reply` | Stored work described in [003 Execution](003-execution.md); delivery counts waiting work, while reply covers Channel messages |
 | `worker` | Executor Session event handling; appears after its first failure |
-| `github`, `feishu` | Source polling and events |
+| `github`, `gitlab`, `feishu` | Source polling, webhook and events |
 | `sync:<source id>` | Allowed-list synchronization |
 
 A refusal has a status and `error`, its English text:
@@ -291,7 +300,7 @@ A refusal has a status and `error`, its English text:
 
 The blocks:
 
-- `source:github`, `source:gitlab`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository`, `cli` and the advanced `configDir`, the `GH_CONFIG_DIR` that selects the agent account, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI. GitLab's has `host`, `repository` as `group/project`, `cli`, `configDir` (`GLAB_CONFIG_DIR`), `pollSeconds`, `failuresBeforeError` and the same observe switches. Feishu's has `cli`, `configDir` (`LARKSUITE_CLI_CONFIG_DIR`), `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
+- `source:github`, `source:gitlab`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository`, `cli` and the advanced `configDir`, the `GH_CONFIG_DIR` that selects the agent account, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI. GitLab's has `host`, `repository` as `group/project`, `cli`, `configDir` (`GLAB_CONFIG_DIR`), the optional `webhookUrl`, advanced `webhookPort` (default 3084) and `webhookBind` (default `0.0.0.0`), `pollSeconds`, `failuresBeforeError` and the same observe switches. Feishu's has `cli`, `configDir` (`LARKSUITE_CLI_CONFIG_DIR`), `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
 - `policy`: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
 - `eval`: `mode`, `timeoutSeconds` and `model`.
 - `executor`: `model`, `maxWorkers`, `offPeak`, `directory`, `prepare` and `blockedCommands`. `offPeak` is `{"enabled": false, "start": "22:00", "end": "08:00", "timezone": "Asia/Shanghai"}` by default: Tickets Superagent judges complex and not urgent start new Assignments only inside that daily window (see [003 Execution](003-execution.md)). Alibaba Cloud Model Studio bills DeepSeek at off-peak rates from 22:00 to 08:00 Beijing time, peak 08:00–22:00 ([billing](https://help.aliyun.com/zh/model-studio/billing-for-model-studio)), which the defaults match. The processing pause is a setting of its own, `paused`, which `POST executor/pause` sets.

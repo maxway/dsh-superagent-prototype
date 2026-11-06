@@ -13,6 +13,8 @@ import { observeMergeRequest, readMergeRequest } from './gitlab-pull.ts'
 import { branchPipelineTrigger, gitlabThread, issueTrigger, mentions, mergeRequestPipelineTrigger, MergeRequestSchema,
   mergeRequestTrigger, noteTrigger, NoteSchema, SOURCE, type GitlabKind, type GitlabMergeRequest, IssueSchema } from './gitlab-trigger.ts'
 import { gitlabLink, sendGitlab } from './gitlab-channel.ts'
+import { reconcileWebhook, removeWebhook, startWebhookListener, webhookPath, webhookSecret, WebhookWaker }
+  from './gitlab-webhook.ts'
 import { z } from 'zod'
 
 const GitlabConfigSchema = GitlabAccountsSchema.extend({
@@ -20,6 +22,11 @@ const GitlabConfigSchema = GitlabAccountsSchema.extend({
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
   observeIssues: z.boolean().default(false), observeMrs: z.boolean().default(false),
   observeComments: z.boolean().default(false), observeCi: z.boolean().default(false),
+  // Optional GitLab project webhook: when a URL is set the source registers it and polls immediately on deliveries;
+  // when it is empty the source keeps its polling cadence.
+  webhookUrl: z.union([z.literal(''), z.url().refine(value => /^https?:\/\//i.test(value), 'The webhook URL must use http or https')]).default(''),
+  webhookPort: z.number().int().min(1).max(65535).default(3084),
+  webhookBind: z.string().trim().min(1).default('0.0.0.0'),
 }).strict()
 export type GitlabConfig = z.infer<typeof GitlabConfigSchema>
 const OBSERVED = { issues: 'observeIssues', mrs: 'observeMrs', comments: 'observeComments', ci: 'observeCi' } as const
@@ -34,7 +41,7 @@ function scopeOf(meta: Record<string, unknown>): Scope | undefined {
 export const gitlabKind: SourceKind<GitlabConfig> = {
   kind: SOURCE,
   title: { zh: 'GitLab', en: 'GitLab' },
-  description: { zh: '智能体的 GitLab 账号；接收项目中发给它的 Issue、合并请求、评论与 CI 状态变化，并用 note 回复。', en: 'The agent\'s GitLab account; receives Issues, merge requests, comments and pipeline changes addressed to it in the project, and replies with notes.' },
+  description: { zh: '智能体的 GitLab 账号；接收项目中发给它的 Issue、合并请求、评论与 CI 状态变化，并用 note 回复。可选 webhook 让事件立即触发同步，否则按轮询间隔读取。', en: 'The agent\'s GitLab account; receives Issues, merge requests, comments and pipeline changes addressed to it in the project, and replies with notes. An optional webhook makes deliveries trigger a sync immediately; otherwise the Source polls.' },
   schema: GitlabConfigSchema,
   fields: [
     { key: 'host', type: 'text', label: { zh: 'GitLab 地址', en: 'GitLab URL' },
@@ -45,6 +52,12 @@ export const gitlabKind: SourceKind<GitlabConfig> = {
       hint: { zh: '命令名或绝对路径，通常是用独立配置登录智能体账号的 glab 包装脚本。智能体以它登录的账号行事，执行器以 glab 调用它。保存时检查该账号能否推送到项目，然后重启 dsh-superagent。', en: 'A command name or absolute path, usually a glab wrapper signed in to the agent account through its own configuration. The agent acts as the account it is signed in to, and the Executor calls it as glab. Saving checks that this account can push to the project, then restarts dsh-superagent.' } },
     { key: 'configDir', type: 'text', advanced: true, label: { zh: '智能体账号的配置目录', en: 'Agent account configuration directory' },
       hint: { zh: 'GLAB_CONFIG_DIR 的取值：CLI 在这里保存智能体账号的登录信息，由插件和 worker 继承。留空使用 ~/.config/glab-agent，与 006 部署文档的包装脚本一致；包装脚本会覆盖它，现有 POSIX 安装不受影响。Windows 主机把它设为 glab 登录智能体账号时使用的目录。', en: 'The value of GLAB_CONFIG_DIR: the directory where the CLI keeps the agent account\'s login, inherited by the plugin and its workers. Empty uses ~/.config/glab-agent, as the wrapper scripts in docs/006-deployment.md use; a wrapper overrides it, so existing POSIX installations are unchanged. On a Windows host, set it to the directory where glab was signed in to the agent account.' } },
+    { key: 'webhookUrl', type: 'text', label: { zh: 'Webhook 地址（可选）', en: 'Webhook URL (optional)' },
+      hint: { zh: 'GitLab 能访问的固定地址，例如 http://192.168.1.20:3084/gitlab/webhook。保存后自动在项目里创建或更新 webhook，Issue、合并请求、评论和 CI 变化会立即触发同步；留空则保持轮询。地址应长期不变，智能体账号需要 Maintainer 角色，并在防火墙放行监听端口。', en: 'A stable address GitLab can reach, for example http://192.168.1.20:3084/gitlab/webhook. Saving creates or updates the project webhook automatically so Issue, merge request, comment and CI changes trigger a sync immediately; empty keeps polling. The address should stay stable, the agent account needs the Maintainer role, and the firewall must allow the listening port.' } },
+    { key: 'webhookPort', type: 'number', advanced: true, min: 1, max: 65535, label: { zh: 'Webhook 监听端口', en: 'Webhook listening port' },
+      hint: { zh: '本机监听的端口，默认 3084，只在设置了 Webhook 地址时使用。若由反向代理终止 HTTPS，仍然监听这个端口。', en: 'The local port to listen on, default 3084, used only when a webhook URL is set. When a reverse proxy terminates HTTPS, the listener still uses this port.' } },
+    { key: 'webhookBind', type: 'text', advanced: true, label: { zh: 'Webhook 监听地址', en: 'Webhook listening address' },
+      hint: { zh: '默认 0.0.0.0，监听所有网卡。用它把监听限制到 GitLab 可达的网卡，并用防火墙只允许 GitLab 访问这个端口。', en: 'Default 0.0.0.0, all interfaces. Use it to restrict the listener to the interface GitLab can reach, and allow only GitLab through the firewall.' } },
     { key: 'pollSeconds', type: 'number', advanced: true, min: 60, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' } },
     { key: 'failuresBeforeError', type: 'number', advanced: true, min: 1, max: 20, label: { zh: '连续失败几次后报告异常', en: 'Failed polls before reporting an error' } },
     { key: 'observeIssues', type: 'switch', label: { zh: '接收项目里的新 Issue', en: 'Receive new Issues in the project' },
@@ -119,7 +132,7 @@ export function apply(ctx: Context): void {
   ctx.effect(() => {
     const source = sourceContext(ctx.orchestrator, gitlabKind)
     const controller = new AbortController()
-    const running = watch(source, controller.signal)
+    const running = watchGitlab(source, controller.signal)
       .catch((error: unknown) => { source.report('gitlab', { state: 'error', detail: String(error) }) })
     return async () => { controller.abort(); await running }
   })
@@ -127,26 +140,80 @@ export function apply(ctx: Context): void {
 export function pollFailure(failures: number, threshold: number, error: unknown): Health | undefined {
   return failures >= threshold ? health('error', 'pollFailures', { count: String(failures), error: String(error) }) : undefined
 }
-async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+const WEBHOOK_RETRY_MS = 300_000
+/** A running optional webhook: its listener, registration identity, coalescing waker, and delivery count. */
+export interface WebhookRuntime { url: string; port: number; bind: string; waker: WebhookWaker; events(): number; close(): Promise<void> }
+type OpenWebhook = (ctx: SourceContext, config: GitlabConfig, signal: AbortSignal) => Promise<WebhookRuntime>
+/**
+ * Binds the listener before registering the project hook, so a port conflict fails without leaving GitLab pointed at an
+ * unreachable address. A failed registration closes the listener again and is retried later.
+ */
+async function openWebhook(ctx: SourceContext, config: GitlabConfig, signal: AbortSignal): Promise<WebhookRuntime> {
+  const url = config.webhookUrl
+  const secret = webhookSecret(ctx.state)
+  const waker = new WebhookWaker()
+  let events = 0
+  const listener = await startWebhookListener({ host: config.webhookBind, port: config.webhookPort, path: webhookPath(url), secret,
+    onEvent: () => { events += 1; waker.wake() } })
+  try {
+    await reconcileWebhook(ctx.commands.withSignal(signal), projectOf(ctx).path, url, secret, ctx.state)
+  } catch (error) {
+    await listener.close()
+    throw error
+  }
+  return { url, port: config.webhookPort, bind: config.webhookBind, waker, events: () => events, close: () => listener.close() }
+}
+export async function watchGitlab(ctx: SourceContext, signal: AbortSignal, open: OpenWebhook = openWebhook): Promise<void> {
   let interval = 60
   let failures = 0
+  let webhook: WebhookRuntime | undefined
+  let webhookError: string | undefined
+  let retryAt = 0
   await ctx.ready
   if (!ctx.configured()) { ctx.report('gitlab', health('paused', 'setupPending')); return }
   // A deployment has one active Git host; this kind stays dormant when GitHub is the active one.
   if (ctx.deployment.git.provider !== 'gitlab') { ctx.report('gitlab', health('paused', 'sourceOff')); return }
-  while (!signal.aborted) {
-    const config = ctx.config<GitlabConfig>(SOURCE)
-    try {
-      if (config) interval = await pollRound(ctx, signal)
-      else ctx.report('gitlab', health('paused', 'sourceOff'))
-      failures = 0
-    } catch (error) {
-      failures += 1
-      const failed = pollFailure(failures, config?.failuresBeforeError ?? 1, error)
-      if (!signal.aborted && failed) ctx.report('gitlab', failed)
+  const closeWebhook = async () => { const running = webhook; webhook = undefined; await running?.close() }
+  try {
+    while (!signal.aborted) {
+      const config = ctx.config<GitlabConfig>(SOURCE)
+      let reported = false
+      try {
+        if (config) {
+          // Webhook settings apply without a restart, so reconcile an edited URL, port, bind address or cleared URL here.
+          if (webhook && (!config.webhookUrl || webhook.url !== config.webhookUrl || webhook.port !== config.webhookPort
+            || webhook.bind !== config.webhookBind)) { await closeWebhook(); retryAt = 0 }
+          if (config.webhookUrl) {
+            if (!webhook && Date.now() >= retryAt) {
+              try { webhook = await open(ctx, config, signal); webhookError = undefined; retryAt = 0 }
+              catch (error) { webhookError = String(error); retryAt = Date.now() + WEBHOOK_RETRY_MS }
+            }
+          } else if (ctx.state.get(KV.gitlab.webhook)) {
+            // Clearing the URL removes the managed hook; a failed removal is retried with the same backoff.
+            if (Date.now() >= retryAt) {
+              try { await removeWebhook(ctx.commands.withSignal(signal), projectOf(ctx).path, ctx.state); webhookError = undefined; retryAt = 0 }
+              catch (error) { webhookError = String(error); retryAt = Date.now() + WEBHOOK_RETRY_MS }
+            }
+          } else webhookError = undefined
+          interval = await pollRound(ctx, signal, webhook ? `; webhook on (${webhook.events()} events)` : '')
+          failures = 0
+        } else {
+          await closeWebhook()
+          webhookError = undefined
+          ctx.report('gitlab', health('paused', 'sourceOff'))
+        }
+      } catch (error) {
+        failures += 1
+        const failed = pollFailure(failures, config?.failuresBeforeError ?? 1, error)
+        if (!signal.aborted && failed) { ctx.report('gitlab', failed); reported = true }
+      }
+      if (!signal.aborted && webhookError && !reported) ctx.report('gitlab', health('error', 'webhookFailed', { error: webhookError }))
+      const wait = Math.max(interval, ctx.config<GitlabConfig>(SOURCE)?.pollSeconds ?? 60) * 1000
+      // A delivery wakes the loop and runs a round after a short quiet period, coalescing a burst into one read.
+      if (webhook) { if (await webhook.waker.wait(wait, signal)) await pause(1500, signal) }
+      else await pause(wait, signal)
     }
-    await pause(Math.max(interval, ctx.config<GitlabConfig>(SOURCE)?.pollSeconds ?? 60) * 1000, signal)
-  }
+  } finally { await closeWebhook() }
 }
 interface Round {
   started: string; signal?: AbortSignal | undefined; failures: string[]; read: Set<string>
@@ -173,7 +240,7 @@ function nameThread(ctx: SourceContext, kind: GitlabKind, iid: number, title: st
  * One polling round: issues and merge requests updated since the project cursor, then subscribed Threads not read in this
  * round. Each stream fails independently so all streams run before the round fails.
  */
-export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promise<number> {
+export async function pollRound(ctx: SourceContext, signal?: AbortSignal, extra = ''): Promise<number> {
   const round = newRound(signal)
   const config = ctx.config<GitlabConfig>(SOURCE)
   if (!config) return 60
@@ -191,7 +258,7 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   if (round.failures.length) throw new Error(`${round.failures.length} GitLab reads failed: ${round.failures.slice(0, 3).join('; ')}`)
   ctx.atomic(() => ctx.state.set(KV.gitlab.since, cursorAt(round.started)))
   const skipped = round.tally.skipped ? `; ${round.tally.skipped} unreadable items skipped` : ''
-  ctx.report('gitlab', { state: 'ready', detail: `${round.issues} issues, ${round.mrs} merge requests, ${round.notes} notes; next poll ≥ ${config.pollSeconds}s${skipped}`, at: round.started })
+  ctx.report('gitlab', { state: 'ready', detail: `${round.issues} issues, ${round.mrs} merge requests, ${round.notes} notes; next poll ≥ ${config.pollSeconds}s${skipped}${extra}`, at: round.started })
   return 60
 }
 async function pollIssues(ctx: SourceContext, round: Round, config: GitlabConfig, project: string, since: string): Promise<void> {
