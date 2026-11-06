@@ -262,6 +262,10 @@ From an allowed GitHub account, open an Issue or post a comment containing `@<ag
 
 ## Upgrade
 
+**Self-hosted development:** If the running superagent develops this repository, do not have it perform the in-place upgrade and restart below from its own worker session. Validate the candidate in an isolated task worktree and test instance first; then use an operator or deployment supervisor independent of the service to release, check health, and roll back if needed during an approved maintenance window. Isolate production and test profiles, state, control files, ports, and external sources; separate worktrees alone are not enough. See [AGENTS.md](../AGENTS.md) for the local target topology, unresolved observations, and protection rules. Before cutover, take and verify a consistent backup and retain a compatible previous version. Reconcile data and external side effects created after the backup before rollback; copying a single live SQLite file is not necessarily a consistent backup.
+
+The steps below apply only to deployments where an in-place upgrade has been explicitly deemed appropriate; they are not an automated self-hosted release procedure:
+
 1. Wait until no Executor is in the middle of a turn.
 2. Back up `<stateDir>/orchestrator.sqlite`.
 3. Run `git pull && pnpm install && pnpm build`.

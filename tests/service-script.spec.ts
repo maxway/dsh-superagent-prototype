@@ -78,6 +78,11 @@ it('keeps a stop per profile', async () => {
   const skipped = await run('--respect-stop', 'start', '--profile', 'one')
   expect(skipped).toMatchObject({ code: 0, stdout: expect.stringContaining('Intentional stop is active') })
 })
+it('recognizes a Node service whose process name is MainThread', async () => {
+  const service = sleeper()
+  processes(`${service} MainThread node /opt/my tools/dsh --profile superagent --no-open`)
+  expect(await status('superagent')).toMatchObject({ pids: [service] })
+})
 it('takes no `dsh plugin` command of the profile for its service', async () => {
   const service = sleeper()
   processes(`${sleeper()} node node /opt/my tools/dsh plugin --profile superagent add link:/x`,
