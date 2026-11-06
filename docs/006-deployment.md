@@ -182,6 +182,8 @@ Setup must succeed before polling or work starts. Overview lists missing require
    git -C /home/me/src/widgets worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
    ```
 
+   On Windows the prepare command runs with PowerShell 7 (`pwsh`) instead of `sh`; read the execution environment's variables as `$env:DSH_SUPERAGENT_DIR`, `$env:DSH_SUPERAGENT_NAME` and so on, and write the examples above in PowerShell syntax.
+
    List personal CLIs, such as one signed in to your own account, as blocked commands.
 4. **Prompts.** Set the team sections: the GitHub disclosure line, review bots, the commit author and the auto-merge condition.
 

@@ -5,10 +5,11 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
-  from '../src/infra/environment.ts'
+import { GIT_LOCATION, accountVariables, agentVariables, credentialHelper, deploymentAccountVariables, runAsWorker, verifyDirectory, withoutDirectory,
+  workerBin, workerGitConfig, writeEnvironment } from '../src/infra/environment.ts'
+import { workerProbe } from '../src/deployment.ts'
 import { CliError } from '../src/infra/commands.ts'
-import { testDeployment, testGitlabDeployment } from './fixtures/deployment.ts'
+import { testConfigDirs, testDeployment, testGitlabDeployment } from './fixtures/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 // Git and shell subprocesses can exceed the 5s default timeout when the test suite runs in parallel.
@@ -84,6 +85,59 @@ describe('worker shims', () => {
     await writeEnvironment(testDeployment({ stateDir: dir }), [])
     expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'glab', 'lark-cli'])
     expect(readFileSync(workerGitConfig(dir), 'utf8')).toContain('Written by dsh-superagent')
+  })
+})
+
+describe('Windows command layer', () => {
+  it('writes .cmd guardrails for inactive and blocked commands, never forwarding the active CLI through cmd.exe', async () => {
+    await writeEnvironment(testDeployment({ stateDir: dir, feishu: undefined }), ['personal-gh'], 'win32')
+    const bin = workerBin(dir)
+    expect(readdirSync(bin).sort()).toEqual(['glab.cmd', 'lark-cli.cmd', 'personal-gh.cmd'])
+    for (const name of readdirSync(bin)) {
+      const text = readFileSync(join(bin, name), 'utf8')
+      expect(text.startsWith('@echo off\r\n')).toBe(true)
+      expect(text).toContain('rem # Written by dsh-superagent on every start; edits are lost.')
+      expect(text.endsWith('exit /b 1\r\n')).toBe(true)
+    }
+    expect(readFileSync(join(bin, 'glab.cmd'), 'utf8')).toContain('glab is unavailable: this installation uses GitHub; use gh.')
+    expect(readFileSync(join(bin, 'lark-cli.cmd'), 'utf8')).toContain('lark-cli is unavailable: this installation has no Feishu bot.')
+    expect(readFileSync(join(bin, 'personal-gh.cmd'), 'utf8')).toContain('personal-gh is blocked in this installation; use gh, which acts as agent-bot.')
+  })
+  it('rewrites the Windows guardrails when the provider or blocked commands change, and refuses foreign files', async () => {
+    await writeEnvironment(testDeployment({ stateDir: dir, feishu: undefined }), ['old-cli'], 'win32')
+    await writeEnvironment(testGitlabDeployment({ stateDir: dir, feishu: undefined }), ['new-cli'], 'win32')
+    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh.cmd', 'lark-cli.cmd', 'new-cli.cmd'])
+    writeFileSync(join(workerBin(dir), 'foreign.cmd'), 'echo mine\r\n')
+    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [], 'win32')).rejects.toThrow('foreign.cmd was not written by dsh-superagent')
+    rmSync(join(workerBin(dir), 'foreign.cmd'))
+    await writeEnvironment(testDeployment({ stateDir: dir }), [], 'win32')
+    expect(readdirSync(workerBin(dir)).sort()).toEqual(['glab.cmd'])
+  })
+  it('writes the credential helper for a Windows CLI path with forward slashes', async () => {
+    const cli = 'C:\\agent tools\\gh.exe'
+    await writeEnvironment(testDeployment({ stateDir: dir, git: { ...testDeployment().git, cli }, feishu: undefined }), [], 'win32')
+    expect(credentialHelper(cli, 'win32')).toBe("!'C:/agent tools/gh.exe' auth git-credential")
+    expect(readFileSync(workerGitConfig(dir), 'utf8')).toContain(`\thelper = "${credentialHelper(cli, 'win32')}"`)
+  })
+})
+
+describe('account selection', () => {
+  it('maps the active Git provider and the bot to their configuration directories', () => {
+    expect(deploymentAccountVariables(testDeployment())).toEqual({ GH_CONFIG_DIR: testConfigDirs.gh, LARKSUITE_CLI_CONFIG_DIR: testConfigDirs.lark })
+    expect(deploymentAccountVariables(testGitlabDeployment({ feishu: undefined }))).toEqual({ GLAB_CONFIG_DIR: testConfigDirs.glab })
+    expect(accountVariables({ gh: '', glab: '/cfg/glab', lark: '' })).toEqual({ GLAB_CONFIG_DIR: '/cfg/glab' })
+  })
+  it('passes probe PATH and variables through the spawn spec instead of an env executable', async () => {
+    const calls: { argv: readonly string[]; cwd?: string; env?: Record<string, string> }[] = []
+    const reader = (text: string) => ({ readFrom: () => ({ text, nextOffset: text.length, lossy: false }) })
+    const subprocess = { spawn: (spec: { argv: readonly string[]; cwd?: string; env?: Record<string, string> }) => {
+      calls.push(spec)
+      return { done: Promise.resolve({ exitCode: 0, signal: null }), collected: { stdout: reader('ok'), stderr: reader('') } }
+    } } as unknown as SubprocessRuntime
+    const probe = workerProbe(subprocess, dir, dir, new AbortController().signal)
+    expect(await probe(['gh', 'api', 'user'], { GH_CONFIG_DIR: '/agent/gh' })).toBe('ok')
+    expect(calls[0]!.argv).toEqual(['gh', 'api', 'user'])
+    expect(calls[0]!.env).toMatchObject({ GH_CONFIG_DIR: '/agent/gh', PATH: withoutDirectory(process.env.PATH ?? '', workerBin(dir)) })
   })
 })
 

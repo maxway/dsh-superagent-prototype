@@ -8,11 +8,12 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'v
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { Runtime } from '../src/app/runtime.ts'
+import { shellTool } from '../src/app/sessions.ts'
 import { jobRegistry } from './fixtures/host.ts'
 import { evalsHealth } from '../src/app/views/overview.ts'
-import { mandateInstructions } from '../src/executor/dsh.ts'
+import { mandateInstructions, prepareArgv } from '../src/executor/dsh.ts'
 import { masterPrompt } from '../src/app/context.ts'
-import { reference, testMachine } from './fixtures/deployment.ts'
+import { reference, testConfigDirs, testMachine } from './fixtures/deployment.ts'
 import type { Machine } from '../src/deployment.ts'
 import { SCHEMA_VERSION, Store } from '../src/app/store.ts'
 import { TextCache } from '../src/app/cache.ts'
@@ -85,7 +86,7 @@ const OTHER = () => join(directory, 'other-gh')
 const BOT = () => join(directory, 'lark-bot')
 const HELPERS = 'git config -z --show-origin --get-all credential.https://github.com.helper'
 const SCOPED = 'git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$'
-const subprocess = { spawn: vi.fn((spec: { argv: readonly string[] }) => {
+const subprocess = { spawn: vi.fn((spec: { argv: readonly string[]; env?: Record<string, string> }) => {
   // Strip leading `env` and `KEY=VALUE` arguments before looking up the command response.
   const argv = [...spec.argv]
   while (argv[0] === 'env' || /^[A-Z_]+=/.test(argv[0] ?? '')) argv.shift()
@@ -816,11 +817,11 @@ it('reports each setup problem where the operator fixes it, and checks the agent
   answers[`${AGENT()} api repos/acme/widgets --jq {name: .full_name, push: .permissions.push}`] = '{"name":"acme/widgets","push":false}\n'
   await needs('github', 'repositoryReadOnly', { account: 'agent-bot', repository: 'acme/widgets' })
   answers[`${AGENT()} api repos/acme/widgets --jq {name: .full_name, push: .permissions.push}`] = '{"name":"acme/widgets","push":true}\n'
-  // The agent CLI runs in the workers' environment: without the shims on PATH.
-  const check = subprocess.spawn.mock.calls.map(([spec]) => spec.argv).find(argv => argv.includes(AGENT()))!
-  expect(check[0]).toBe('env')
-  expect(check[1]!.startsWith('PATH=')).toBe(true)
-  expect(check[1]!.slice('PATH='.length).split(':')).not.toContain(join(directory, 'worker-bin'))
+  // The agent CLI runs in the workers' environment, passed through the spawn spec because Windows has no `env` executable.
+  const check = subprocess.spawn.mock.calls.map(([spec]) => spec).find(spec => spec.argv.includes(AGENT()))!
+  expect(check.argv[0]).not.toBe('env')
+  expect(check.env?.PATH?.split(':')).not.toContain(join(directory, 'worker-bin'))
+  expect(check.env?.GH_CONFIG_DIR).toBe(testConfigDirs.gh)
   const valid = { ...answers }
   // git older than 2.32 ignores GIT_CONFIG_GLOBAL and reads the operator's configuration.
   answers = { ...valid, [HELPERS]: 'file:/home/me/.gitconfig\0!gh auth git-credential\0' }
@@ -949,11 +950,12 @@ it('writes worker shims and the agent environment from the configuration only, a
   expect(readFileSync(join(bin, 'lark-cli'), 'utf8')).toContain('lark-cli is unavailable: this installation has no Feishu bot.')
   expect(readFileSync(join(bin, 'gh'), 'utf8')).toContain(`exec '${AGENT()}'`)
   expect(readFileSync(workerGitConfig(directory), 'utf8')).toContain(`[credential "https://github.com"]\n\thelper = "${credentialHelper(AGENT())}"`)
-  expect(process.env).toMatchObject({ GIT_CONFIG_GLOBAL: workerGitConfig(directory), GIT_CONFIG_NOSYSTEM: '1' })
+  expect(process.env).toMatchObject({ GIT_CONFIG_GLOBAL: workerGitConfig(directory), GIT_CONFIG_NOSYSTEM: '1', GH_CONFIG_DIR: testConfigDirs.gh })
   expect(process.env.GIT_AUTHOR_NAME).toBeUndefined()
   expect(process.env.PATH?.split(':')[0]).toBe(bin)
   await next.stop()
   expect(process.env.GIT_CONFIG_GLOBAL).toBeUndefined()
+  expect(process.env.GH_CONFIG_DIR).toBeUndefined()
   expect(process.env.PATH?.split(':')).not.toContain(bin)
 })
 
@@ -1484,6 +1486,25 @@ it('refuses the main Session a bash command that runs sleep and a long job wait,
   expect(masterPrompt).toContain('Worker reports, follow_up notices, new candidates and a background job\'s end, with its output, arrive by themselves as messages')
 })
 
+it('guards the Windows shell like bash and runs prepare commands through the platform shell', async () => {
+  const main = guards.get(runtime.masterId)!
+  const pwsh = (command: string, args: Record<string, unknown> = {}) => ({ name: 'pwsh', arguments: { command, description: 'x', ...args } })
+  for (const command of ['Start-Sleep -Seconds 60', 'Get-ChildItem; Start-Sleep 5', 'if ($x) { Start-Sleep 5 }', '& sleep 5'])
+    expect(main(pwsh(command)), command).toMatch(/^Reports, follow_up notices, new candidates and a background job's end/)
+  for (const command of ['Get-ChildItem', 'Write-Output "Start-Sleep"', 'Start-SleepJob'] )
+    expect(main(pwsh(command)), command).toBeUndefined()
+  expect(main(pwsh('Get-ChildItem', { timeoutMs: 120_000 }))).toMatch(/^Reports/)
+  expect(main(pwsh('Get-ChildItem', { timeoutMs: 20_000 }))).toBeUndefined()
+  // The guard covers the shell tools by name, and the worker keeps both.
+  const { sessionId } = await acceptedTicket()
+  expect(guards.get(sessionId)!(pwsh('Start-Sleep 60'))).toBeUndefined()
+  expect(shellTool('linux')).toBe('bash')
+  expect(shellTool('win32')).toBe('pwsh')
+  expect(prepareArgv('git status', 'linux')).toEqual(['sh', '-c', 'git status'])
+  expect(prepareArgv('git worktree add $env:DSH_SUPERAGENT_DIR', 'win32'))
+    .toEqual(['pwsh', '-NoProfile', '-NonInteractive', '-Command', 'git worktree add $env:DSH_SUPERAGENT_DIR'])
+})
+
 it('reads the main Session\'s preset from a registry with or without presetForSession, and takes standard\'s caps when it cannot', async () => {
   const watch = { name: 'bash', arguments: { command: 'gh pr checks 7 --watch', description: 'x' } }
   const route = { name: 'orchestrator_route', arguments: { decisions: [] } }
@@ -1515,7 +1536,7 @@ it('refuses an ended ticket\'s worker its tools, and restricts the main Session 
   expect(guards.get(sessionId)!()).toBeUndefined()
   runtime.engine.stopTicket(ticket.id)
   expect(guards.get(sessionId)!()).toBe('Ticket ended; new work needs a new authorized ticket')
-  expect(restricts.get(runtime.masterId)).toEqual([{ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }])
+  expect(restricts.get(runtime.masterId)).toEqual([{ allow: ['skill', shellTool(), 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }])
   // A worker keeps only the profile's work tools: none that ask a person, change the profile, schedule or start work outside
   // the worker slots, reach other Sessions or edit documents, whenever they were registered.
   expect(restricts.get(sessionId)).toEqual([{ allow: ['read', 'read_image', 'grep', 'bash', 'job_output', 'job_list', 'job_kill', 'web_search', 'skill'] }])
