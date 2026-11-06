@@ -44,8 +44,8 @@ function stopped(profile) {
   return existsSync(join(control(profile), 'manually-stopped'))
 }
 
-/** Subcommands of this control script; a process running one controls a service but is not the service. */
-const CONTROL_ACTIONS = new Set(['start', 'stop', 'status', 'restart'])
+/** Subcommands of this control script; a process running one reads or controls a service but is not the service. */
+const CONTROL_ACTIONS = new Set(['start', 'stop', 'status', 'restart', 'watchdog'])
 const SCRIPT_NAME = basename(SCRIPT)
 
 /** Return whether command-line arguments belong to the main DSH service process for `profile`. */
@@ -196,6 +196,34 @@ async function status(args) {
     errors: current ? current.errors : null, setup: current ? current.setup : null, feishu: current ? current.feishu : null }
   process.stdout.write(JSON.stringify(value, null, 2) + '\n')
   return outcome(pids, current)
+}
+
+/**
+ * Print the read-only snapshot an external Watchdog reads: service state plus every open Ticket's stage, latest report,
+ * silence and signals. The command never sends anything but GET requests, so it cannot change a Ticket or a setting.
+ */
+async function watchdog(args) {
+  const path = `/orchestrator/api/watchdog?stale_minutes=${args.stale_minutes}`
+  const response = await apiRequest(args.url, 'GET', path, { 'x-orchestrator-request': '1' }, 10_000)
+  if (response === null) {
+    process.stderr.write(`No management API answer at ${args.url}; the service may be down. Inspect it with status.\n`)
+    return 1
+  }
+  if (response.status < 200 || response.status >= 300) {
+    process.stderr.write(`The management API answered ${response.status}: ${response.body.trim().slice(0, 300)}\n`)
+    return 1
+  }
+  let value
+  try { value = JSON.parse(response.body) } catch {
+    process.stderr.write('The management API answer is not JSON.\n')
+    return 1
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    process.stderr.write('The management API answer is not a Watchdog snapshot.\n')
+    return 1
+  }
+  process.stdout.write(JSON.stringify({ profile: args.profile, url: args.url, ...value }, null, 2) + '\n')
+  return 0
 }
 
 /** Format the marker time like Python's `%Y-%m-%dT%H:%M:%S%z`, with the local UTC offset. */
@@ -364,7 +392,7 @@ async function start(args) {
 /** Parse the command line the way the previous `argparse` interface did, including options before the action. */
 export function parseArgv(argv, env = process.env) {
   const args = { action: undefined, profile: env.DSH_SUPERAGENT_PROFILE || 'superagent', url: env.DSH_SUPERAGENT_URL || 'http://127.0.0.1:3082',
-    timeout: 60, stop_timeout: 300, respect_stop: false }
+    timeout: 60, stop_timeout: 300, stale_minutes: 30, respect_stop: false }
   const value = (index, name) => {
     const next = argv[index + 1]
     if (next === undefined || next.startsWith('-')) throw new Error(`${name} needs a value`)
@@ -378,6 +406,8 @@ export function parseArgv(argv, env = process.env) {
     else if (word.startsWith('--url=')) args.url = word.slice('--url='.length)
     else if (word === '--timeout') { args.timeout = Number(value(index, '--timeout')); index++ }
     else if (word === '--stop-timeout') { args.stop_timeout = Number(value(index, '--stop-timeout')); index++ }
+    else if (word === '--stale-minutes') { args.stale_minutes = Number(value(index, '--stale-minutes')); index++ }
+    else if (word.startsWith('--stale-minutes=')) args.stale_minutes = Number(word.slice('--stale-minutes='.length))
     else if (word === '--respect-stop') args.respect_stop = true
     else if (word === '-h' || word === '--help') args.help = true
     else if (word.startsWith('-')) throw new Error(`unrecognized option: ${word}`)
@@ -385,9 +415,12 @@ export function parseArgv(argv, env = process.env) {
     else throw new Error(`unexpected argument: ${word}`)
   }
   if (args.help) return args
-  if (!['start', 'stop', 'restart', 'status'].includes(args.action)) throw new Error('action must be one of start, stop, restart, status')
+  if (!['start', 'stop', 'restart', 'status', 'watchdog'].includes(args.action)) throw new Error('action must be one of start, stop, restart, status, watchdog')
   if (!Number.isFinite(args.timeout) || !Number.isFinite(args.stop_timeout) || args.timeout <= 0 || args.stop_timeout <= 0) {
     throw new Error('--timeout and --stop-timeout must be positive')
+  }
+  if (!Number.isInteger(args.stale_minutes) || args.stale_minutes < 1 || args.stale_minutes > 1440) {
+    throw new Error('--stale-minutes must be an integer between 1 and 1440')
   }
   if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(args.profile)) throw new Error('--profile must be a DSH profile name')
   return args
@@ -410,21 +443,27 @@ function acquireLock(profile) {
   }
 }
 
-const USAGE = `Usage: dsh-superagent [--respect-stop] <start|stop|restart|status> [options]
+const USAGE = `Usage: dsh-superagent [--respect-stop] <start|stop|restart|status|watchdog> [options]
 
 Manage a local dsh-superagent service (one DSH profile, default \`superagent\`).
+
+\`watchdog\` prints a read-only JSON snapshot of the service and its open Tickets for an external Watchdog session.
+It only reads the management API and changes nothing.
 
 Options:
   --profile <name>       DSH profile that loads dsh-superagent (default: $DSH_SUPERAGENT_PROFILE or superagent).
   --url <url>            Health-check URL (default: $DSH_SUPERAGENT_URL or http://127.0.0.1:3082).
   --timeout <seconds>    Startup timeout (default: 60).
   --stop-timeout <s>     Graceful shutdown timeout (default: 300).
+  --stale-minutes <n>    Watchdog silence threshold in minutes (default: 30, at most 1440).
   --respect-stop         For monitoring: never start/restart after an intentional stop.`
 
 async function main(argv = process.argv.slice(2)) {
   const args = parseArgv(argv)
   if (args.help) { process.stdout.write(USAGE + '\n'); return 0 }
   process.umask(0o077)
+  // A Watchdog only reads the management API, so a control operation in progress must not block it.
+  if (args.action === 'watchdog') return await watchdog(args)
   const release = acquireLock(args.profile)
   try {
     if (args.respect_stop && (args.action === 'start' || args.action === 'restart') && stopped(args.profile)) {

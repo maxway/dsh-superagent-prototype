@@ -5,6 +5,7 @@ import { PromptConflict } from '../src/app/prompts.ts'
 import { SettingsConflict } from '../src/app/settings.ts'
 import type { HttpHost } from '../src/app/http.ts'
 import { SettingsSchema } from '../src/policy.ts'
+import { SourceRegistry } from '../src/sources/registry.ts'
 import { SetupError } from '../src/setup.ts'
 
 type Handler = (req: unknown, res: unknown) => Promise<void>
@@ -108,4 +109,24 @@ it('answers a prompt save that lost a race with 409, and a settings body over 12
   expect(await call('PUT', 'settings/executor', { value, revision: 0 })).toEqual({ status: 400,
     body: { error: `Request exceeds ${128 * 1024} bytes` } })
   expect(saves).toEqual([])
+})
+
+it('serves the Watchdog a read-only snapshot of the service and its open Tickets', async () => {
+  const settings = SettingsSchema.parse({})
+  const call = serve({
+    store: { settings: () => settings, tickets: { open: () => [] } },
+    sources: new SourceRegistry(() => settings),
+    links: () => () => ({ url: '', label: { zh: '', en: '' } }),
+    executor: { activeCount: () => 0 },
+    machine: { stateDir: '/tmp/state', promptMaxChars: { get: () => 100_000 }, admissionContextMaxPages: { get: () => 1 },
+      admissionContextTimeoutMs: { get: () => 1_000 } },
+    health: { runtime: { state: 'ready', detail: '' } },
+    masterId: 'master',
+    configured: () => false,
+  })
+  const response = await call('GET', 'watchdog?stale_minutes=15')
+  expect(response.status).toBe(200)
+  expect(response.body).toMatchObject({ staleMinutes: 15, open: 0, tickets: [],
+    state: { masterId: 'master', paused: false, load: { running: 0, queued: 0 }, health: { runtime: { state: 'ready' } } } })
+  expect(typeof response.body.at).toBe('string')
 })

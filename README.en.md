@@ -34,6 +34,14 @@ Schedules Tickets into the model's off-peak billing window by source, lowering t
 - The official prototype has no such scheduling; this fork can mark Tickets as `offPeak`, and their Executor starts each new Assignment only inside the daily window in the Execution settings. Feishu requests default to immediate execution unless clearly deferrable; GitLab and GitHub requests default to the window unless clearly urgent.
 - The window is off by default, configurable by start time, end time and IANA time zone, and may cross midnight; the default `22:00`–`08:00` (`Asia/Shanghai`) matches the off-peak billing period in Beijing time.
 
+#### Task-level Watchdog check
+
+Adds task-level supervision alongside the process check, so a Ticket that stalls or drifts is noticed.
+
+- A scheduled Session in an independent profile reads every open Ticket's stage, latest report and silence through the new read-only `GET /orchestrator/api/watchdog` route, and reports anomalies found from mechanical signals and model judgement.
+- The first version is observation only: the check sends GET requests and never calls retry/stop or changes settings or prompts. Retry, stop and later interventions are a separate phase that needs an audit trail, per-Ticket rate limits and an explicit observation mode.
+- `scripts/dsh-superagent watchdog` prints the machine-readable snapshot, so the check can run on a schedule from another profile.
+
 ### Special note
 
 - **Stricter Feishu permissions.** The official prototype includes interfaces that read messages and chat information; this fork's Feishu Source only consumes message events and replies, and no longer needs those read permissions. It therefore cannot backfill messages received while the service was offline, read a thread by id, or sync chat members; chat ids and allowed lists are entered by hand.

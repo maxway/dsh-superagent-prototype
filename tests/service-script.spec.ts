@@ -257,6 +257,7 @@ it('exposes the platform-specific process, start and argument forms', async () =
     socket: m.tmuxSocket('superagent'),
     command: m.tmuxCommand('/opt/dsh', 'superagent', '/tmp/log file.log', { DSH_HOME: '/tmp/home', PATH: '/usr/bin', HOME: undefined, TMUX: '/tmp/x,1,0' }),
     argv: m.parseArgv(['--respect-stop', 'start', '--profile', 'one', '--timeout', '5']),
+    watchdog: m.parseArgv(['watchdog', '--stale-minutes', '7', '--url', 'http://127.0.0.1:1']),
     serves: [
       m.serves(['node', '/x/scripts/dsh-superagent', '--profile', 'one', 'start'], 'one'),
       m.serves(['node', '/x/scripts/dsh-superagent', '--profile', 'one', 'restart'], 'one'),
@@ -267,7 +268,7 @@ it('exposes the platform-specific process, start and argument forms', async () =
   })))`
   const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
     (error, stdout) => error ? reject(error) : resolve(stdout)))
-  const value = JSON.parse(out) as { ps: unknown[]; windows: unknown[]; start: unknown; socket: string; command: string; argv: Record<string, unknown>; serves: boolean[] }
+  const value = JSON.parse(out) as { ps: unknown[]; windows: unknown[]; start: unknown; socket: string; command: string; argv: Record<string, unknown>; watchdog: Record<string, unknown>; serves: boolean[] }
   expect(value.ps).toEqual([{ pid: 123, name: 'node', args: ['node', '/opt/my', 'tools/dsh', '--profile', 'superagent', '--no-open'] }])
   expect(value.windows).toEqual([{ pid: 7, name: 'node', args: ['node', '/opt/dsh', '--profile', 'superagent', '--no-open'] },
     { pid: 9, name: 'deepseek harness', args: ['D:\\app\\DeepSeek', 'Harness.exe', '--expose-internals', 'D:\\app\\cli.js', '--profile', 'superagent', '--no-open'] }])
@@ -275,8 +276,29 @@ it('exposes the platform-specific process, start and argument forms', async () =
   expect(value.socket).toBe('dsh-superagent-f063ff9f0c5ba70eeebc')
   expect(value.command).toBe("umask 077; export DSH_HOME=/tmp/home; unset HOME; export PATH=/usr/bin; unset TMUX TMUX_PANE; exec /opt/dsh --profile superagent --no-open >> '/tmp/log file.log' 2>&1")
   expect(value.argv).toMatchObject({ action: 'start', profile: 'one', timeout: 5, respect_stop: true })
+  expect(value.watchdog).toMatchObject({ action: 'watchdog', stale_minutes: 7, url: 'http://127.0.0.1:1' })
   // A control invocation of this script carries --profile too, but only the DSH launcher is the service.
   expect(value.serves).toEqual([false, false, false, true, false])
+})
+it('prints the Watchdog snapshot over GET and refuses an unreachable service', async () => {
+  const requests: { method?: string; url?: string; header?: string }[] = []
+  server = createServer((request, response) => {
+    requests.push({ method: request.method, url: request.url, header: String(request.headers['x-orchestrator-request']) })
+    response.writeHead(200, { 'content-type': 'application/json' })
+      .end(JSON.stringify({ at: '2026-11-07T01:00:00.000Z', staleMinutes: 15, open: 1, tickets: [{ id: 't1', signals: ['no-progress'] }],
+        state: { paused: false } }))
+  })
+  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
+  const watched = await run('watchdog', '--url', url, '--stale-minutes', '15')
+  expect(watched.code).toBe(0)
+  expect(JSON.parse(watched.stdout)).toMatchObject({ profile: 'superagent', url, staleMinutes: 15, open: 1, tickets: [{ id: 't1' }] })
+  // The command is read-only: one GET, no retry, stop, settings or prompt call.
+  expect(requests).toEqual([{ method: 'GET', url: '/orchestrator/api/watchdog?stale_minutes=15', header: '1' }])
+  expect(await run('watchdog', '--url', 'http://127.0.0.1:9')).toMatchObject({ code: 1,
+    stderr: expect.stringContaining('No management API answer') })
+  expect(await run('watchdog', '--stale-minutes', '0')).toMatchObject({ code: 1,
+    stderr: expect.stringContaining('--stale-minutes must be an integer between 1 and 1440') })
 })
 // The remaining cases also drive the POSIX control path with stubbed shell binaries.
 describe.skipIf(process.platform === 'win32')('POSIX service lifecycle (continued)', () => {
