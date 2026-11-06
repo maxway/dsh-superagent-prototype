@@ -1,7 +1,8 @@
 /** Plugin configuration and startup verification for repository access and agent CLI identities. */
 import { LIMITS } from './limits.ts'
 import { accessSync, constants, statSync } from 'node:fs'
-import { delimiter, isAbsolute, join } from 'node:path'
+import { homedir } from 'node:os'
+import { extname, isAbsolute, join, posix, win32 } from 'node:path'
 import type { Volatile } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
@@ -42,25 +43,33 @@ export function machineOf(config: DeploymentConfig): Machine {
   return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }
 }
 
+/** Whether a value is an absolute path on any platform this deployment may run on; empty is allowed where the CLI keeps its own configuration. */
+const absoluteOrEmpty = (value: string): boolean => value === '' || isAbsolute(value) || posix.isAbsolute(value) || win32.isAbsolute(value)
+/** The agent account configuration directory used by the wrapper scripts of docs/006-deployment.md. */
+const configDirDefault = (...segments: string[]): string => join(homedir(), ...segments)
+/** `configDir` is an optional native absolute path: a drive letter or UNC path on Windows, a POSIX path elsewhere; empty selects the documented agent directory. */
 export const GithubAccountsSchema = z.object({
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
   cli: z.string().trim().default(''),
+  configDir: z.string().trim().refine(absoluteOrEmpty, 'An absolute path, or empty for the documented default').default(''),
 })
 /** A GitLab project path may contain nested groups, and `host` may name a self-managed instance. */
 export const GitlabAccountsSchema = z.object({
   host: z.string().trim().default('https://gitlab.com'),
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+)?$/, 'group/project').default(''),
   cli: z.string().trim().default(''),
+  configDir: z.string().trim().refine(absoluteOrEmpty, 'An absolute path, or empty for the documented default').default(''),
 })
-export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
+export const FeishuBotSchema = z.object({ cli: z.string().trim().default(''),
+  configDir: z.string().trim().refine(absoluteOrEmpty, 'An absolute path, or empty for the documented default').default('') })
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape),
   gitlab: Object.keys(GitlabAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
 
 /** The Git host a deployment works through; exactly one is active at a time, so a Ticket always has one remote. */
 export type GitProvider = 'github' | 'gitlab'
-/** Identity shared by every Git host. `host` is the host name used for clone URLs, `cli` the account wrapper. */
-export interface GitIdentity { provider: GitProvider; protocol?: 'http' | 'https'; host: string; cli: string; login: string; commitEmail: string }
+/** Identity shared by every Git host. `host` is the host name used for clone URLs, `cli` the account wrapper, and `configDir` the directory that selects the agent account. */
+export interface GitIdentity { provider: GitProvider; protocol?: 'http' | 'https'; host: string; cli: string; configDir: string; login: string; commitEmail: string }
 export interface Deployment extends Machine {
   repository: string
   git: GitIdentity
@@ -68,24 +77,44 @@ export interface Deployment extends Machine {
   gitlab?: { host: string; projectId: number; defaultBranch: string }
   feishu?: FeishuBot
 }
-export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
+export interface FeishuBot { cli: string; configDir: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
 
-/** Resolve a command name or absolute path to an executable file, ignoring the worker shim directory. */
-export function executable(name: string, path: string, exclude?: string): string {
-  if (name.includes('/') && !isAbsolute(name)) throw new Error(`${name} must be a command name or an absolute path`)
-  const candidates = isAbsolute(name) ? [name] : path.split(delimiter).filter(dir => isAbsolute(dir) && !(exclude && sameDirectory(dir, exclude))).map(dir => join(dir, name))
-  for (const candidate of candidates) {
-    try { if (statSync(candidate).isFile()) { accessSync(candidate, constants.X_OK); return candidate } }
-    catch { /* Not an executable file here; try the next PATH directory. */ }
+/** Command extensions Windows appends to a bare name, in PATHEXT order. */
+const windowsExtensions = (): string[] => (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').map(extension => extension.trim()).filter(Boolean)
+/**
+ * Resolve a command name or absolute path to an executable file, ignoring the worker shim directory.
+ * Windows resolves a bare name through PATHEXT (so `gh` finds `gh.exe` or `gh.cmd`) and needs no POSIX execute bit;
+ * POSIX keeps its execute-bit check.
+ */
+export function executable(name: string, path: string, exclude?: string, platform: NodeJS.Platform = process.platform): string {
+  const windows = platform === 'win32'
+  if ((windows ? /[\\/]/ : /\//).test(name) && !isAbsolute(name) && !(windows && win32.isAbsolute(name))) {
+    throw new Error(`${name} must be a command name or an absolute path`)
   }
-  throw new Error(`${name} is not an executable file${isAbsolute(name) ? '' : ' on PATH'}`)
+  const absolute = isAbsolute(name) || (windows && win32.isAbsolute(name))
+  const names = windows && !extname(name) ? [name, ...windowsExtensions().map(extension => `${name}${extension.toLowerCase()}`)] : [name]
+  const pathDelimiter = windows ? win32.delimiter : posix.delimiter
+  const dirs = absolute ? undefined : path.split(pathDelimiter)
+    .filter(dir => (isAbsolute(dir) || (windows && win32.isAbsolute(dir))) && !(exclude && sameDirectory(dir, exclude)))
+  const candidates = dirs ? dirs.flatMap(dir => names.map(item => join(dir, item))) : names
+  for (const candidate of candidates) {
+    try {
+      if (!statSync(candidate).isFile()) continue
+      if (!windows) accessSync(candidate, constants.X_OK)
+      return candidate
+    } catch { /* Not an executable file here; try the next candidate. */ }
+  }
+  throw new Error(`${name} is not an executable file${absolute ? '' : ' on PATH'}`)
 }
 
-export type Probe = (argv: string[]) => Promise<string>
-/** Run startup checks through DSH's worker subprocess service with worker shims removed from PATH so a `gh` wrapper script reaches the real binary. */
+export type Probe = (argv: string[], env?: Record<string, string>) => Promise<string>
+/**
+ * Run startup checks through DSH's worker subprocess service with worker shims removed from PATH so a `gh` wrapper script reaches the real binary.
+ * Variables go through the spawn spec rather than an `env` prefix, because Windows has no `env` executable.
+ */
 export function workerProbe(subprocess: SubprocessRuntime, stateDir: string, cwd: string, signal: AbortSignal): Probe {
   const path = withoutDirectory(process.env.PATH ?? '', workerBin(stateDir))
-  return argv => runAsWorker(subprocess, ['env', `PATH=${path}`, ...argv], cwd, AbortSignal.any([signal, AbortSignal.timeout(60_000)]))
+  return (argv, env) => runAsWorker(subprocess, argv, cwd, AbortSignal.any([signal, AbortSignal.timeout(60_000)]), { ...env, PATH: path })
 }
 
 const GithubUser = z.object({ login: z.string().regex(/^[A-Za-z0-9-]+$/), id: z.number().int().positive() })
@@ -105,17 +134,20 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   if (!accounts.cli) throw new SetupError('agentCliUnset')
   let cli: string
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('agentCliMissing', { output: reason(error) }) }
-  const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) })
+  // The account directory travels in the child environment rather than an `env` prefix, which Windows lacks.
+  const configDir = accounts.configDir || configDirDefault('.config', 'gh-agent')
+  const account: Record<string, string> = { GH_CONFIG_DIR: configDir }
+  const text = await probe([cli, 'api', 'user'], account).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) })
   const agent = parsed(GithubUser, text)
   if (!agent) throw new SetupError('agentCliNoAccount')
   // Use the canonical repository name returned by GitHub so renamed repositories match incoming notifications.
-  const access = parsed(RepositoryAccess, await probe([cli, 'api', `repos/${remote}`, '--jq', '{name: .full_name, push: .permissions.push}']).catch((error: unknown) => {
+  const access = parsed(RepositoryAccess, await probe([cli, 'api', `repos/${remote}`, '--jq', '{name: .full_name, push: .permissions.push}'], account).catch((error: unknown) => {
     throw new SetupError('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) })
   }))
   if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
   const repository = access.name
   if (access.push !== true) throw new SetupError('repositoryReadOnly', { account: agent.login, repository })
-  return { ...machine, repository, git: { provider: 'github', host: 'github.com', cli, login: agent.login,
+  return { ...machine, repository, git: { provider: 'github', host: 'github.com', cli, configDir, login: agent.login,
     commitEmail: `${agent.id}+${agent.login}@users.noreply.github.com` } }
 }
 
@@ -144,11 +176,13 @@ export async function resolveGitlabDeployment(machine: Machine, gitlab: unknown,
   } catch { throw new SetupError('gitlabHostInvalid', { host: accounts.host }) }
   let cli: string
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('gitlabCliMissing', { output: reason(error) }) }
-  const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('gitlabCliSignedOut', { output: reason(error) }) })
+  const configDir = accounts.configDir || configDirDefault('.config', 'glab-agent')
+  const account: Record<string, string> = { GLAB_CONFIG_DIR: configDir }
+  const text = await probe([cli, 'api', 'user'], account).catch((error: unknown) => { throw new SetupError('gitlabCliSignedOut', { output: reason(error) }) })
   const agent = parsed(GitlabUser, text)
   if (!agent) throw new SetupError('gitlabCliNoAccount')
   // A project path may be renamed; use the canonical path GitLab returns.
-  const project = parsed(GitlabProject, await probe([cli, 'api', `projects/${encodeURIComponent(remote)}`]).catch((error: unknown) => {
+  const project = parsed(GitlabProject, await probe([cli, 'api', `projects/${encodeURIComponent(remote)}`], account).catch((error: unknown) => {
     throw new SetupError('gitlabProjectUnreadable', { account: agent.username, repository: remote, output: reason(error) })
   }))
   if (!project) throw new SetupError('gitlabProjectUnreported', { repository: remote })
@@ -156,7 +190,7 @@ export async function resolveGitlabDeployment(machine: Machine, gitlab: unknown,
   if (access < 30) throw new SetupError('gitlabProjectReadOnly', { account: agent.username, repository: project.path_with_namespace })
   const repository = project.path_with_namespace
   const commitEmail = agent.email || `${agent.id}-${agent.username}@${hostname === 'gitlab.com' ? 'users.noreply.gitlab.com' : hostname}`
-  return { ...machine, repository, git: { provider: 'gitlab', protocol, host, cli, login: agent.username, commitEmail },
+  return { ...machine, repository, git: { provider: 'gitlab', protocol, host, cli, configDir, login: agent.username, commitEmail },
     gitlab: { host: base, projectId: project.id, defaultBranch: project.default_branch || 'main' } }
 }
 
@@ -167,12 +201,14 @@ const BotInfo = z.object({ bot: z.object({ open_id: z.string().regex(/^ou_[A-Za-
  * Workers invoke this CLI as `lark-cli`, so a CLI that also permits a user identity would let workers act as that user.
  */
 export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<FeishuBot | undefined> {
-  const { cli: name } = FeishuBotSchema.parse(feishu ?? {})
+  const { cli: name, configDir: configuredDir } = FeishuBotSchema.parse(feishu ?? {})
   if (!name) return undefined
   const fail = (error: unknown): never => { throw error instanceof SetupError ? error : new SetupError('feishuCliFailed', { output: reason(error) }) }
   let cli = ''
   try { cli = executable(name, path, workerBin(machine.stateDir)) } catch (error) { fail(error) }
-  const run = (...args: string[]): Promise<string> => probe(['env', 'LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1', 'LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1', cli, ...args]).catch(fail)
+  const configDir = configuredDir || configDirDefault('.lark-cli-dsh-superagent')
+  const env = { LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1', LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1', LARKSUITE_CLI_CONFIG_DIR: configDir }
+  const run = (...args: string[]): Promise<string> => probe([cli, ...args], env).catch(fail)
   const text = await run('auth', 'status')
   const status = parsed(AuthStatus, text.slice(text.indexOf('{')))
   if (!status) return fail(new SetupError('feishuNoApp'))
@@ -182,5 +218,5 @@ export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe:
   // `--format json` unwraps only `data`, whereas this endpoint returns the payload under `bot`.
   const info = parsed(BotInfo, (await run('api', 'GET', '/open-apis/bot/v3/info', '--as', 'bot', '--format', 'ndjson')).split('\n')[0] ?? '')
   if (!info) return fail(new SetupError('feishuNoBot'))
-  return { cli, appId: status.appId, brand: status.brand, botId: info.bot.open_id, name: info.bot.app_name }
+  return { cli, configDir, appId: status.appId, brand: status.brand, botId: info.bot.open_id, name: info.bot.app_name }
 }

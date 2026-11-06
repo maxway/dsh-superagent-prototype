@@ -3,6 +3,8 @@
  * undeclared query parameter or body mismatch in `server.misuse`, which `usePanelServer` asserts is empty after each test.
  */
 import { afterEach, beforeEach, expect, vi } from 'vitest'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { z } from 'zod'
 import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { Api, ApiResponse, RouteParams } from '../../src/app/api.ts'
@@ -113,10 +115,11 @@ export let server: PanelServer
 
 function resolved() {
   const accounts = server.setup.accounts
+  const configDir = join(homedir(), '.config', accounts?.provider === 'gitlab' ? 'glab-agent' : 'gh-agent')
   return accounts ? testDeployment({ repository: accounts.repository,
-    git: { provider: accounts.provider, host: accounts.provider === 'gitlab' ? 'gitlab.com' : 'github.com', cli: '/bin/false', login: accounts.agent, commitEmail: '' },
+    git: { provider: accounts.provider, host: accounts.provider === 'gitlab' ? 'gitlab.com' : 'github.com', cli: '/bin/false', configDir, login: accounts.agent, commitEmail: '' },
     ...accounts.provider === 'gitlab' ? { gitlab: { host: 'https://gitlab.com', projectId: 42, defaultBranch: 'main' } } : {},
-    ...accounts.feishu ? { feishu: { cli: '/bin/false', ...accounts.feishu } } : { feishu: undefined } }) : undefined
+    ...accounts.feishu ? { feishu: { cli: '/bin/false', configDir: join(homedir(), '.lark-cli-dsh-superagent'), ...accounts.feishu } } : { feishu: undefined } }) : undefined
 }
 /** Default source health: paused during setup; Feishu defaults to `socket closed` unless overridden or paused by setup. */
 function healthOf(name: string): Health {

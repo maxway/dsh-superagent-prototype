@@ -26,7 +26,7 @@ const note = (overrides: Partial<GitlabNote> = {}): GitlabNote => ({
   id: 11, body: 'Can you also check the padding? @agent-bot', author: { id: 2, username: 'alice' }, created_at: now(), updated_at: now(),
   system: false, noteable_type: 'Issue', noteable_iid: 5, ...overrides })
 const config = (overrides: Partial<GitlabConfig> = {}): GitlabConfig => ({
-  host: 'https://gitlab.com', repository: 'acme/widgets', cli: '/bin/glab', pollSeconds: 60, failuresBeforeError: 3,
+  host: 'https://gitlab.com', repository: 'acme/widgets', cli: '/bin/glab', configDir: '/config/glab-agent', pollSeconds: 60, failuresBeforeError: 3,
   observeIssues: true, observeMrs: true, observeComments: true, observeCi: false, ...overrides })
 
 function context(overrides: Partial<SourceContext> = {}) {
