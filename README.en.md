@@ -6,42 +6,42 @@
 
 ## Differences from the official project
 
-### GitLab Source
+The changes from the official prototype are grouped by importance below.
+
+### Key features
+
+#### GitLab Source
+
+Lets this fork work directly with GitLab, including self-managed instances, instead of depending on GitHub.
 
 - The official prototype only connects to GitHub; this fork adds a switchable GitLab Source, and each deployment chooses GitHub or GitLab.
 - The GitLab Source polls project issues, merge requests, notes and pipelines, replies in the original note, binds merge requests to Tickets, and returns CI status to the Executor.
 - Self-managed GitLab is supported, including instances served over HTTP. Commits, pushes, merge requests, review replies and CI fixes go through `glab`.
 
-### Native Windows deployment
+#### Native Windows deployment
 
-- The official prototype targets POSIX hosts; this fork makes the service script a cross-platform Node implementation, so Windows no longer needs tmux, Python or WSL.
+Runs the service directly on a native Windows host, without WSL, tmux or Python.
+
+- The official prototype targets POSIX hosts; this fork makes the service script a cross-platform Node implementation, and Windows supports the same start, status, stop and restart commands.
 - The Executor's command layer, prepare command, router tools, prompts and skills support PowerShell; the Feishu Source resolves the npm `lark-cli` `.cmd` shim to its Node entry and runs it there.
 - A project Windows runner runs `pnpm check` for merge requests and the default branch, and a real Windows Ticket has completed the end-to-end flow from an issue to a merge request and a source reply. See [009 Windows deployment](docs/009-windows-deployment.md) for details and the verification record.
 
-### Off-peak scheduling
+#### Off-peak scheduling
 
-- The official prototype has no such scheduling; this fork can mark a complex, non-urgent Ticket as `offPeak`, and its Executor starts each new Assignment only inside the daily window in the Execution settings.
+Moves complex, non-urgent Tickets into the model's off-peak billing window to lower the cost of long tasks.
+
+- The official prototype has no such scheduling; this fork can mark those Tickets as `offPeak`, and their Executor starts each new Assignment only inside the daily window in the Execution settings.
 - The window is off by default, configurable by start time, end time and IANA time zone, and may cross midnight; the default `22:00`–`08:00` (`Asia/Shanghai`) matches the off-peak billing period in Beijing time.
 
-### Chinese first
+### Special note
 
-- The official repository documents are English only; this fork adds Simplified Chinese translations of the numbered documents and SETUP, and makes the default README Simplified Chinese, with the English version in [README.en.md](README.en.md).
-- GitHub and GitLab titles, descriptions, comments and review replies follow the language of the request; a Chinese request stays Chinese.
+- **Stricter Feishu permissions.** The official prototype includes interfaces that read messages and chat information; this fork's Feishu Source only consumes message events and replies, and no longer needs those read permissions. It therefore cannot backfill messages received while the service was offline, read a thread by id, or sync chat members; chat ids and allowed lists are entered by hand.
 
-### Service lifecycle and operations
+### Other changes
 
-- This fork adds `POST service/stop`: it drains Executors for up to ten seconds, then exits through the DSH launcher, so the service script can stop on Windows without a POSIX signal.
-- The service script gives each profile its own tmux socket and clears inherited `TMUX` and `TMUX_PANE` before starting, so a task cannot kill another service on the same machine.
-- The panel's Deployment tab shows startup problems, the state directory and host limits, and can run the setup check again.
-
-### Executor context compaction
-
-- The official prototype uses the default compaction threshold; this fork makes a worker session compact when the context reaches 40% of the window (`thresholdRatio: 0.4`), so a long Ticket's later requests do not stay near the window limit.
-
-### Stricter Feishu permissions
-
-- The official prototype includes interfaces that read messages and chat information; this fork's Feishu Source only consumes message events and replies, and no longer needs those read permissions.
-- It therefore cannot backfill messages received while the service was offline, read a thread by id, or sync chat members; chat ids and allowed lists are entered by hand.
+- **Chinese first.** The official repository documents are English only; this fork adds Simplified Chinese translations of the numbered documents and SETUP, and makes the default README Simplified Chinese, with the English version in [README.en.md](README.en.md). GitHub and GitLab titles, descriptions, comments and review replies follow the language of the request.
+- **Service lifecycle and operations.** This fork adds `POST service/stop`: it drains Executors for up to ten seconds, then exits through the DSH launcher; the service script gives each profile its own tmux socket and clears inherited `TMUX` and `TMUX_PANE` before starting; and the panel's Deployment tab shows startup problems, the state directory and host limits, and can run the setup check again.
+- **Executor context compaction.** A worker session compacts when the context reaches 40% of the window (`thresholdRatio: 0.4`), so a long Ticket's later requests do not stay near the window limit.
 
 ## Deployment
 
