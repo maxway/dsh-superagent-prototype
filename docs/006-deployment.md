@@ -10,7 +10,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
 
-Windows hosts are experimental. The Windows paths for service control, the worker command layer, the prepare command and the router tools are implemented. The test suite now passes on a Windows host with documented POSIX-only skips, but no Windows runner or end-to-end run has verified the deployment yet (stage 5 of the Windows deployment plan). A Windows host supports the Git Sources; the Feishu Source is not supported there yet. Workers and the router use the `pwsh` tool instead of `bash` there, and the prepare command runs through PowerShell 7. Where a step below differs on Windows, its Windows form is given.
+Windows hosts are experimental. The Windows paths for service control, the worker command layer, the prepare command and the router tools are implemented. The test suite passes on a Windows host with documented POSIX-only skips, a real Windows start/status/stop/restart smoke passes, and a real ticket on a scratch GitLab project has completed the end-to-end flow: Issue, Ticket, prepare, PowerShell worker, commit, push, merge request and source reply. A Windows CI runner and the Feishu Source are still missing (stage 5 of the Windows deployment plan). A Windows host supports the Git Sources; the Feishu Source is not supported there yet. Workers and the router use the `pwsh` tool instead of `bash` there, and the prepare command runs through PowerShell 7. Where a step below differs on Windows, its Windows form is given.
 
 ### Permissions and isolation
 
@@ -18,7 +18,7 @@ The bundle defines `dsh-superagent-worker` for Executors and `dsh-superagent-rou
 
 Opening a blank managed Session in the Web UI can select the profile's default preset. dsh-superagent restores its role-specific preset before the first turn.
 
-Both presets run with `danger-full-access` as the operator's OS user and read messages from subscribed Threads. Account wrappers choose the agent's credentials by default; they do not isolate the process. A worker can execute programs by path and read the operator's home directory. For isolation, use a dedicated OS account containing only the agent's credentials. On Windows the same applies with no OS sandbox: the `.cmd` shims only block commands, so use a dedicated Windows account that holds only the agent's credentials and repository access. The Windows path has not completed end-to-end verification.
+Both presets run with `danger-full-access` as the operator's OS user and read messages from subscribed Threads. Account wrappers choose the agent's credentials by default; they do not isolate the process. A worker can execute programs by path and read the operator's home directory. For isolation, use a dedicated OS account containing only the agent's credentials. On Windows the same applies with no OS sandbox: the `.cmd` shims only block commands, so use a dedicated Windows account that holds only the agent's credentials and repository access. The Windows path has passed an end-to-end run on a scratch project; a Windows CI runner is still missing.
 
 ## Prerequisites
 
@@ -26,7 +26,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 - GitHub CLI (`gh`) 2.48 or later for a GitHub deployment, or GitLab CLI (`glab`) for a GitLab deployment. Source CLI fields must point to the agent CLI's command name or absolute path (`gh`, `glab` or `lark-cli`; on POSIX usually a wrapper script); the host relies on their subcommands and output formats.
 - **Windows host:** the native `gh.exe` or `glab.exe`, signed in to the agent account as Windows credentials below describes. Do not use a `.cmd` wrapper.
 - A repository on github.com, or a GitLab project on gitlab.com or a self-managed instance. GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
-- A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.
+- A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another. Configure it in the deployment profile itself; that profile does not inherit the credentials or provider configuration of the profile you work in, and without a provider it reports a missing credential and cannot assess requests.
 - For Feishu: `lark-cli` (tested with 1.0.90) and a Feishu or Lark app with a bot. Feishu runs on POSIX only for now.
 
 ## Accounts

@@ -1,8 +1,8 @@
 # Windows stage 5 evidence
 
-This directory records the Windows test run that moves stage 5 from "not expected to pass on Windows" to "passes with
-documented POSIX-only skips". It is evidence for [the Windows deployment plan](../../009-windows-deployment.md), not a
-deployment itself.
+This directory records the Windows test runs that move stage 5 from "not expected to pass on Windows" to "passes with
+documented POSIX-only skips" and complete the end-to-end flow on a scratch project. It is evidence for [the Windows
+deployment plan](../../009-windows-deployment.md), not a deployment itself.
 
 ## What was verified
 
@@ -51,6 +51,36 @@ On this revision the full Windows suite (`pnpm vitest run`) passes: 60 files, 11
 additional skips are the new control-script cases, which drive the POSIX `ps`/`tmux` fixtures like the rest of that
 suite.
 
+## End-to-end run (2026-11-06)
+
+A third isolated profile, `stage5-e2e` (panel port 3092, state `D:\dsh-stage5-e2e\state`, bundle
+`D:\code\dsh-superagent-e2e-win`), watched the dedicated scratch GitLab project `ngd/dsh-superagent-test` (project
+4593) as `project_4593_bot`, with its own glab configuration directory and worker git configuration. The bundle was
+`main` at `f38c5dd` plus the then-unmerged stage 5 service fix from merge request !15 (merged as `97a13ef`); its
+runtime code matches `main` at `0335575`.
+
+- A person with the allowed scratch-project account opened Issue #1, asking for one line at the end of `README.md`.
+  The GitLab Source stored the mention as a Trigger.
+- The first assessment ended `unavailable` on a timeout because the profile had no model provider: the master Session
+  failed with `MISSING_CREDENTIAL`, not a policy decision. Adding the same `llm-pi-ai` gateway provider as the Linux
+  deployment, with the key from the Windows user environment, and restarting with a fresh master Session fixed it. A
+  deployment profile does not inherit the desktop profile's account credentials.
+- The next pass accepted the request as a Ticket ("在 README.md 末尾添加一行..."), and the prepare command fetched the
+  scratch repository and created the worktree `D:\dsh-stage5-e2e\work\readme-stage5-line-7e0e909a5bf5` with
+  `git worktree add`.
+- The worker ran under the `pwsh` tool. It appended `Windows stage 5 end-to-end check`, committed `a2412af`, pushed
+  `agent/readme-stage5-line-7e0e909a5bf5`, opened [merge request !1](https://gitlab.diandian.info/ngd/dsh-superagent-test/-/merge_requests/1)
+  and replied in Issue #1 with the link. The merge request is one added line, has no conflicts, and waits for a person
+  to merge it.
+- The panel reported the Ticket in the person stage with a `ready` report. The issue reply, the merge request and the
+  ticket report are the acceptance evidence.
+
+Two environment notes from this run belong in a repeatable setup: start the service with the Windows user environment,
+including the model key and a `PATH` that contains the native CLI (`C:\Users\dd\bin` on this host). A service started
+through WSL interop inherits a reduced `PATH`, so the worker had to resolve `glab.exe` by its full path; that is a setup
+artifact, not a bundle defect. The candidate service was stopped after the run; its profile state remains under
+`D:\dsh-stage5-e2e\state`.
+
 ## Documented POSIX-only skips
 
 The suite skips these cases on Windows because their fixtures or behavior are POSIX-specific. Each skip names its
@@ -74,8 +104,10 @@ reason in the test source; the behavior they cover is exercised elsewhere.
 ## Remaining stage 5 work
 
 - A Windows CI runner that runs `pnpm check` on every change.
-- An end-to-end run on the dedicated scratch GitLab project `ngd/dsh-superagent-test`, not this repository: setup, a
-  Ticket, prepare, a worker turn, commit, push, merge request, panel state and the source reply.
 - Feishu on Windows (WP6), still optional and not supported today.
+- Merge request !1 in the scratch project waits for a person to merge it; merging is not part of this acceptance.
+
+The end-to-end run passed; Windows remains experimental only because no runner keeps the Windows path tested on every
+change.
 
 No user-interface change comes with this evidence, so it has no before-and-after screenshots.

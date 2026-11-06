@@ -12,7 +12,7 @@
 
 插件配置保存状态目录和本机上限。其他一切都用面板：仓库和账号在来源中设置，允许名单在策略中设置，执行器（worker）目录和命令在执行中设置。
 
-Windows 主机目前是实验性的。服务控制、worker 命令层、准备命令和路由工具的 Windows 路径已经实现。测试套件现已在 Windows 主机上通过，并有记录在案的 POSIX 专用跳过项；但还没有 Windows runner 或端到端运行验证过部署本身（Windows 部署计划的阶段 5）。Windows 主机支持 Git 来源，但暂不支持飞书来源。在 Windows 上，worker 和路由 Session 使用 `pwsh` 工具而不是 `bash`，准备命令也通过 PowerShell 7 运行。下面某一步在 Windows 上不同时，会给出它的 Windows 写法。
+Windows 主机目前是实验性的。服务控制、worker 命令层、准备命令和路由工具的 Windows 路径已经实现。测试套件已在 Windows 主机上通过，并有记录在案的 POSIX 专用跳过项；真实的 Windows 启动/状态/停止/重启冒烟已通过；针对临时 GitLab 项目的真实工单也完成了端到端流程：Issue、工单、准备、PowerShell worker、提交、推送、合并请求和来源回复。Windows CI runner 和飞书来源仍然缺失（Windows 部署计划的阶段 5）。Windows 主机支持 Git 来源，但暂不支持飞书来源。在 Windows 上，worker 和路由 Session 使用 `pwsh` 工具而不是 `bash`，准备命令也通过 PowerShell 7 运行。下面某一步在 Windows 上不同时，会给出它的 Windows 写法。
 
 ### 权限与隔离
 
@@ -20,7 +20,7 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
 
 在 Web UI 中打开一个空白的托管 Session 时，可能会选中该 profile 的默认预设。dsh-superagent 会在第一轮之前恢复其角色专用预设。
 
-两个预设都以运营者的操作系统用户身份、以 `danger-full-access` 运行，并读取已订阅线程中的消息。账号包装器默认选择智能体的凭据；它们不隔离进程。执行器可以按路径执行程序，并读取运营者的主目录。若要隔离，请使用一个只包含智能体凭据的专用操作系统账号。Windows 上同样如此，而且没有操作系统沙箱：`.cmd` shim 只是拦截命令，因此请为服务使用一个只持有智能体凭据和仓库访问权限的专用 Windows 账号。Windows 路径尚未完成端到端验证。
+两个预设都以运营者的操作系统用户身份、以 `danger-full-access` 运行，并读取已订阅线程中的消息。账号包装器默认选择智能体的凭据；它们不隔离进程。执行器可以按路径执行程序，并读取运营者的主目录。若要隔离，请使用一个只包含智能体凭据的专用操作系统账号。Windows 上同样如此，而且没有操作系统沙箱：`.cmd` shim 只是拦截命令，因此请为服务使用一个只持有智能体凭据和仓库访问权限的专用 Windows 账号。Windows 路径已在临时项目上通过端到端运行；Windows CI runner 仍然缺失。
 
 ## 前置条件
 
@@ -28,7 +28,7 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
 - 使用 GitHub 部署时，GitHub CLI（`gh`）2.48 或更高版本；使用 GitLab 部署时，GitLab CLI（`glab`）。来源的 CLI 字段必须指向智能体 CLI 的命令名或绝对路径（`gh`、`glab` 或 `lark-cli`；POSIX 上通常是包装脚本）；宿主依赖它们的子命令和输出格式。
 - **Windows 主机：** 使用原生的 `gh.exe` 或 `glab.exe`，按下文 Windows 凭据一节以智能体账号登录。不要使用 `.cmd` 包装脚本。
 - github.com 上的一个仓库，或 gitlab.com / 自建实例上的一个 GitLab 项目；不支持 GitHub Enterprise Server。要为每个工单创建检出，请保留一个本地克隆，让准备命令能从其中添加工作树。如果该仓库使用 Git LFS，请安装 `git-lfs`。
-- 为 DeepSeek Harness 配置的模型服务商。dsh-superagent 使用该 profile 的默认模型，除非评估或执行设置指定了另一个。
+- 为 DeepSeek Harness 配置的模型服务商。dsh-superagent 使用该 profile 的默认模型，除非评估或执行设置指定了另一个。请在实际部署的 profile 中配置；它不会继承你日常使用 profile 的账号凭据或服务商配置，没有配置服务商时会报缺少凭据，无法研判请求。
 - 使用飞书时：`lark-cli`（已用 1.0.90 测试），以及一个带机器人的飞书或 Lark 应用。飞书目前只在 POSIX 上运行。
 
 ## 账号

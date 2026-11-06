@@ -11,7 +11,7 @@
 - **本项目的主机需要。** worker 必须运行项目仅 Windows 的工具链，因此 agent 主机必须是 Windows。本方案只移植部署本身；项目自己的构建和冒烟工作不在范围内。
 - **工期：** 一个可用的内部版本约需 9-13 人日：一名开发者 2-2.5 周，包含概念验证和端到端验证，不含飞书，也不含 Windows CI runner。
 - **完整对齐**——飞书、Windows CI、双语的安装文档，以及让两个平台都持续被测试的加固——约需 12-18 人日，即一名开发者 3-4 周。
-- **状态（2026-11-06）：** 阶段 1-4 已实现并在 Linux 上测试。在 Windows 上手工运行 `pnpm check` 现已通过，并有记录在案的 POSIX 专用跳过项；概念验证发现的原生路径阻塞已修复，服务脚本的真实 Windows 启动/状态/停止/重启冒烟也已通过。Windows runner、端到端运行和飞书仍然缺失，因此 Windows 仍是实验性的，飞书来源在 Windows 上不受支持。
+- **状态（2026-11-06）：** 阶段 1-4 已实现并在 Linux 上测试。在 Windows 上手工运行 `pnpm check` 现已通过，并有记录在案的 POSIX 专用跳过项；概念验证发现的原生路径阻塞已修复，服务脚本的真实 Windows 启动/状态/停止/重启冒烟也已通过；针对临时项目 `ngd/dsh-superagent-test` 的真实工单还完成了端到端流程：Issue、工单、准备命令、PowerShell worker、提交、推送、合并请求和来源回复。Windows CI runner 和飞书支持仍然缺失，因此 Windows 仍是实验性的，飞书来源在 Windows 上不受支持。
 - **建议：** 移植部署；先做 1-2 天的概念验证，然后按下面的分阶段计划执行。项目自己的工具链工作另行处理。
 
 ## “在 Windows 上部署”意味着什么
@@ -58,13 +58,13 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 
 上表是这份方案开始时所做的评估。阶段 1-4 此后已处理这些缺口：
 
-- **阶段 0（部分）。** 在运营者 Windows 机器上的概念验证发现两个阻塞：`stateDir` 和 `executor.directory` 不接受原生 `C:\...` 路径，setup 探测通过 POSIX 的 `env` 可执行文件传递环境。两处修复都已进入 main。真实的 Windows 启动/状态/停止/重启冒烟与准备命令现在也在该主机上通过；针对目标仓库的端到端运行仍属于阶段 5。
+- **阶段 0（部分）。** 在运营者 Windows 机器上的概念验证发现两个阻塞：`stateDir` 和 `executor.directory` 不接受原生 `C:\...` 路径，setup 探测通过 POSIX 的 `env` 可执行文件传递环境。两处修复都已进入 main。真实的 Windows 启动/状态/停止/重启冒烟与准备命令现在也在该主机上通过；针对临时仓库的端到端运行已在阶段 5 通过。
 - **阶段 1。** `scripts/dsh-superagent` 是 Node 脚本。POSIX 保留 tmux 和 `SIGINT`；Windows 启动分离进程，并通过 `POST /orchestrator/api/service/stop` 停止。POSIX 路径与一个隔离的 Windows profile 都通过了启动/状态/停止/重启；Windows 冒烟还发现并修复了两处进程识别缺陷（见[阶段 5 证据](../evidence/windows-stage5/)）。
 - **阶段 2。** worker 命令层解析 `PATHEXT`，只为被禁止和未启用的命令生成 `.cmd` 护栏，并用 `GH_CONFIG_DIR`、`GLAB_CONFIG_DIR` 和 `LARKSUITE_CLI_CONFIG_DIR` 选择智能体账号；探测和 git 凭据都走原生 argv。
 - **阶段 3。** 准备命令在 POSIX 上走 `sh -c`，在 Windows 上走 `pwsh -NoProfile -NonInteractive -Command`；路由 Session 接受 `pwsh`；提示词和技能已不依赖具体 shell。
 - **阶段 4。** 补上两种语言的 Windows 安装与部署路径。
-- **阶段 5（部分）。** `pnpm check` 已在 Windows 主机（Windows 10 19045、Node.js 24.21.0、pnpm 11.7.0）上通过，POSIX 专用套件按[阶段 5 证据](../evidence/windows-stage5/)中记录的原因跳过；服务脚本的真实 Windows 启动/状态/停止/重启冒烟也已通过。Windows CI runner 和针对临时 GitLab 项目的端到端运行尚未完成。
-- **未完成。** 阶段 5 的 Windows runner 和端到端运行，以及 Windows 上的飞书来源（WP6）。因此 Windows 仍是实验性的；在阶段 5 通过之前，不要称它受支持。
+- **阶段 5（端到端已验证）。** `pnpm check` 已在 Windows 主机（Windows 10 19045、Node.js 24.21.0、pnpm 11.7.0）上通过，POSIX 专用套件按[阶段 5 证据](../evidence/windows-stage5/)中记录的原因跳过；服务脚本的真实 Windows 启动/状态/停止/重启冒烟也已通过。针对临时 GitLab 项目 `ngd/dsh-superagent-test` 的真实工单还完成了完整流程：隔离的 `stage5-e2e` profile 把人发在 Issue #1 中的提及接受为工单，PowerShell 准备命令创建了工作树，`pwsh` worker 修改了 `README.md`，提交 `a2412af`，推送分支，打开合并请求 !1 并在 Issue #1 中回复；面板把该工单显示为等待人工合并。本次运行记录在[阶段 5 证据](../evidence/windows-stage5/)中。Windows CI runner 仍然缺失。
+- **未完成。** Windows CI runner，以及 Windows 上的飞书来源（WP6）。端到端候选 profile 需要自己的模型提供方配置；没有该配置的 profile 会报 `MISSING_CREDENTIAL`，无法研判请求。在 runner 能让 Windows 路径在每次改动时都被测试之前，Windows 仍是实验性的；飞书来源在 Windows 上不受支持。
 
 ## 有没有必要？
 
