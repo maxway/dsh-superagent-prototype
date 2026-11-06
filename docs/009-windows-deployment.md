@@ -9,7 +9,7 @@ The question is about the host, not about who can use the agent. Every user open
 - **Required for this project's host.** The workers must run the project's Windows-only toolchain, so the agent host must be Windows. This plan ports the deployment only; the project's own build and smoke work is out of scope.
 - **Estimate:** a usable internal build takes about 9-13 person-days: 2-2.5 weeks for one developer, including the proof of concept and end-to-end verification, without Feishu and without a Windows CI runner.
 - **Full parity** — Feishu, Windows CI, bilingual setup documentation and the hardening that keeps both platforms tested — takes about 12-18 person-days, or 3-4 weeks for one developer.
-- **Status (2026-11-06):** the usable internal build is complete. Stages 1-5 are implemented, and a manual Windows run of `pnpm check` passes with documented POSIX-only skips. The proof of concept's native-path blocker is fixed, a real Windows `start`/`status`/`stop`/`restart` smoke through the service script passes, and a real ticket on the scratch project `ngd/dsh-superagent-test` completed the end-to-end flow: Issue, Ticket, prepare, PowerShell worker, commit, push, merge request and source reply. Full parity is still missing a Windows CI runner and the optional Feishu Source (WP6); without a runner Windows stays experimental, and the Feishu Source is not supported there.
+- **Status (2026-11-07):** the usable internal build is complete, and stage 5 is verified end to end. Stages 1-5 are implemented; a project Windows runner runs `pnpm check` for merge requests and the default branch, and the manual Windows run passes with documented POSIX-only skips. The proof of concept's native-path blocker is fixed, a real Windows `start`/`status`/`stop`/`restart` smoke through the service script passes, and a real ticket on the scratch project `ngd/dsh-superagent-test` completed the end-to-end flow: Issue, Ticket, prepare, PowerShell worker, commit, push, merge request and source reply. Only the optional Feishu Source (WP6) remains, so the Feishu Source is not supported on Windows.
 - **Recommendation:** port the deployment; start with the 1-2 day proof of concept, then follow the staged plan below. The project's toolchain work is separate.
 
 ## What deploying on Windows means
@@ -53,7 +53,7 @@ The bundle already switches its two agent presets between bash and pwsh by platf
 
 [006 Deployment](006-deployment.md) documented only the POSIX path when this plan was written, so even a hand-started Windows service would fail setup before it could poll. Stage 4 adds the Windows guidance; the status below records what is still missing.
 
-### Implementation status (2026-11-06)
+### Implementation status (2026-11-07)
 
 The table above is the assessment this plan started from. Stages 1-5 have since addressed these gaps:
 
@@ -62,8 +62,8 @@ The table above is the assessment this plan started from. Stages 1-5 have since 
 - **Stage 2.** The worker command layer resolves `PATHEXT`, writes `.cmd` guardrails only for blocked and inactive commands, and selects the agent account with `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR` and `LARKSUITE_CLI_CONFIG_DIR`; probes and git credentials use native argv.
 - **Stage 3.** The prepare command runs through `sh -c` on POSIX and `pwsh -NoProfile -NonInteractive -Command` on Windows; the router accepts `pwsh`; prompts and skills are shell-neutral.
 - **Stage 4.** Added the Windows setup and deployment path in both languages.
-- **Stage 5 (end-to-end verified; CI runner outstanding).** `pnpm check` passes on a Windows host (Windows 10 19045, Node.js 24.21.0, pnpm 11.7.0) with the POSIX-only suites skipped for the reasons recorded in [the stage 5 evidence](evidence/windows-stage5/), and a real Windows `start`/`status`/`stop`/`restart` smoke through the service script passes. A real ticket on the scratch GitLab project `ngd/dsh-superagent-test` also completed the full flow: an isolated `stage5-e2e` profile accepted a person's mention in Issue #1 as a Ticket, the PowerShell prepare command created the worktree, a `pwsh` worker changed `README.md`, committed `a2412af`, pushed the branch, opened merge request !1 and replied in Issue #1; the panel showed the Ticket waiting for a person to merge. The run is recorded in [the stage 5 evidence](evidence/windows-stage5/). The last acceptance item of this stage, a Windows CI runner, is still missing.
-- **Remaining.** A Windows CI runner (stage 5 acceptance) and the Feishu Source on Windows (WP6, optional). The end-to-end candidate profile needed its own model-provider configuration; a profile without one reports `MISSING_CREDENTIAL` and cannot assess requests. Windows remains experimental until a runner keeps the Windows path tested on every change; the Feishu Source is not supported there. Neither item blocks the usable internal build.
+- **Stage 5 (complete).** `pnpm check` passes on a Windows host (Windows 10 19045, Node.js 24.21.0, pnpm 11.7.0) with the POSIX-only suites skipped for the reasons recorded in [the stage 5 evidence](evidence/windows-stage5/), and a real Windows `start`/`status`/`stop`/`restart` smoke through the service script passes. A real ticket on the scratch GitLab project `ngd/dsh-superagent-test` also completed the full flow: an isolated `stage5-e2e` profile accepted a person's mention in Issue #1 as a Ticket, the PowerShell prepare command created the worktree, a `pwsh` worker changed `README.md`, committed `a2412af`, pushed the branch, opened merge request !1 and replied in Issue #1; the panel showed the Ticket waiting for a person to merge. The run is recorded in [the stage 5 evidence](evidence/windows-stage5/). The Windows CI runner is in place: the project-specific `windows-workstation-dd` runner (tag `windows`, shell executor on the operator's Windows workstation under `D:\dsh-ci`) runs the `windows-check` job in `.gitlab-ci.yml` for merge requests and the default branch. Its first run found and fixed a line-ending assumption in the documentation tests: a default Windows checkout uses CRLF, so the tests now normalize it. The CI run is recorded in [the stage 5 evidence](evidence/windows-stage5/).
+- **Remaining.** The Feishu Source on Windows (WP6, optional). The end-to-end candidate profile needed its own model-provider configuration; a profile without one reports `MISSING_CREDENTIAL` and cannot assess requests. A Windows host supports the Git Sources; the Feishu Source is not supported there.
 
 ## Is it necessary?
 
@@ -79,7 +79,7 @@ The table above is the assessment this plan started from. Stages 1-5 have since 
 
 ### Cost of support
 
-A port is not a one-time cost. After it, every change must be checked on two platforms; the worker shell differs (`bash` and `pwsh`), so prompts, skills and tests need platform-aware text; a Windows runner has to exist to keep it honest; and the isolation story is weaker, because the blocked-command shims are a guardrail while the real boundary stays a dedicated operating-system account. For a research prototype with one repository and a shared service, that cost buys little unless one of the scenarios above is real.
+A port is not a one-time cost. After it, every change must be checked on two platforms; the worker shell differs (`bash` and `pwsh`), so prompts, skills and tests need platform-aware text; a Windows runner has to keep running to keep it honest; and the isolation story is weaker, because the blocked-command shims are a guardrail while the real boundary stays a dedicated operating-system account. For a research prototype with one repository and a shared service, that cost buys little unless one of the scenarios above is real.
 
 ### Verdict
 
@@ -251,11 +251,12 @@ The usable internal build is about 2-2.5 weeks of focused work; the full parity 
 - Account selection through the `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR` and `LARKSUITE_CLI_CONFIG_DIR` environment variables plus optional `configDir` Source settings, not `.cmd` wrappers for the Git CLIs (stage 2).
 - Native CLI executables with argv, and the platform shell for the prepare command (stages 2-3).
 - Feishu kept out of the first release; a Windows host supports the Git Sources only (stages 4-5).
+- A project-specific Windows runner runs `pnpm check` in CI for merge requests and the default branch (stage 5).
 - The operator provided the Windows machine and remote access for the proof of concept and the end-to-end run (stages 0 and 5).
 
 ### Remaining questions
 
-- Whether to provide a Windows CI runner. Without one the plan keeps Windows experimental; it is the only unmet stage 5 acceptance item, and it needs a runner registered to the project.
+- Whether to move the Windows CI runner from the operator's workstation to a dedicated CI host with a dedicated Windows account. Today it is a user-level shell runner under `D:\dsh-ci` that starts at logon, so it runs jobs with the operator's credentials and stops when nobody is logged in.
 - Whether Feishu on Windows (WP6) is required before a Windows host replaces the POSIX production host. It is not implemented, and a test host may not enable Feishu, so it cannot be verified there.
 
 ## Out of scope
@@ -268,4 +269,4 @@ The usable internal build is about 2-2.5 weeks of focused work; the full parity 
 
 ## Recommendation
 
-Port the deployment for this project. The workers must run the project's Windows-only toolchain, so the host is Windows; this plan is limited to making dsh-superagent run correctly there. Start with the 1-2 day proof of concept on the target machine, then follow WP0-WP7 and the staged order above. Keep the project's own Unity build, exe packaging and smoke-test work with the project, and keep Feishu optional. A Windows CI runner is worth adding after the port, but it is not part of the port itself.
+Port the deployment for this project. The workers must run the project's Windows-only toolchain, so the host is Windows; this plan is limited to making dsh-superagent run correctly there. Start with the 1-2 day proof of concept on the target machine, then follow WP0-WP7 and the staged order above. Keep the project's own Unity build, exe packaging and smoke-test work with the project, and keep Feishu optional. The Windows CI runner is in place; keep it running, and move it to a dedicated host before relying on it as a release gate.

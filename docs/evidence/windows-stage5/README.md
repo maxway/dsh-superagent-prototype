@@ -101,13 +101,31 @@ reason in the test source; the behavior they cover is exercised elsewhere.
 - **`tests/prompts.spec.ts` no skip.** The test now keeps its temporary prompt directory inside the package, which is
   required because a Windows temp directory can be on another drive.
 
+## Windows CI (2026-11-07)
+
+A project-specific runner `windows-workstation-dd` (runner id 152, tag `windows`, shell executor with `pwsh`) was
+registered to `ngd/dsh-superagent-prototype` on the operator's Windows workstation. It runs as a user-level process
+from `D:\dsh-ci` and is started at Windows logon by a Startup entry; it is not a Windows service and has no dedicated
+CI account.
+
+`.gitlab-ci.yml` adds a `windows-check` job for merge requests and the default branch. It runs `node --version`,
+`pnpm --version`, `pnpm install --frozen-lockfile` and `pnpm check`. The first pipeline (149774, job 233402) reported
+success incorrectly because the CMD shell stopped after `pnpm --version`; switching the runner to `pwsh` and retrying
+(job 233403) exposed a real line-ending defect: a default Windows checkout uses `core.autocrlf=true`, and the
+documentation structure tests failed on CRLF. `tests/docs.spec.ts` now normalizes CRLF before parsing, and the next
+pipeline (149777, job 233414) passed in 87 seconds.
+
+The runner is a workstation runner: it stops when the machine is off or nobody is logged in, and jobs run with the
+operator's credentials. A dedicated CI host with a dedicated Windows account is the follow-up before the runner is
+used as a release gate.
+
 ## Remaining stage 5 work
 
-- A Windows CI runner that runs `pnpm check` on every change.
 - Feishu on Windows (WP6), still optional and not supported today.
 - Merge request !1 in the scratch project waits for a person to merge it; merging is not part of this acceptance.
+- Moving the runner to a dedicated CI host, which the plan records as a remaining question.
 
-The end-to-end run passed; Windows remains experimental only because no runner keeps the Windows path tested on every
-change.
+The end-to-end run passed and a Windows runner now runs `pnpm check` in CI; the only stage 5 item left is the optional
+Feishu Source (WP6).
 
 No user-interface change comes with this evidence, so it has no before-and-after screenshots.
