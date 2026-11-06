@@ -44,6 +44,10 @@ function stopped(profile) {
   return existsSync(join(control(profile), 'manually-stopped'))
 }
 
+/** Subcommands of this control script; a process running one controls a service but is not the service. */
+const CONTROL_ACTIONS = new Set(['start', 'stop', 'status', 'restart'])
+const SCRIPT_NAME = basename(SCRIPT)
+
 /** Return whether command-line arguments belong to the main DSH service process for `profile`. */
 export function serves(args, profile) {
   const words = []
@@ -53,9 +57,12 @@ export function serves(args, profile) {
     if (value) { matched = matched || word === profile; value = false }
     else if (word === '--profile') value = true
     else if (word === `--profile=${profile}`) matched = true
-    else if (!word.startsWith('-')) words.push(word)
+    else if (!word.startsWith('-')) words.push(word.replace(/^"|"$/g, ''))
   }
-  return matched && !words.includes('plugin')
+  // This control script also accepts `--profile`; its own command line, and any concurrent control
+  // invocation for the same profile, must not be mistaken for the DSH service process (issue found
+  // by the stage 5 Windows smoke run).
+  return matched && !words.some(word => word === 'plugin' || CONTROL_ACTIONS.has(word) || basename(word) === SCRIPT_NAME)
 }
 
 /** Parse `ps -o pid=,ucomm=,args=` output; whitespace splits the arguments, so only `--profile` and subcommands are inspected. */
@@ -75,6 +82,10 @@ function ps(options, check = false) {
   return parsePs(result.stdout ?? '')
 }
 
+/** Process names DSH runs under on Windows: the npm CLI (`node`/`dsh`) and the installed desktop app's host. */
+const DSH_HOSTS = new Set(['node', 'dsh', 'deepseek harness'])
+const isDshHost = name => DSH_HOSTS.has(String(name ?? '').replace(/\.exe$/i, '').toLowerCase())
+
 /** Parse `Get-CimInstance Win32_Process` JSON into the same `{ pid, name, args }` records as `parsePs`. */
 export function parseWindowsProcesses(value) {
   let parsed = value
@@ -82,9 +93,8 @@ export function parseWindowsProcesses(value) {
   const list = Array.isArray(parsed) ? parsed : parsed ? [parsed] : []
   return list.flatMap(item => {
     if (!item || !Number.isInteger(item.ProcessId) || typeof item.CommandLine !== 'string') return []
-    const name = String(item.Name ?? '').replace(/\.exe$/i, '').toLowerCase()
-    if (name !== 'node' && name !== 'dsh') return []
-    return [{ pid: item.ProcessId, name, args: item.CommandLine.split(/\s+/) }]
+    if (!isDshHost(item.Name)) return []
+    return [{ pid: item.ProcessId, name: String(item.Name).replace(/\.exe$/i, '').toLowerCase(), args: item.CommandLine.split(/\s+/) }]
   })
 }
 
@@ -98,19 +108,23 @@ function windowsProcesses() {
 /** Whether a process record is a DSH service process for `profile`; the launcher's tmux or shell must not count as one. */
 function serviceProcess(item, profile) {
   // Node may report its process name as a thread name such as MainThread; the executable in argv[0] still says node or dsh.
-  const program = item.args?.[0] ? basename(item.args[0]).replace(/\.exe$/i, '').toLowerCase() : ''
-  return (item.name === 'node' || item.name === 'dsh' || program === 'node' || program === 'dsh') && serves(item.args, profile)
+  // The desktop app runs DSH as `DeepSeek Harness.exe`, which the `dsh` shim on that host starts.
+  const program = item.args?.[0] ? basename(item.args[0].replace(/^"|"$/g, '')).replace(/\.exe$/i, '').toLowerCase() : ''
+  return (isDshHost(item.name) || isDshHost(program)) && serves(item.args, profile)
 }
 
 /** Return whether `pid` is currently running the DSH service for `profile`. */
 function running(pid, profile) {
+  if (pid === process.pid) return false
   const found = WINDOWS ? windowsProcesses().filter(item => item.pid === pid) : ps(['-p', String(pid)]).filter(item => item.pid === pid)
   return found.some(item => serviceProcess(item, profile))
 }
 
 /** Return PIDs of all running DSH service processes for `profile`, including instances started outside this script and a recorded PID that still runs it. */
 function processes(profile) {
-  const found = (WINDOWS ? windowsProcesses() : ps(['-ax'], true)).filter(item => serviceProcess(item, profile)).map(item => item.pid)
+  // Exclude this control process itself, which also carries `--profile <name>` on its command line.
+  const found = (WINDOWS ? windowsProcesses() : ps(['-ax'], true))
+    .filter(item => item.pid !== process.pid).filter(item => serviceProcess(item, profile)).map(item => item.pid)
   let recorded
   try { recorded = Number(readFileSync(join(control(profile), 'service.pid'), 'utf8').trim()) } catch { return found }
   return Number.isInteger(recorded) && recorded > 0 && !found.includes(recorded) && running(recorded, profile) ? [...found, recorded] : found

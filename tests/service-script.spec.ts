@@ -96,6 +96,20 @@ it('takes no `dsh plugin` command of the profile for its service', async () => {
     `${service} node node /opt/my tools/dsh --profile superagent --no-open`)
   expect(await status('superagent')).toMatchObject({ pids: [service] })
 })
+it('does not take another control invocation for its profile as the service', async () => {
+  const script = join(root, 'scripts', 'dsh-superagent')
+  processes(`${sleeper()} node node ${script} --profile superagent status`)
+  expect(await status('superagent')).toMatchObject({ pids: [] })
+})
+it('starts the service when the scan only finds a control invocation for its profile', async () => {
+  const url = await answering()
+  const pid = sleeper()
+  processes(`${sleeper()} node node ${join(root, 'scripts', 'dsh-superagent')} --profile superagent start`)
+  writeFileSync(join(root, 'pane'), `${pid}\n`)
+  started(service(pid))
+  expect(await run('start', '--url', url, '--timeout', '10'))
+    .toMatchObject({ code: 0, stdout: expect.stringContaining(`"pids": [\n    ${pid}\n  ]`) })
+}, 20_000)
 it('records the service PID at start, and still refuses a second instance the scan finds', async () => {
   const url = await answering()
   const pid = sleeper()
@@ -237,21 +251,32 @@ it('exposes the platform-specific process, start and argument forms', async () =
   const script = `import(${JSON.stringify(module)}).then(m => console.log(JSON.stringify({
     ps: m.parsePs('  123 node node /opt/my tools/dsh --profile superagent --no-open\\n'),
     windows: m.parseWindowsProcesses(JSON.stringify([{ ProcessId: 7, Name: 'node.exe', CommandLine: 'node /opt/dsh --profile superagent --no-open' },
-      { ProcessId: 8, Name: 'other.exe', CommandLine: 'node /opt/dsh --profile superagent' }])),
+      { ProcessId: 8, Name: 'other.exe', CommandLine: 'node /opt/dsh --profile superagent' },
+      { ProcessId: 9, Name: 'DeepSeek Harness.exe', CommandLine: 'D:\\\\app\\\\DeepSeek Harness.exe --expose-internals D:\\\\app\\\\cli.js --profile superagent --no-open' }])),
     start: m.windowsStart('C:\\\\Program Files\\\\dsh.cmd', 'superagent'),
     socket: m.tmuxSocket('superagent'),
     command: m.tmuxCommand('/opt/dsh', 'superagent', '/tmp/log file.log', { DSH_HOME: '/tmp/home', PATH: '/usr/bin', HOME: undefined, TMUX: '/tmp/x,1,0' }),
-    argv: m.parseArgv(['--respect-stop', 'start', '--profile', 'one', '--timeout', '5'])
+    argv: m.parseArgv(['--respect-stop', 'start', '--profile', 'one', '--timeout', '5']),
+    serves: [
+      m.serves(['node', '/x/scripts/dsh-superagent', '--profile', 'one', 'start'], 'one'),
+      m.serves(['node', '/x/scripts/dsh-superagent', '--profile', 'one', 'restart'], 'one'),
+      m.serves(['node', '/x/scripts/dsh-superagent', '--profile', 'one'], 'one'),
+      m.serves(['node', '/opt/dsh', '--profile', 'one', '--no-open'], 'one'),
+      m.serves(['node', '/opt/dsh', '--profile', 'other', '--no-open'], 'one')
+    ]
   })))`
   const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
     (error, stdout) => error ? reject(error) : resolve(stdout)))
-  const value = JSON.parse(out) as { ps: unknown[]; windows: unknown[]; start: unknown; socket: string; command: string; argv: Record<string, unknown> }
+  const value = JSON.parse(out) as { ps: unknown[]; windows: unknown[]; start: unknown; socket: string; command: string; argv: Record<string, unknown>; serves: boolean[] }
   expect(value.ps).toEqual([{ pid: 123, name: 'node', args: ['node', '/opt/my', 'tools/dsh', '--profile', 'superagent', '--no-open'] }])
-  expect(value.windows).toEqual([{ pid: 7, name: 'node', args: ['node', '/opt/dsh', '--profile', 'superagent', '--no-open'] }])
+  expect(value.windows).toEqual([{ pid: 7, name: 'node', args: ['node', '/opt/dsh', '--profile', 'superagent', '--no-open'] },
+    { pid: 9, name: 'deepseek harness', args: ['D:\\app\\DeepSeek', 'Harness.exe', '--expose-internals', 'D:\\app\\cli.js', '--profile', 'superagent', '--no-open'] }])
   expect(value.start).toEqual({ file: '"C:\\Program Files\\dsh.cmd"', args: ['--profile', 'superagent', '--no-open'], shell: true })
   expect(value.socket).toBe('dsh-superagent-f063ff9f0c5ba70eeebc')
   expect(value.command).toBe("umask 077; export DSH_HOME=/tmp/home; unset HOME; export PATH=/usr/bin; unset TMUX TMUX_PANE; exec /opt/dsh --profile superagent --no-open >> '/tmp/log file.log' 2>&1")
   expect(value.argv).toMatchObject({ action: 'start', profile: 'one', timeout: 5, respect_stop: true })
+  // A control invocation of this script carries --profile too, but only the DSH launcher is the service.
+  expect(value.serves).toEqual([false, false, false, true, false])
 })
 // The remaining cases also drive the POSIX control path with stubbed shell binaries.
 describe.skipIf(process.platform === 'win32')('POSIX service lifecycle (continued)', () => {

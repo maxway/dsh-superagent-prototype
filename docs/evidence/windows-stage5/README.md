@@ -24,14 +24,37 @@ through a POSIX `env` executable.
 The clone is the code under test, not a deployment Source. A Windows deployment must watch a scratch project such as
 `ngd/dsh-superagent-test`, never this repository.
 
+## Real Windows service smoke (2026-11-06)
+
+A second, isolated profile (`stage5-e2e`, panel port 3092, state directory `D:\dsh-stage5-e2e\state`, bundle
+`D:\code\dsh-superagent-e2e-win` built from `main` at `f38c5dd`) was driven through `scripts\dsh-superagent` on the
+same host, not through the desktop UI:
+
+- `start` spawned the service through the installed `dsh`, detected its process, printed the log path and exited 0 with
+  the management API's `runtime` and `gitlab` parts ready.
+- `status` reported the detected PID and the ready parts and exited 0.
+- `stop` exited 0 through `POST /orchestrator/api/service/stop`; the process and port went away, the `manually-stopped`
+  marker was written, and `status` then reported no PID with `manually_stopped: true`.
+- `restart` stopped and started again, exiting 0 with a new PID.
+- The configured prepare command created a worktree of `ngd/dsh-superagent-test` through the worker's git configuration
+  and the dedicated agent account; the test worktree and ref were removed afterwards.
+
+The smoke found two service-script defects, now fixed with unit tests:
+
+1. With `--profile` on its own command line, the control script counted itself as a running service and refused to
+   start. The scan now ignores this control process and other control invocations of the same profile.
+2. The desktop-installed DSH runs as `DeepSeek Harness.exe`, which the Windows process scan rejected because it only
+   accepted `node` and `dsh`. The scan now recognizes that host name; Windows `start`, `status` and `stop` all depend
+   on it.
+
 ## Documented POSIX-only skips
 
 The suite skips these cases on Windows because their fixtures or behavior are POSIX-specific. Each skip names its
 reason in the test source; the behavior they cover is exercised elsewhere.
 
 - **`tests/service-script.spec.ts` POSIX lifecycle.** The cases drive tmux, `ps` and `SIGINT` with POSIX shell stand-ins.
-  The platform-specific process, start and argument forms still run on Windows. A real Windows start/stop smoke is part
-  of the remaining stage 5 work.
+  The platform-specific process, start and argument forms still run on Windows, and the real Windows
+  start/status/stop/restart smoke above covers the lifecycle there.
 - **`tests/environment.spec.ts` worker shims.** The POSIX shim wrappers select an account with a shell script. Windows
   selects accounts with `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR` and `LARKSUITE_CLI_CONFIG_DIR` and writes only `.cmd`
   guardrails; the "Windows command layer" cases cover that behavior.
@@ -47,7 +70,6 @@ reason in the test source; the behavior they cover is exercised elsewhere.
 ## Remaining stage 5 work
 
 - A Windows CI runner that runs `pnpm check` on every change.
-- A real Windows `start`, `status`, `stop` and `restart` smoke through the service script.
 - An end-to-end run on the dedicated scratch GitLab project `ngd/dsh-superagent-test`, not this repository: setup, a
   Ticket, prepare, a worker turn, commit, push, merge request, panel state and the source reply.
 - Feishu on Windows (WP6), still optional and not supported today.
