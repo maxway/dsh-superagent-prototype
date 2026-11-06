@@ -8,6 +8,7 @@ and 3 when it runs and waits for setup. A restart fixes neither 2 nor 3: they ne
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -170,7 +171,9 @@ def start(args):
         dsh = shutil.which('dsh')
         if not dsh or not shutil.which('tmux'):
             raise RuntimeError('Both dsh and tmux must be on PATH.')
-        exists = subprocess.run(['tmux', 'has-session', '-t', '=' + session],
+        socket = 'dsh-superagent-' + hashlib.sha256(args.profile.encode()).hexdigest()[:20]
+        tmux = ['tmux', '-L', socket]
+        exists = subprocess.run([*tmux, 'has-session', '-t', '=' + session],
                                 capture_output=True).returncode == 0
         if state(args.url) is not None:
             raise RuntimeError('An existing orchestrator answers at this URL; refusing duplicate startup.')
@@ -181,11 +184,12 @@ def start(args):
         # `exec` replaces the shell so the pane PID printed by tmux is the DSH service process itself.
         environment = [f'export {name}={shlex.quote(os.environ[name])}' if name in os.environ else f'unset {name}'
                        for name in ('DSH_HOME', 'HOME', 'PATH')]
-        command = ('umask 077; ' + '; '.join(environment) + '; exec ' + shlex.join([dsh, '--profile', args.profile, '--no-open'])
+        command = ('umask 077; ' + '; '.join(environment) + '; unset TMUX TMUX_PANE; exec '
+                   + shlex.join([dsh, '--profile', args.profile, '--no-open'])
                    + ' >> ' + shlex.quote(str(log)) + ' 2>&1')
         # Reuse an existing tmux session without disturbing other windows.
         target = ['new-window', '-t', '=' + session + ':'] if exists else ['new-session', '-s', session]
-        pane = subprocess.run(['tmux', *target, '-d', '-P', '-F', '#{pane_pid}', '-n', 'server', '-c', str(ROOT), command],
+        pane = subprocess.run([*tmux, *target, '-d', '-P', '-F', '#{pane_pid}', '-n', 'server', '-c', str(ROOT), command],
                               check=True, capture_output=True, text=True).stdout.strip()
         if pane.isdigit():
             (control(args.profile) / 'service.pid').write_text(pane + '\n')

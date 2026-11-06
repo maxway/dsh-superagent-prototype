@@ -38,7 +38,7 @@ while IFS= read -r line; do
 done < "$list"`)
   // Log tmux invocations and simulate session creation by outputting the pane PID.
   program('tmux', `for a in "$@"; do printf '%s\\n' "$a"; done >> '${root}/tmux.log'; echo --- >> '${root}/tmux.log'\n`
-    + `case "$1" in has-session) exit 1;; new-*) touch '${root}/launched'; cat '${root}/pane';; esac`)
+    + `case "$1" in -L) shift 2;; esac\ncase "$1" in has-session) exit 1;; new-*) touch '${root}/launched'; cat '${root}/pane';; esac`)
   program('dsh', 'exit 0')
 })
 afterEach(() => {
@@ -98,10 +98,11 @@ it('records the service PID at start, and still refuses a second instance the sc
   const start = await run('start', '--url', url, '--timeout', '10')
   expect(start).toMatchObject({ code: 0, stdout: expect.stringContaining(`"pids": [\n    ${pid}\n  ]`) })
   expect(readFileSync(join(control('superagent'), 'service.pid'), 'utf8')).toBe(`${pid}\n`)
-  const tmux = readFileSync(join(root, 'tmux.log'), 'utf8').split('---\n').find(call => call.startsWith('new-session'))!.split('\n')
+  const tmux = readFileSync(join(root, 'tmux.log'), 'utf8').split('---\n').find(call => call.includes('\nnew-session\n'))!.split('\n')
   // The checkout's path, which has a space, is one argument, and the log path inside it is quoted for the shell.
   const checkout = realpathSync(root)
-  expect(tmux).toEqual(expect.arrayContaining(['-P', '-F', '#{pane_pid}', '-c', checkout]))
+  expect(tmux).toEqual(expect.arrayContaining(['-L', '-P', '-F', '#{pane_pid}', '-c', checkout]))
+  expect(tmux[1]).toMatch(/^dsh-superagent-[a-f0-9]{20}$/)
   const log = new RegExp(`>> '${checkout}/\\.artifacts/dsh-superagent-superagent-\\d{8}-\\d{6}-\\d+\\.log' 2>&1$`)
   expect(tmux.find(word => word.startsWith('umask 077; '))).toMatch(log)
   const second = sleeper()
@@ -115,13 +116,34 @@ it.each([undefined, '', "/tmp/profile with 'quotes'"])('uses the caller environm
   const pid = sleeper()
   const home = "/tmp/home with 'quotes'"
   const path = `${join(root, 'bin')}:/usr/bin:/bin`
-  program('dsh', `printf '%s\\n' "\${DSH_HOME-<unset>}" "$HOME" "$PATH" > '${root}/environment'`)
+  program('dsh', `printf '%s\\n' "\${DSH_HOME-<unset>}" "$HOME" "$PATH" "\${TMUX-<unset>}" "\${TMUX_PANE-<unset>}" > '${root}/environment'`)
   writeFileSync(join(root, 'pane'), `${pid}\n`)
   started(service(pid))
   expect(await runWithEnvironment({ DSH_HOME: dshHome, HOME: home, PATH: path }, 'start', '--url', url, '--timeout', '10')).toMatchObject({ code: 0 })
   const command = readFileSync(join(root, 'tmux.log'), 'utf8').split('\n').find(line => line.startsWith('umask 077; '))!
-  execFileSync('/bin/sh', ['-c', command], { env: { DSH_HOME: '/tmp/wrong-profile', HOME: '/tmp/wrong-home', PATH: '/usr/bin:/bin' } })
-  expect(readFileSync(join(root, 'environment'), 'utf8').split('\n')).toEqual([dshHome ?? '<unset>', home, path, ''])
+  execFileSync('/bin/sh', ['-c', command], { env: { DSH_HOME: '/tmp/wrong-profile', HOME: '/tmp/wrong-home', PATH: '/usr/bin:/bin', TMUX: '/tmp/server,1,0', TMUX_PANE: '%1' } })
+  expect(readFileSync(join(root, 'environment'), 'utf8').split('\n')).toEqual([dshHome ?? '<unset>', home, path, '<unset>', '<unset>', ''])
+}, 20_000)
+it.skipIf(!existsSync('/usr/bin/tmux'))('keeps the service socket alive when a worker runs tmux kill-server', async () => {
+  const tmuxEnvironment = { ...process.env, TMUX: undefined, TMUX_TMPDIR: root }
+  const socketName = 'service-test'
+  const tmux = (...args: string[]) => execFileSync('/usr/bin/tmux', ['-L', socketName, ...args], { env: tmuxEnvironment })
+  tmux('new-session', '-d', '-s', 'isolated', 'sleep 60')
+  try {
+    const serverPid = tmux('display-message', '-p', '-t', 'isolated', '#{pid}').toString().trim()
+    const socket = join(root, `tmux-${process.getuid!()}`, socketName)
+    const url = await answering()
+    const pid = sleeper()
+    program('dsh', `TMUX_TMPDIR='${root}' /usr/bin/tmux kill-server 2>/dev/null || :`)
+    writeFileSync(join(root, 'pane'), `${pid}\n`)
+    started(service(pid))
+    expect(await run('start', '--url', url, '--timeout', '10')).toMatchObject({ code: 0 })
+    const command = readFileSync(join(root, 'tmux.log'), 'utf8').split('\n').find(line => line.startsWith('umask 077; '))!
+    execFileSync('/bin/sh', ['-c', command], { env: { ...process.env, TMUX: `${socket},${serverPid},0`, TMUX_TMPDIR: root } })
+    expect(() => tmux('has-session', '-t', '=isolated')).not.toThrow()
+  } finally {
+    tmux('kill-server')
+  }
 }, 20_000)
 it('waits only for the process it stopped', async () => {
   const pid = sleeper()
@@ -216,19 +238,19 @@ it('refuses to start a service while no process runs it but something answers at
   expect(await run('start', '--url', url, '--timeout', '5'))
     .toMatchObject({ code: 1, stderr: expect.stringContaining('An existing orchestrator answers at this URL') })
   expect(readFileSync(join(root, 'tmux.log'),
-    'utf8').split('---\n').filter(Boolean).map(call => call.split('\n')[0])).toEqual(['has-session'])
+    'utf8').split('---\n').filter(Boolean).map(call => call.split('\n')[2])).toEqual(['has-session'])
 }, 20_000)
 it('starts the service in a new window of the profile\'s tmux session when the session exists', async () => {
   program('tmux', `for a in "$@"; do printf '%s\\n' "$a"; done >> '${root}/tmux.log'; echo --- >> '${root}/tmux.log'\n`
-    + `case "$1" in has-session) exit 0;; new-*) touch '${root}/launched'; cat '${root}/pane';; esac`)
+    + `case "$1" in -L) shift 2;; esac\ncase "$1" in has-session) exit 0;; new-*) touch '${root}/launched'; cat '${root}/pane';; esac`)
   const url = await answering()
   const pid = sleeper()
   writeFileSync(join(root, 'pane'), `${pid}\n`)
   started(service(pid))
   expect(await run('start', '--url', url, '--timeout', '10')).toMatchObject({ code: 0 })
   const calls = readFileSync(join(root, 'tmux.log'), 'utf8').split('---\n').map(call => call.split('\n'))
-  expect(calls.find(call => call[0] === 'new-window')).toEqual(expect.arrayContaining(['-t', '=dsh-superagent:']))
-  expect(calls.some(call => call[0] === 'new-session')).toBe(false)
+  expect(calls.find(call => call[2] === 'new-window')).toEqual(expect.arrayContaining(['-t', '=dsh-superagent:']))
+  expect(calls.some(call => call[2] === 'new-session')).toBe(false)
 }, 20_000)
 it('exits 1 when the started service does not answer in time, and leaves its process running', async () => {
   const pid = sleeper()

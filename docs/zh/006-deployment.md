@@ -128,7 +128,7 @@ scripts/dsh-superagent start
 scripts/dsh-superagent status
 ```
 
-`start` 在 tmux 会话 `dsh-superagent` 中运行 `dsh --profile superagent`；其他 profile 则使用 `dsh-<profile>`。它最多等待一分钟，让运行时变为就绪或报告安装配置要求。首次运行时，它会打印缺失的安装配置信息。它会拒绝重复的实例，包括从这个脚本之外启动的实例。pane 使用调用者的 `DSH_HOME`、`HOME` 和 `PATH`（包括未设置的情况），不会继承 tmux 服务端残留的其他 profile 的值。
+`start` 在 tmux 会话 `dsh-superagent` 中运行 `dsh --profile superagent`；其他 profile 则使用 `dsh-<profile>`。它最多等待一分钟，让运行时变为就绪或报告安装配置要求。首次运行时，它会打印缺失的安装配置信息。它会拒绝重复的实例，包括从这个脚本之外启动的实例。每个 profile 使用独立命名的 tmux socket。pane 使用调用者的 `DSH_HOME`、`HOME` 和 `PATH`（包括未设置的情况），并在启动 DSH 前清除 `TMUX` 与 `TMUX_PANE`，避免 worker 继承服务 socket。仅设置 `TMUX_TMPDIR` 不能覆盖继承的 `TMUX`；这些措施只是护栏，不是操作系统安全边界。
 
 `stop` 和 `restart` 请求优雅 drain，并最多等待进程五分钟退出。执行器 drain 的上限是十秒，DSH 启动器再加五秒宽限，因此停止通常约十五秒完成；drain 之后仍在回合中的 worker 可能被打断。它们绝不会强制杀死进程，也不会碰其他 tmux 会话。
 
