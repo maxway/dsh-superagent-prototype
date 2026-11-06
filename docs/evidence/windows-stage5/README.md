@@ -47,6 +47,10 @@ The smoke found two service-script defects, now fixed with unit tests:
    accepted `node` and `dsh`. The scan now recognizes that host name; Windows `start`, `status` and `stop` all depend
    on it.
 
+On this revision the full Windows suite (`pnpm vitest run`) passes: 60 files, 1195 passed, 39 skipped. The two
+additional skips are the new control-script cases, which drive the POSIX `ps`/`tmux` fixtures like the rest of that
+suite.
+
 ## Documented POSIX-only skips
 
 The suite skips these cases on Windows because their fixtures or behavior are POSIX-specific. Each skip names its
