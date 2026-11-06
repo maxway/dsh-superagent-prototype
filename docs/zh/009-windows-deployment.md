@@ -11,7 +11,7 @@
 - **本项目的主机需要。** worker 必须运行项目仅 Windows 的工具链，因此 agent 主机必须是 Windows。本方案只移植部署本身；项目自己的构建和冒烟工作不在范围内。
 - **工期：** 一个可用的内部版本约需 9-13 人日：一名开发者 2-2.5 周，包含概念验证和端到端验证，不含飞书，也不含 Windows CI runner。
 - **完整对齐**——飞书、Windows CI、双语的安装文档，以及让两个平台都持续被测试的加固——约需 12-18 人日，即一名开发者 3-4 周。
-- **状态（2026-11-06）：** 阶段 1-4 已实现并在 Linux 上测试。在 Windows 上手工运行 `pnpm check` 现已通过，并有记录在案的 POSIX 专用跳过项；概念验证发现的原生路径阻塞已修复，服务脚本的真实 Windows 启动/状态/停止/重启冒烟也已通过；针对临时项目 `ngd/dsh-superagent-test` 的真实工单还完成了端到端流程：Issue、工单、准备命令、PowerShell worker、提交、推送、合并请求和来源回复。Windows CI runner 和飞书支持仍然缺失，因此 Windows 仍是实验性的，飞书来源在 Windows 上不受支持。
+- **状态（2026-11-06）：** 可用的内部版本已经完成。阶段 1-5 均已实现，在 Windows 上手工运行 `pnpm check` 通过，并有记录在案的 POSIX 专用跳过项。概念验证发现的原生路径阻塞已修复，服务脚本的真实 Windows 启动/状态/停止/重启冒烟已通过，针对临时项目 `ngd/dsh-superagent-test` 的真实工单还完成了端到端流程：Issue、工单、准备命令、PowerShell worker、提交、推送、合并请求和来源回复。完整对齐仍缺 Windows CI runner 与可选的飞书来源（WP6）；没有 runner，Windows 仍是实验性的，飞书来源在 Windows 上不受支持。
 - **建议：** 移植部署；先做 1-2 天的概念验证，然后按下面的分阶段计划执行。项目自己的工具链工作另行处理。
 
 ## “在 Windows 上部署”意味着什么
@@ -47,6 +47,7 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 | worker 命令 shim | `worker-bin` 中无扩展名的 `#!/bin/sh` 文件，被加到 `PATH` 前面 | PowerShell 和 `CreateProcess` 不会执行它们；账号选择与 blocked commands 失效 |
 | CLI 包装与探测 | Shell 脚本包装；setup 用 `env PATH=... <cli>` 探测；`execFile` 和 `spawn` 直接调用 CLI | Windows 没有 `env`；`execFile` 不能运行 `.cmd`；npm 安装的 `lark-cli` 是 `.cmd` |
 | 准备命令 | 固定 `sh -c <command>` | 默认没有 `sh`；文档中的命令使用 POSIX 变量 |
+| 配置路径 | `stateDir` 和 `executor.directory` 要求以 `/` 开头 | `C:\...` 这样的 Windows 路径被拒绝；插件无法加载 |
 | 路由工具 | 主 Session 的白名单和等待守卫硬编码了 `bash` | `pwsh` 工具会从路由 Session 中被移除；它的等待守卫永远不生效 |
 | 提示词与技能 | “Workers use bash”以及 bash 示例 | worker 用的是 PowerShell，所以指令和示例对它是错的 |
 | 安装与文档 | `~/.local/bin`、`cat > ... <<'EOF'`、tmux、Python、`$HOME` | 需要 Windows 等价写法 |
@@ -56,15 +57,15 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 
 ### 实现状态（2026-11-06）
 
-上表是这份方案开始时所做的评估。阶段 1-4 此后已处理这些缺口：
+上表是这份方案开始时所做的评估。阶段 1-5 此后已处理这些缺口：
 
-- **阶段 0（部分）。** 在运营者 Windows 机器上的概念验证发现两个阻塞：`stateDir` 和 `executor.directory` 不接受原生 `C:\...` 路径，setup 探测通过 POSIX 的 `env` 可执行文件传递环境。两处修复都已进入 main。真实的 Windows 启动/状态/停止/重启冒烟与准备命令现在也在该主机上通过；针对临时仓库的端到端运行已在阶段 5 通过。
+- **阶段 0（已完成）。** 在运营者 Windows 机器上的概念验证发现两个阻塞：`stateDir` 和 `executor.directory` 不接受原生 `C:\...` 路径，setup 探测通过 POSIX 的 `env` 可执行文件传递环境。两处修复都已进入 main。真实的 Windows 启动/状态/停止/重启冒烟与准备命令现在也在该主机上通过；针对临时仓库的端到端运行已在阶段 5 通过。
 - **阶段 1。** `scripts/dsh-superagent` 是 Node 脚本。POSIX 保留 tmux 和 `SIGINT`；Windows 启动分离进程，并通过 `POST /orchestrator/api/service/stop` 停止。POSIX 路径与一个隔离的 Windows profile 都通过了启动/状态/停止/重启；Windows 冒烟还发现并修复了两处进程识别缺陷（见[阶段 5 证据](../evidence/windows-stage5/)）。
 - **阶段 2。** worker 命令层解析 `PATHEXT`，只为被禁止和未启用的命令生成 `.cmd` 护栏，并用 `GH_CONFIG_DIR`、`GLAB_CONFIG_DIR` 和 `LARKSUITE_CLI_CONFIG_DIR` 选择智能体账号；探测和 git 凭据都走原生 argv。
 - **阶段 3。** 准备命令在 POSIX 上走 `sh -c`，在 Windows 上走 `pwsh -NoProfile -NonInteractive -Command`；路由 Session 接受 `pwsh`；提示词和技能已不依赖具体 shell。
 - **阶段 4。** 补上两种语言的 Windows 安装与部署路径。
-- **阶段 5（端到端已验证）。** `pnpm check` 已在 Windows 主机（Windows 10 19045、Node.js 24.21.0、pnpm 11.7.0）上通过，POSIX 专用套件按[阶段 5 证据](../evidence/windows-stage5/)中记录的原因跳过；服务脚本的真实 Windows 启动/状态/停止/重启冒烟也已通过。针对临时 GitLab 项目 `ngd/dsh-superagent-test` 的真实工单还完成了完整流程：隔离的 `stage5-e2e` profile 把人发在 Issue #1 中的提及接受为工单，PowerShell 准备命令创建了工作树，`pwsh` worker 修改了 `README.md`，提交 `a2412af`，推送分支，打开合并请求 !1 并在 Issue #1 中回复；面板把该工单显示为等待人工合并。本次运行记录在[阶段 5 证据](../evidence/windows-stage5/)中。Windows CI runner 仍然缺失。
-- **未完成。** Windows CI runner，以及 Windows 上的飞书来源（WP6）。端到端候选 profile 需要自己的模型提供方配置；没有该配置的 profile 会报 `MISSING_CREDENTIAL`，无法研判请求。在 runner 能让 Windows 路径在每次改动时都被测试之前，Windows 仍是实验性的；飞书来源在 Windows 上不受支持。
+- **阶段 5（端到端已验证；CI runner 未完成）。** `pnpm check` 已在 Windows 主机（Windows 10 19045、Node.js 24.21.0、pnpm 11.7.0）上通过，POSIX 专用套件按[阶段 5 证据](../evidence/windows-stage5/)中记录的原因跳过；服务脚本的真实 Windows 启动/状态/停止/重启冒烟也已通过。针对临时 GitLab 项目 `ngd/dsh-superagent-test` 的真实工单还完成了完整流程：隔离的 `stage5-e2e` profile 把人发在 Issue #1 中的提及接受为工单，PowerShell 准备命令创建了工作树，`pwsh` worker 修改了 `README.md`，提交 `a2412af`，推送分支，打开合并请求 !1 并在 Issue #1 中回复；面板把该工单显示为等待人工合并。本次运行记录在[阶段 5 证据](../evidence/windows-stage5/)中。本阶段最后一个验收项，Windows CI runner，仍然缺失。
+- **剩余工作。** Windows CI runner（阶段 5 验收项）以及 Windows 上的飞书来源（WP6，可选）。端到端候选 profile 需要自己的模型提供方配置；没有该配置的 profile 会报 `MISSING_CREDENTIAL`，无法研判请求。在 runner 能让 Windows 路径在每次改动时都被测试之前，Windows 仍是实验性的；飞书来源在 Windows 上不受支持。这两项都不阻塞可用的内部版本。
 
 ## 有没有必要？
 
@@ -151,6 +152,7 @@ CLI 和账号层最需要仔细设计。当前模型有两层：`worker-bin` 中
 
 - 用环境变量而不是包装脚本来选择凭据：`GH_CONFIG_DIR`、`GLAB_CONFIG_DIR` 和 `LARKSUITE_CLI_CONFIG_DIR`，为插件进程设置，并由 worker 外壳继承。给 Git 和飞书来源设置增加可选的 `configDir` 字段，默认值为当前文档中的路径，让面板可以管理它们。
 - 把 `cli` 设置指向真实可执行文件 `gh.exe` 或 `glab.exe`，用普通 argv 运行，绝不经过 shell：合并请求正文这样的任意文本不能经过 `cmd.exe` 的引号解析。为现有安装保留 POSIX 包装支持。
+- 接受 `stateDir` 和 `executor.directory` 的原生绝对路径——Windows 上的盘符和 UNC、POSIX 上的 POSIX 路径——并在两个平台上测试校验器。
 - 修正探测：`workerProbe` 和飞书探测通过子进程环境传入 `PATH`，不再启动 `env`；`executable()` 识别 `PATHEXT`，不再要求 POSIX 的可执行位。
 - 把 blocked commands 保留为护栏 shim，在 Windows 上写成 `.cmd` 文件，使 PowerShell 优先解析它们。`gh`、`glab` 和 `lark-cli` 不再需要账号 shim，因为环境变量已经选择了账号。
 - 飞书：Windows 上的 `lark-cli` 通常是 npm 的 `.cmd`；通过一个小型 Node 启动器或原生构建来运行它，并让消息文本不经过 `cmd.exe` 的引号解析。这属于 WP6。
@@ -232,7 +234,7 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 | 准备命令 | 必须 | 必须 | WP7 中真实创建工作树 |
 | 飞书（如果在范围内） | 必须 | 必须 | WP7 中的机器人事件与消息，可选 |
 
-## 风险与待定决策
+## 风险与决策
 
 ### 风险
 
@@ -245,13 +247,18 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 | 隔离更弱 | worker 可能以运营者身份行动 | 保留专用操作系统账号的建议；blocked commands 仍然只是护栏 |
 | 飞书的 npm `.cmd` 启动器 | Windows 上飞书不可用 | Node 启动器或原生 CLI；飞书保持可选 |
 
-### 待定决策
+### 已定决策
 
-- Node 服务脚本还是 PowerShell 孪生脚本。
-- 飞书是否进入首个版本，还是作为后续工作。
-- 账号配置是改为 `configDir` 设置，还是在 POSIX 上保留包装脚本、在 Windows 上用环境变量。
-- 是否有可用的 Windows CI runner；没有的话，把 Windows 标为实验性。
-- 运营者能否为 POC 提供本机 Windows 的远程访问，以及项目工具链的前置条件是否已经装好。
+- 使用一个 Node 服务脚本，而不是 PowerShell 孪生脚本（阶段 1）。
+- 账号选择使用 `GH_CONFIG_DIR`、`GLAB_CONFIG_DIR` 和 `LARKSUITE_CLI_CONFIG_DIR` 环境变量，并辅以可选的 `configDir` 来源设置；Git CLI 不再使用 `.cmd` 包装脚本（阶段 2）。
+- Git CLI 使用原生可执行文件和 argv，准备命令使用平台 shell（阶段 2-3）。
+- 飞书不进入首个版本；Windows 主机只支持 Git 来源（阶段 4-5）。
+- 运营者为概念验证和端到端运行提供了 Windows 机器与远程访问（阶段 0 和 5）。
+
+### 剩余问题
+
+- 是否提供 Windows CI runner。没有它，本方案就把 Windows 标为实验性；这是阶段 5 唯一未满足的验收项，需要为项目注册一个 runner。
+- 在 Windows 主机取代 POSIX 生产主机之前，是否需要 Windows 上的飞书支持（WP6）。该功能尚未实现，而测试主机不得启用飞书，因此无法在那里验证。
 
 ## 不在范围内
 
