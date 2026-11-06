@@ -20,7 +20,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 ## Prerequisites
 
-- Node.js 22.19+ or 24+, pnpm, git 2.32+, Python 3.8+ and tmux
+- Node.js 22.19+ or 24+, pnpm and git 2.32+; tmux on POSIX, and PowerShell 7 (`pwsh`) on Windows for the prepare command
 - GitHub CLI (`gh`) 2.48 or later for a GitHub deployment, or GitLab CLI (`glab`) for a GitLab deployment. Source CLI fields must point to `gh`, `glab` or `lark-cli` wrappers; the host relies on their subcommands and output formats.
 - A repository on github.com, or a GitLab project on gitlab.com or a self-managed instance. GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
 - A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.
@@ -128,7 +128,9 @@ scripts/dsh-superagent status
 
 `start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script. Each profile uses its own named tmux socket. The pane uses the caller's `DSH_HOME`, `HOME`, and `PATH` (including unset values) and clears `TMUX` and `TMUX_PANE` before starting DSH, so a worker does not inherit the service socket. Setting `TMUX_TMPDIR` alone does not override an inherited `TMUX`; these measures are guardrails, not an OS security boundary.
 
-`stop` and `restart` request a graceful drain and wait up to five minutes for the process to exit. The Executor drain is bounded at ten seconds and DSH's launcher adds a five-second grace, so a stop normally finishes within about fifteen seconds; a worker still in a turn after the drain can be interrupted. They never force-kill the process or touch other tmux sessions.
+On Windows, `start` spawns `dsh --profile <profile> --no-open` detached with the same log and control files, and `stop` asks DSH to exit through `POST /orchestrator/api/service/stop` instead of sending a signal; the tmux socket and `TMUX` details above apply to POSIX only. The same exit codes, log names and `manually-stopped` marker apply on both.
+
+`stop` and `restart` request a graceful drain and wait up to five minutes for the process to exit. The Executor drain is bounded at ten seconds and DSH's launcher adds a five-second grace, so a stop normally finishes within about fifteen seconds; a worker still in a turn after the drain can be interrupted. On POSIX they never force-kill the process or touch other tmux sessions.
 
 `status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`.
 

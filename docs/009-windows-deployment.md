@@ -40,7 +40,7 @@ The bundle already switches its two agent presets between bash and pwsh by platf
 
 | Area | Current implementation | Native Windows status |
 | --- | --- | --- |
-| Service control | `scripts/dsh-superagent` uses Python 3, tmux, `ps`, `fcntl.flock`, `os.kill(SIGINT)` and `umask` | Does not run; no portable graceful stop |
+| Service control | `scripts/dsh-superagent` is a Node script: tmux and `ps` on POSIX, a detached process and the management stop route on Windows | Runs on both; Windows has no `SIGINT`, so stop uses `POST /orchestrator/api/service/stop` |
 | Worker command shims | Extensionless `#!/bin/sh` files in `worker-bin`, prepended to `PATH` | PowerShell and `CreateProcess` do not execute them; account selection and blocked commands are lost |
 | CLI wrappers and probes | Shell-script wrappers; setup probes run `env PATH=... <cli>`; `execFile` and `spawn` call the CLI directly | No `env` on Windows; `execFile` cannot run `.cmd`; npm-installed `lark-cli` is a `.cmd` |
 | Prepare command | Always `sh -c <command>` | No `sh` by default; the documented command uses POSIX variables |

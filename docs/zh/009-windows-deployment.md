@@ -42,7 +42,7 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 
 | 领域 | 当前实现 | 原生 Windows 状态 |
 | --- | --- | --- |
-| 服务控制 | `scripts/dsh-superagent` 使用 Python 3、tmux、`ps`、`fcntl.flock`、`os.kill(SIGINT)` 和 `umask` | 无法运行；没有可移植的优雅停止 |
+| 服务控制 | `scripts/dsh-superagent` 是 Node 脚本：POSIX 上用 tmux 和 `ps`，Windows 上用分离进程和管理停止路由 | 两个平台都能运行；Windows 没有 `SIGINT`，停止走 `POST /orchestrator/api/service/stop` |
 | worker 命令 shim | `worker-bin` 中无扩展名的 `#!/bin/sh` 文件，被加到 `PATH` 前面 | PowerShell 和 `CreateProcess` 不会执行它们；账号选择与 blocked commands 失效 |
 | CLI 包装与探测 | Shell 脚本包装；setup 用 `env PATH=... <cli>` 探测；`execFile` 和 `spawn` 直接调用 CLI | Windows 没有 `env`；`execFile` 不能运行 `.cmd`；npm 安装的 `lark-cli` 是 `.cmd` |
 | 准备命令 | 固定 `sh -c <command>` | 默认没有 `sh`；文档中的命令使用 POSIX 变量 |

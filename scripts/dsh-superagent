@@ -1,261 +1,435 @@
-#!/usr/bin/env python3
-"""Manage a local dsh-superagent service (one DSH profile, default `superagent`) without affecting other tmux sessions.
+#!/usr/bin/env node
+/**
+ * Manage a local dsh-superagent service (one DSH profile, default `superagent`).
+ *
+ * `status`, `start`, and `restart` exit 0 while the service runs normally; 1 when it is stopped, duplicated, unreachable, or
+ * reporting a runtime error, which `restart` may fix; 2 when it runs while a component such as a Source reports an error;
+ * and 3 when it runs and waits for setup. A restart fixes neither 2 nor 3: they need a person.
+ *
+ * On POSIX, start runs the service in a tmux session and stop sends SIGINT. On Windows, start spawns a detached process and
+ * stop asks DSH to exit through the management `POST service/stop` route, which works without POSIX signals. Status output,
+ * exit codes, log names, the intentionally-stopped marker and the lock are the same on both.
+ */
+import { spawn, spawnSync } from 'node:child_process'
+import { accessSync, closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync }
+  from 'node:fs'
+import { createHash } from 'node:crypto'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
+import { basename, delimiter, dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-`status`, `start`, and `restart` exit 0 while the service runs normally; 1 when it is stopped, duplicated, unreachable, or
-reporting a runtime error, which `restart` may fix; 2 when it runs while a component such as a Source reports an error;
-and 3 when it runs and waits for setup. A restart fixes neither 2 nor 3: they need a person.
-"""
+const PLATFORM = process.platform
+const WINDOWS = PLATFORM === 'win32'
+const SCRIPT = realpathSync(fileURLToPath(import.meta.url))
+const ROOT = dirname(dirname(SCRIPT))
+const ARTIFACTS = join(ROOT, '.artifacts')
+const CONTROL = join(ARTIFACTS, 'control')
+const KEEP_LOGS = 20
+const LOCK_STALE_MS = 10 * 60_000
+const PART_ERROR = 2
+const SETUP_WAITS = 3
 
-import argparse
-import fcntl
-import hashlib
-import json
-import os
-from pathlib import Path
-import re
-import shlex
-import shutil
-import signal
-import subprocess
-import sys
-import time
-import urllib.error
-import urllib.request
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
-ROOT = Path(__file__).resolve().parent.parent
-ARTIFACTS = ROOT / '.artifacts'
-CONTROL = ARTIFACTS / 'control'
-KEEP_LOGS = 20
+/** Return the control directory for `profile`, creating it if needed. */
+function control(profile) {
+  const directory = join(CONTROL, 'profiles', profile)
+  mkdirSync(directory, { recursive: true })
+  return directory
+}
 
+/** Return whether `profile` was intentionally stopped. */
+function stopped(profile) {
+  return existsSync(join(control(profile), 'manually-stopped'))
+}
 
-def control(profile):
-    """Return the control directory for `profile`, creating it if needed."""
-    directory = CONTROL / 'profiles' / profile
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
+/** Return whether command-line arguments belong to the main DSH service process for `profile`. */
+export function serves(args, profile) {
+  const words = []
+  let matched = false
+  let value = false
+  for (const word of args.slice(1)) {
+    if (value) { matched = matched || word === profile; value = false }
+    else if (word === '--profile') value = true
+    else if (word === `--profile=${profile}`) matched = true
+    else if (!word.startsWith('-')) words.push(word)
+  }
+  return matched && !words.includes('plugin')
+}
 
+/** Parse `ps -o pid=,ucomm=,args=` output; whitespace splits the arguments, so only `--profile` and subcommands are inspected. */
+export function parsePs(text) {
+  return text.split('\n').flatMap(line => {
+    const parts = line.trim().split(/\s+/)
+    if (parts.length < 3 || !/^\d+$/.test(parts[0])) return []
+    return [{ pid: Number(parts[0]), name: parts[1], args: parts.slice(2) }]
+  })
+}
 
-def stopped(profile):
-    """Return whether `profile` was intentionally stopped."""
-    return (control(profile) / 'manually-stopped').exists()
+function ps(options, check = false) {
+  const result = spawnSync('ps', ['-ww', ...options, '-o', 'pid=,ucomm=,args='], { encoding: 'utf8' })
+  if (result.error) throw result.error
+  // `ps -p` exits 1 once the process is gone; only the full scan treats a failure as an error.
+  if (check && result.status !== 0) throw new Error(`ps ${options.join(' ')} exited with code ${result.status}`)
+  return parsePs(result.stdout ?? '')
+}
 
+/** Parse `Get-CimInstance Win32_Process` JSON into the same `{ pid, name, args }` records as `parsePs`. */
+export function parseWindowsProcesses(value) {
+  let parsed = value
+  try { if (typeof value === 'string') parsed = JSON.parse(value) } catch { return [] }
+  const list = Array.isArray(parsed) ? parsed : parsed ? [parsed] : []
+  return list.flatMap(item => {
+    if (!item || !Number.isInteger(item.ProcessId) || typeof item.CommandLine !== 'string') return []
+    const name = String(item.Name ?? '').replace(/\.exe$/i, '').toLowerCase()
+    if (name !== 'node' && name !== 'dsh') return []
+    return [{ pid: item.ProcessId, name, args: item.CommandLine.split(/\s+/) }]
+  })
+}
 
-def serves(args, profile):
-    """Return whether command-line arguments belong to the main DSH service process for `profile`."""
-    words, matched, value = [], False, False
-    for word in args[1:]:
-        if value:
-            matched, value = matched or word == profile, False
-        elif word == '--profile':
-            value = True
-        elif word == '--profile=' + profile:
-            matched = True
-        elif not word.startswith('-'):
-            words.append(word)
-    return matched and 'plugin' not in words
+function windowsProcesses() {
+  const command = 'Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress'
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' })
+  if (result.error) throw result.error
+  return parseWindowsProcesses(result.stdout ?? '')
+}
 
+/** Whether a process record is a DSH service process for `profile`; the launcher's tmux or shell must not count as one. */
+function serviceProcess(item, profile) {
+  // Node may report its process name as a thread name such as MainThread; the executable in argv[0] still says node or dsh.
+  const program = item.args?.[0] ? basename(item.args[0]).replace(/\.exe$/i, '').toLowerCase() : ''
+  return (item.name === 'node' || item.name === 'dsh' || program === 'node' || program === 'dsh') && serves(item.args, profile)
+}
 
-def ps(*options, check=False):
-    """Yield `(pid, comm, args)` tuples from `ps`; arguments are split on whitespace, so paths with spaces become several words and only `--profile` and subcommands are inspected."""
-    result = subprocess.run(['ps', '-ww', *options, '-o', 'pid=,ucomm=,args='], check=check, capture_output=True, text=True)
-    for line in result.stdout.splitlines():
-        parts = line.split(None, 2)
-        if len(parts) == 3 and parts[0].isdigit():
-            yield int(parts[0]), parts[1], parts[2].split()
+/** Return whether `pid` is currently running the DSH service for `profile`. */
+function running(pid, profile) {
+  const found = WINDOWS ? windowsProcesses().filter(item => item.pid === pid) : ps(['-p', String(pid)]).filter(item => item.pid === pid)
+  return found.some(item => serviceProcess(item, profile))
+}
 
+/** Return PIDs of all running DSH service processes for `profile`, including instances started outside this script and a recorded PID that still runs it. */
+function processes(profile) {
+  const found = (WINDOWS ? windowsProcesses() : ps(['-ax'], true)).filter(item => serviceProcess(item, profile)).map(item => item.pid)
+  let recorded
+  try { recorded = Number(readFileSync(join(control(profile), 'service.pid'), 'utf8').trim()) } catch { return found }
+  return Number.isInteger(recorded) && recorded > 0 && !found.includes(recorded) && running(recorded, profile) ? [...found, recorded] : found
+}
 
-def dsh_process(name, args):
-    """Return whether `ps` reports a DSH Node process."""
-    return name in ('node', 'dsh') or bool(args and Path(args[0]).name in ('node', 'dsh'))
+function apiRequest(url, method, path, headers, timeout) {
+  return new Promise(resolve => {
+    let settled = false
+    const finish = value => { if (!settled) { settled = true; resolve(value) } }
+    let target
+    try { target = new URL(url.replace(/\/+$/, '') + path) } catch { finish(null); return }
+    let request
+    try {
+      request = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, { method, headers, timeout }, response => {
+        let body = ''
+        response.setEncoding('utf8')
+        response.on('data', chunk => { body += chunk })
+        response.on('end', () => finish({ status: response.statusCode, body }))
+        response.on('error', () => finish(null))
+      })
+    } catch { finish(null); return }
+    request.on('timeout', () => { request.destroy(); finish(null) })
+    request.on('error', () => finish(null))
+    if (method === 'POST') request.end()
+    else request.end()
+  })
+}
 
+/** Fetch health and setup status from the management API, or return null if unreachable. */
+export async function state(url) {
+  const response = await apiRequest(url, 'GET', '/orchestrator/api/state', { 'x-orchestrator-request': '1' }, 2_000)
+  if (response === null || response.status < 200 || response.status >= 300) return null
+  let value
+  try { value = JSON.parse(response.body) } catch { return null }
+  const health = value && typeof value === 'object' ? value.health ?? {} : {}
+  const setup = value && typeof value === 'object' ? value.setup ?? {} : {}
+  const entries = Object.fromEntries(Object.entries(health).map(([name, entry]) => [name, entry && typeof entry === 'object' ? entry : {}]))
+  return {
+    health: Object.fromEntries(Object.entries(entries).map(([name, entry]) => [name, entry.state])),
+    errors: Object.fromEntries(Object.entries(entries).filter(([, entry]) => entry.state === 'error')
+      .map(([name, entry]) => [name, String(entry.detail ?? '')])),
+    setup: setup.problem,
+    feishu: setup.feishuProblem,
+  }
+}
 
-def running(pid, profile):
-    """Return whether `pid` is currently running the DSH service for `profile` (`ps -p` returns nothing once exited)."""
-    return any(found == pid and dsh_process(name, args) and serves(args, profile) for found, name, args in ps('-p', str(pid)))
+/** Return whether the runtime is ready or paused awaiting operator action; a component still starting does not hold this up. */
+export function runtimeUp(current) {
+  return current !== null && current !== undefined && (current.health?.runtime === 'ready' || current.health?.runtime === 'paused')
+}
 
+/** Return non-runtime components that are in an error state. */
+export function partErrors(current) {
+  return Object.fromEntries(Object.entries(current?.errors ?? {}).filter(([name]) => name !== 'runtime').sort(([a], [b]) => a.localeCompare(b)))
+}
 
-def processes(profile):
-    """Return PIDs of all running DSH service processes for `profile`, including instances started outside this script and the recorded `service.pid` while still running."""
-    found = [pid for pid, name, args in ps('-ax', check=True) if dsh_process(name, args) and serves(args, profile)]
-    try:
-        pid = int((control(profile) / 'service.pid').read_text())
-    except (OSError, ValueError):
-        return found
-    return found + [pid] if pid not in found and running(pid, profile) else found
+/** Compute the CLI exit code from running PIDs and management API state. */
+export function outcome(pids, current) {
+  if (pids.length !== 1 || !runtimeUp(current)) return 1
+  if (current.setup) return SETUP_WAITS
+  // A component's lasting error, unlike a Feishu bot check that failed during setup, requires operator action.
+  return Object.keys(partErrors(current)).length ? PART_ERROR : 0
+}
 
+async function status(args) {
+  const pids = processes(args.profile)
+  const current = pids.length ? await state(args.url) : null
+  const value = { pids, cwd: ROOT, url: args.url, manually_stopped: stopped(args.profile), health: current ? current.health : null,
+    errors: current ? current.errors : null, setup: current ? current.setup : null, feishu: current ? current.feishu : null }
+  process.stdout.write(JSON.stringify(value, null, 2) + '\n')
+  return outcome(pids, current)
+}
 
-def state(url):
-    """Fetch health and setup status from the management API, or return None if unreachable."""
-    request = urllib.request.Request(url.rstrip('/') + '/orchestrator/api/state',
-                                     headers={'x-orchestrator-request': '1'})
-    try:
-        with urllib.request.urlopen(request, timeout=2) as response:
-            value = json.load(response)
-        # Keys omitted by another version read as empty so the service is not mistaken for unreachable.
-        health, setup = value.get('health') or {}, value.get('setup') or {}
-        entries = {name: entry if isinstance(entry, dict) else {} for name, entry in health.items()}
-        return {'health': {name: entry.get('state') for name, entry in entries.items()},
-                'errors': {name: str(entry.get('detail', '')) for name, entry in entries.items() if entry.get('state') == 'error'},
-                'setup': setup.get('problem'), 'feishu': setup.get('feishuProblem')}
-    except (OSError, ValueError, AttributeError):
-        return None
+/** Format the marker time like Python's `%Y-%m-%dT%H:%M:%S%z`, with the local UTC offset. */
+function localStamp(now = new Date()) {
+  const pad = value => String(value).padStart(2, '0')
+  const offset = -now.getTimezoneOffset()
+  const sign = offset >= 0 ? '+' : '-'
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
+    + `${sign}${pad(Math.floor(Math.abs(offset) / 60))}${pad(Math.abs(offset) % 60)}`
+}
 
+/** Ask DSH to exit through its management stop route; the route drains Executors and lets the launcher exit. */
+export function stopRequest(url) {
+  return apiRequest(url, 'POST', '/orchestrator/api/service/stop', { 'x-orchestrator-request': '1', 'content-length': '0' }, 10_000)
+}
 
-PART_ERROR = 2
-SETUP_WAITS = 3
+async function stop(args, intentional = true) {
+  const pids = processes(args.profile)
+  if (pids.length > 1) throw new Error('Multiple dsh-superagent processes found; refusing to choose one.')
+  // Write the stop marker before waiting so monitors respect the intentional stop even if graceful shutdown times out.
+  if (intentional) writeFileSync(join(control(args.profile), 'manually-stopped'), localStamp() + '\n')
+  if (WINDOWS) {
+    if (pids.length) await stopRequest(args.url)
+  } else {
+    for (const pid of pids) process.kill(pid, 'SIGINT')
+  }
+  const deadline = Date.now() + args.stop_timeout * 1000
+  while (pids.some(pid => running(pid, args.profile))) {
+    if (Date.now() >= deadline) throw new Error('Graceful stop timed out; no forced kill was sent. Check status.')
+    await sleep(500)
+  }
+  rmSync(join(control(args.profile), 'service.pid'), { force: true })
+  process.stdout.write(intentional ? 'dsh-superagent stopped. Automatic recovery is paused until start/restart.\n' : 'dsh-superagent stopped.\n')
+}
 
+function profileLogName(profile) {
+  return new RegExp(`^dsh-superagent-${profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d{8}-\\d{6}-\\d+\\.log$`)
+}
 
-def runtime_up(current):
-    """Return whether the runtime is ready or paused awaiting operator action; a component still starting (such as history recovery) does not hold this up."""
-    return current is not None and current['health'].get('runtime') in ('ready', 'paused')
+/** Retain only the newest `KEEP_LOGS` log files for `profile`. */
+function pruneLogs(profile) {
+  const name = profileLogName(profile)
+  const logs = readdirSync(ARTIFACTS).filter(entry => name.test(entry)).map(entry => join(ARTIFACTS, entry))
+    .sort((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs)
+  for (const path of logs.slice(0, Math.max(0, logs.length - KEEP_LOGS))) rmSync(path, { force: true })
+}
 
+function findExecutable(name) {
+  const extensions = WINDOWS ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').map(extension => extension.toLowerCase()).filter(Boolean) : ['']
+  for (const directory of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
+    for (const extension of extensions) {
+      const candidate = join(directory, name + extension)
+      try {
+        if (!statSync(candidate).isFile()) continue
+        if (!WINDOWS) accessSync(candidate, constants.X_OK)
+        return candidate
+      } catch { /* Try the next candidate. */ }
+    }
+  }
+  return undefined
+}
 
-def part_errors(current):
-    """Return non-runtime components that are in an error state."""
-    return {name: detail for name, detail in sorted(current['errors'].items()) if name != 'runtime'}
+/** Quote one word for a POSIX shell, as `shlex.quote` does. */
+function shellQuote(word) {
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(word)) return word
+  return `'${word.replaceAll("'", "'\\''")}'`
+}
 
+/** The shell command a tmux pane runs: the caller's profile environment, without the tmux server's. */
+export function tmuxCommand(dsh, profile, log, environment = process.env) {
+  const values = ['DSH_HOME', 'HOME', 'PATH'].map(name => environment[name] === undefined
+    ? `unset ${name}`
+    : `export ${name}=${shellQuote(environment[name])}`)
+  return `umask 077; ${values.join('; ')}; unset TMUX TMUX_PANE; exec `
+    + `${[dsh, '--profile', profile, '--no-open'].map(shellQuote).join(' ')} >> ${shellQuote(log)} 2>&1`
+}
 
-def outcome(pids, current):
-    """Compute the CLI exit code from running PIDs and management API state."""
-    if len(pids) != 1 or not runtime_up(current):
-        return 1
-    if current['setup']:
-        return SETUP_WAITS
-    # A component's lasting error, unlike a Feishu bot check that failed during setup, requires operator action.
-    return PART_ERROR if part_errors(current) else 0
+/** The arguments that start the service in a tmux session; exported so the POSIX and Windows forms are testable. */
+export function tmuxStart(target, dsh, profile, log, root = ROOT) {
+  return [...target, '-d', '-P', '-F', '#{pane_pid}', '-n', 'server', '-c', root, tmuxCommand(dsh, profile, log)]
+}
 
+/** The profile-specific tmux socket name; a worker's `tmux kill-server` must not reach the service. */
+export function tmuxSocket(profile) {
+  return 'dsh-superagent-' + createHash('sha256').update(profile).digest('hex').slice(0, 20)
+}
 
-def status(args):
-    pids = processes(args.profile)
-    current = state(args.url) if pids else None
-    print(json.dumps({'pids': pids, 'cwd': str(ROOT), 'url': args.url,
-                      'manually_stopped': stopped(args.profile), 'health': current and current['health'],
-                      'errors': current and current['errors'], 'setup': current and current['setup'],
-                      'feishu': current and current['feishu']}, ensure_ascii=False, indent=2))
-    return outcome(pids, current)
+/** The invocation that starts the service detached on Windows; `dsh` is normally the npm `.cmd` shim. */
+export function windowsStart(dsh, profile) {
+  // cmd runs the npm shim; quote the executable when its path holds spaces.
+  return { file: /\s/.test(dsh) ? `"${dsh}"` : dsh, args: ['--profile', profile, '--no-open'], shell: true }
+}
 
+async function start(args) {
+  const session = 'dsh-' + args.profile
+  let pids = processes(args.profile)
+  if (pids.length > 1) throw new Error('Multiple dsh-superagent processes found; refusing to start another.')
+  if (!pids.length) {
+    const dsh = findExecutable('dsh')
+    const tmux = WINDOWS ? 'tmux' : findExecutable('tmux')
+    if (!dsh || !tmux) throw new Error(WINDOWS ? 'dsh must be on PATH.' : 'Both dsh and tmux must be on PATH.')
+    const socket = WINDOWS ? undefined : tmuxSocket(args.profile)
+    // Probe the tmux session before the URL so an existing orchestrator is still refused without touching tmux.
+    const sessionExists = WINDOWS ? false : spawnSync('tmux', ['-L', socket, 'has-session', '-t', '=' + session]).status === 0
+    if (await state(args.url) !== null) throw new Error('An existing orchestrator answers at this URL; refusing duplicate startup.')
+    mkdirSync(ARTIFACTS, { recursive: true })
+    const stamp = new Date()
+    const pad = value => String(value).padStart(2, '0')
+    const log = join(ARTIFACTS, `dsh-superagent-${args.profile}-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}`
+      + `-${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}-${process.pid}.log`)
+    writeFileSync(log, '', { mode: 0o600 })
+    pruneLogs(args.profile)
+    if (WINDOWS) {
+      const invocation = windowsStart(dsh, args.profile)
+      const environment = { ...process.env }
+      delete environment.TMUX
+      delete environment.TMUX_PANE
+      const output = openSync(log, 'a')
+      const child = spawn(invocation.file, invocation.args, { detached: true, shell: invocation.shell, stdio: ['ignore', output, output],
+        cwd: ROOT, windowsHide: true, env: environment })
+      child.unref()
+      closeSync(output)
+      // The recorded PID is a convenience; the process scan is authoritative after a restart.
+      const deadline = Date.now() + 5_000
+      while (Date.now() < deadline && !processes(args.profile).length) await sleep(200)
+      pids = processes(args.profile)
+      if (pids.length) writeFileSync(join(control(args.profile), 'service.pid'), `${pids[0]}\n`)
+    } else {
+      const target = sessionExists ? ['new-window', '-t', '=' + session + ':'] : ['new-session', '-s', session]
+      const started = spawnSync('tmux', ['-L', socket, ...tmuxStart(target, dsh, args.profile, log)], { encoding: 'utf8' })
+      if (started.error) throw started.error
+      if (started.status !== 0) throw new Error((started.stderr ?? '').trim() || `tmux exited with code ${started.status}`)
+      const pane = (started.stdout ?? '').trim()
+      if (/^\d+$/.test(pane)) writeFileSync(join(control(args.profile), 'service.pid'), pane + '\n')
+    }
+    process.stdout.write('Log: ' + log + '\n')
+  } else {
+    writeFileSync(join(control(args.profile), 'service.pid'), `${pids[0]}\n`)
+    process.stdout.write(`dsh-superagent already running (PID ${pids[0]}); no duplicate started.\n`)
+  }
+  rmSync(join(control(args.profile), 'manually-stopped'), { force: true })
+  const deadline = Date.now() + args.timeout * 1000
+  while (Date.now() < deadline) {
+    const current = await state(args.url)
+    if (processes(args.profile).length && runtimeUp(current)) {
+      const code = await status(args)
+      if (current.setup) {
+        process.stdout.write('dsh-superagent is waiting for setup: ' + String(current.setup.detail ?? '') + '\n')
+        process.stdout.write('Open the URL DSH printed in the log, then the dsh-superagent overview.\n')
+      }
+      if (current.feishu) {
+        process.stdout.write('dsh-superagent runs without Feishu: ' + String(current.feishu.detail ?? '') + '\n')
+        process.stdout.write('Fix it on the Feishu card of the Source settings.\n')
+      }
+      for (const [name, detail] of Object.entries(partErrors(current))) {
+        process.stdout.write(`${name} reports an error, which a restart does not fix: ${detail}\n`)
+      }
+      return code
+    }
+    await sleep(1000)
+  }
+  await status(args)
+  throw new Error('Startup health check timed out; inspect the log. Any running process was left intact.')
+}
 
-def stop(args, intentional=True):
-    """Stop the service gracefully, recording a manual stop marker when `intentional` is True."""
-    pids = processes(args.profile)
-    if len(pids) > 1:
-        raise RuntimeError('Multiple dsh-superagent processes found; refusing to choose one.')
-    # Write the stop marker before waiting so monitors respect the intentional stop even if graceful shutdown times out.
-    if intentional:
-        (control(args.profile) / 'manually-stopped').write_text(time.strftime('%Y-%m-%dT%H:%M:%S%z') + '\n')
-    for pid in pids:
-        os.kill(pid, signal.SIGINT)
-    deadline = time.monotonic() + args.stop_timeout
-    while any(running(pid, args.profile) for pid in pids):
-        if time.monotonic() >= deadline:
-            raise RuntimeError('Graceful stop timed out; no forced kill was sent. Check status.')
-        time.sleep(0.5)
-    (control(args.profile) / 'service.pid').unlink(missing_ok=True)
-    print('dsh-superagent stopped. Automatic recovery is paused until start/restart.' if intentional else 'dsh-superagent stopped.')
+/** Parse the command line the way the previous `argparse` interface did, including options before the action. */
+export function parseArgv(argv, env = process.env) {
+  const args = { action: undefined, profile: env.DSH_SUPERAGENT_PROFILE || 'superagent', url: env.DSH_SUPERAGENT_URL || 'http://127.0.0.1:3082',
+    timeout: 60, stop_timeout: 300, respect_stop: false }
+  const value = (index, name) => {
+    const next = argv[index + 1]
+    if (next === undefined || next.startsWith('-')) throw new Error(`${name} needs a value`)
+    return next
+  }
+  for (let index = 0; index < argv.length; index++) {
+    const word = argv[index]
+    if (word === '--profile') { args.profile = value(index, '--profile'); index++ }
+    else if (word.startsWith('--profile=')) args.profile = word.slice('--profile='.length)
+    else if (word === '--url') { args.url = value(index, '--url'); index++ }
+    else if (word.startsWith('--url=')) args.url = word.slice('--url='.length)
+    else if (word === '--timeout') { args.timeout = Number(value(index, '--timeout')); index++ }
+    else if (word === '--stop-timeout') { args.stop_timeout = Number(value(index, '--stop-timeout')); index++ }
+    else if (word === '--respect-stop') args.respect_stop = true
+    else if (word === '-h' || word === '--help') args.help = true
+    else if (word.startsWith('-')) throw new Error(`unrecognized option: ${word}`)
+    else if (args.action === undefined) args.action = word
+    else throw new Error(`unexpected argument: ${word}`)
+  }
+  if (args.help) return args
+  if (!['start', 'stop', 'restart', 'status'].includes(args.action)) throw new Error('action must be one of start, stop, restart, status')
+  if (!Number.isFinite(args.timeout) || !Number.isFinite(args.stop_timeout) || args.timeout <= 0 || args.stop_timeout <= 0) {
+    throw new Error('--timeout and --stop-timeout must be positive')
+  }
+  if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(args.profile)) throw new Error('--profile must be a DSH profile name')
+  return args
+}
 
+/** Take the profile's control lock without waiting; a stale lock from a crashed operation is removed after ten minutes. */
+function acquireLock(profile) {
+  const lock = join(control(profile), 'operation.lock')
+  const take = () => { mkdirSync(lock); return () => rmSync(lock, { recursive: true, force: true }) }
+  try { return take() } catch (error) {
+    if (error?.code !== 'EEXIST') throw error
+    try {
+      if (Date.now() - statSync(lock).mtimeMs < LOCK_STALE_MS) throw error
+      rmSync(lock, { recursive: true, force: true })
+      return take()
+    } catch (retry) {
+      if (retry?.code === 'EEXIST') throw new Error('Another dsh-superagent control operation is in progress.')
+      throw retry
+    }
+  }
+}
 
-def prune_logs(profile):
-    """Retain only the newest `KEEP_LOGS` log files for `profile`."""
-    name = re.compile(re.escape(f'dsh-superagent-{profile}-') + r'\d{8}-\d{6}-\d+\.log')
-    logs = sorted((path for path in ARTIFACTS.iterdir() if name.fullmatch(path.name)), key=lambda path: path.stat().st_mtime)
-    for path in logs[:-KEEP_LOGS]:
-        path.unlink(missing_ok=True)
+const USAGE = `Usage: dsh-superagent [--respect-stop] <start|stop|restart|status> [options]
 
+Manage a local dsh-superagent service (one DSH profile, default \`superagent\`).
 
-def start(args):
-    session = 'dsh-' + args.profile
-    pids = processes(args.profile)
-    if len(pids) > 1:
-        raise RuntimeError('Multiple dsh-superagent processes found; refusing to start another.')
-    if not pids:
-        dsh = shutil.which('dsh')
-        if not dsh or not shutil.which('tmux'):
-            raise RuntimeError('Both dsh and tmux must be on PATH.')
-        socket = 'dsh-superagent-' + hashlib.sha256(args.profile.encode()).hexdigest()[:20]
-        tmux = ['tmux', '-L', socket]
-        exists = subprocess.run([*tmux, 'has-session', '-t', '=' + session],
-                                capture_output=True).returncode == 0
-        if state(args.url) is not None:
-            raise RuntimeError('An existing orchestrator answers at this URL; refusing duplicate startup.')
-        stamp = time.strftime('%Y%m%d-%H%M%S')
-        log = ARTIFACTS / f'dsh-superagent-{args.profile}-{stamp}-{os.getpid()}.log'
-        log.touch()
-        prune_logs(args.profile)
-        # `exec` replaces the shell so the pane PID printed by tmux is the DSH service process itself.
-        environment = [f'export {name}={shlex.quote(os.environ[name])}' if name in os.environ else f'unset {name}'
-                       for name in ('DSH_HOME', 'HOME', 'PATH')]
-        command = ('umask 077; ' + '; '.join(environment) + '; unset TMUX TMUX_PANE; exec '
-                   + shlex.join([dsh, '--profile', args.profile, '--no-open'])
-                   + ' >> ' + shlex.quote(str(log)) + ' 2>&1')
-        # Reuse an existing tmux session without disturbing other windows.
-        target = ['new-window', '-t', '=' + session + ':'] if exists else ['new-session', '-s', session]
-        pane = subprocess.run([*tmux, *target, '-d', '-P', '-F', '#{pane_pid}', '-n', 'server', '-c', str(ROOT), command],
-                              check=True, capture_output=True, text=True).stdout.strip()
-        if pane.isdigit():
-            (control(args.profile) / 'service.pid').write_text(pane + '\n')
-        print('Log: ' + str(log), flush=True)
-    else:
-        (control(args.profile) / 'service.pid').write_text(f'{pids[0]}\n')
-        print(f'dsh-superagent already running (PID {pids[0]}); no duplicate started.', flush=True)
-    (control(args.profile) / 'manually-stopped').unlink(missing_ok=True)
-    deadline = time.monotonic() + args.timeout
-    while time.monotonic() < deadline:
-        current = state(args.url)
-        if processes(args.profile) and runtime_up(current):
-            code = status(args)
-            if current['setup']:
-                print('dsh-superagent is waiting for setup: ' + str(current['setup'].get('detail', '')))
-                print('Open the URL DSH printed in the log, then the dsh-superagent overview.')
-            if current['feishu']:
-                print('dsh-superagent runs without Feishu: ' + str(current['feishu'].get('detail', '')))
-                print('Fix it on the Feishu card of the Source settings.')
-            for name, detail in part_errors(current).items():
-                print(f'{name} reports an error, which a restart does not fix: {detail}')
-            return code
-        time.sleep(1)
-    status(args)
-    raise RuntimeError('Startup health check timed out; inspect the log. Any running process was left intact.')
+Options:
+  --profile <name>       DSH profile that loads dsh-superagent (default: $DSH_SUPERAGENT_PROFILE or superagent).
+  --url <url>            Health-check URL (default: $DSH_SUPERAGENT_URL or http://127.0.0.1:3082).
+  --timeout <seconds>    Startup timeout (default: 60).
+  --stop-timeout <s>     Graceful shutdown timeout (default: 300).
+  --respect-stop         For monitoring: never start/restart after an intentional stop.`
 
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['start', 'stop', 'restart', 'status'])
-    parser.add_argument('--profile', default=os.environ.get('DSH_SUPERAGENT_PROFILE') or 'superagent',
-                        help='DSH profile that loads dsh-superagent; its tmux session is dsh-<profile>.')
-    parser.add_argument('--url', default=os.environ.get('DSH_SUPERAGENT_URL') or 'http://127.0.0.1:3082',
-                        help='Health-check URL; override after changing the profile port.')
-    parser.add_argument('--timeout', type=float, default=60, help='Startup timeout in seconds.')
-    parser.add_argument('--stop-timeout', type=float, default=300,
-                        help='Graceful shutdown timeout in seconds; running Executor Sessions finish their step first.')
-    parser.add_argument('--respect-stop', action='store_true',
-                        help='For monitoring: never start/restart after an intentional stop.')
-    args = parser.parse_args()
-    if args.timeout <= 0 or args.stop_timeout <= 0:
-        parser.error('--timeout and --stop-timeout must be positive')
-    if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', args.profile):
-        parser.error('--profile must be a DSH profile name')
-    os.umask(0o077)
-    with (control(args.profile) / 'operation.lock').open('a') as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError('Another dsh-superagent control operation is in progress.') from None
-        if args.respect_stop and args.action in ('start', 'restart') and stopped(args.profile):
-            print('Intentional stop is active; automatic recovery skipped.')
-            return 0
-        if args.action == 'status':
-            return status(args)
-        if args.action in ('stop', 'restart'):
-            # Only a stop keeps automatic recovery off; a restart whose stop timed out leaves it on.
-            stop(args, intentional=args.action == 'stop')
-        if args.action in ('start', 'restart'):
-            return start(args)
+async function main(argv = process.argv.slice(2)) {
+  const args = parseArgv(argv)
+  if (args.help) { process.stdout.write(USAGE + '\n'); return 0 }
+  process.umask(0o077)
+  const release = acquireLock(args.profile)
+  try {
+    if (args.respect_stop && (args.action === 'start' || args.action === 'restart') && stopped(args.profile)) {
+      process.stdout.write('Intentional stop is active; automatic recovery skipped.\n')
+      return 0
+    }
+    if (args.action === 'status') return await status(args)
+    if (args.action === 'stop' || args.action === 'restart') {
+      // Only a stop keeps automatic recovery off; a restart whose stop timed out leaves it on.
+      await stop(args, args.action === 'stop')
+    }
+    if (args.action === 'start' || args.action === 'restart') return await start(args)
     return 0
+  } finally { release() }
+}
 
-
-if __name__ == '__main__':
-    try:
-        sys.exit(main())
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
-        print(str(error), file=sys.stderr)
-        sys.exit(1)
+if (process.argv[1] && (() => { try { return realpathSync(resolve(process.argv[1])) === SCRIPT } catch { return false } })()) {
+  main().then(code => { process.exitCode = code }).catch(error => {
+    process.stderr.write((error instanceof Error ? error.message : String(error)) + '\n')
+    process.exitCode = 1
+  })
+}
