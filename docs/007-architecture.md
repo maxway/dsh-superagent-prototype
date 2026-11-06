@@ -369,7 +369,8 @@ Some generic modules still need provider-specific behavior:
 | `src/sources/github-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
 | `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
 | `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
-| `src/sources/gitlab.ts` | The GitLab kind and plugin entry, exported as `./gitlab-watch`: a poll round of project Issues, merge requests, notes and pipelines |
+| `src/sources/gitlab.ts` | The GitLab kind and plugin entry, exported as `./gitlab-watch`: a poll round of project Issues, merge requests, notes and pipelines, and the optional webhook wake |
+| `src/sources/gitlab-webhook.ts` | The optional GitLab project webhook: a token-verified listener, automatic creation, update and removal of the project hook, and wake coalescing for the poll loop |
 | `src/sources/gitlab-trigger.ts` | GitLab Issues, merge requests, notes and pipeline changes as Triggers, and GitLab addresses |
 | `src/sources/gitlab-pull.ts` | The merge request rules: which merge requests a Ticket follows (`claimMergeRequest`, `observeMergeRequest`), the closes it reports to the Engine, and `mergeRequestEndNotices` |
 | `src/sources/gitlab-channel.ts` | The GitLab Channel: issue and merge request notes, `sent` or `gone` |
@@ -415,6 +416,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, the Feishu event consumer, GitHub polls and read positions, the pull request rules, health |
 | `tests/gitlab.spec.ts` | The GitLab Source on a `SourceContext`: translation, project polling and cursors, the Channel, merge request rules and terminal notices |
+| `tests/gitlab-webhook.spec.ts` | The GitLab webhook: listener verification, wake coalescing, and creation, update and removal of the project hook |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/github-read.spec.ts` | GitHub reads |
 | `tests/admission-context.spec.ts` | The Thread window of assessments |

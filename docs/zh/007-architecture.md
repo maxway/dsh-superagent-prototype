@@ -371,7 +371,8 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/sources/github-pull.ts` | pull request 规则：工单跟随哪些 pull request（`claimPull`、`observePull`）、它向 Engine 报告的关闭，以及 `pullEndNotices`——工单以 merged 或 closed 结束时的聊天通知 |
 | `src/sources/github-channel.ts` | GitHub 渠道：评论和评审线程回复，`sent` 或 `gone` |
 | `src/sources/github-read.ts` | CI 快照、仓库读取、`github/` 资源，以及 `githubThreadContext`：按页读取 Issue 或 pull request 的对话 |
-| `src/sources/gitlab.ts` | GitLab 种类和插件入口，导出为 `./gitlab-watch`：一轮项目 Issue、合并请求、note 和流水线的轮询 |
+| `src/sources/gitlab.ts` | GitLab 种类和插件入口，导出为 `./gitlab-watch`：一轮项目 Issue、合并请求、note 和流水线的轮询，以及可选 webhook 的唤醒 |
+| `src/sources/gitlab-webhook.ts` | 可选的 GitLab 项目 webhook：token 校验的监听器、项目 hook 的自动创建、更新和删除，以及轮询的唤醒合并 |
 | `src/sources/gitlab-trigger.ts` | 作为触发的 GitLab Issue、合并请求、note 和流水线变化，以及 GitLab 地址 |
 | `src/sources/gitlab-pull.ts` | 合并请求规则：工单跟随哪些合并请求（`claimMergeRequest`、`observeMergeRequest`）、它向 Engine 报告的关闭，以及 `mergeRequestEndNotices` |
 | `src/sources/gitlab-channel.ts` | GitLab 渠道：Issue 和合并请求 note，`sent` 或 `gone` |
@@ -417,6 +418,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/registry.spec.ts` | `SourceRegistry`：实例、校验、策略部分、渠道和线程上下文 |
 | `tests/sources.spec.ts` | `SourceContext` 上的飞书和 GitHub 来源：转换、飞书事件消费者、GitHub 轮询和读取位置、pull request 规则、健康 |
 | `tests/gitlab.spec.ts` | `SourceContext` 上的 GitLab 来源：转换、项目轮询和游标、渠道、合并请求规则和结束通知 |
+| `tests/gitlab-webhook.spec.ts` | GitLab webhook：监听器校验、唤醒合并和项目 hook 的创建、更新与删除 |
 | `tests/commands.spec.ts` | 以部署账号执行的 CLI 调用、渠道的回答，以及限定在仓库范围内的 GitHub 调用 |
 | `tests/github-read.spec.ts` | GitHub 读取 |
 | `tests/admission-context.spec.ts` | 研判的线程窗口 |

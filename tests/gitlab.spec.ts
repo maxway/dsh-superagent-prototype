@@ -27,7 +27,8 @@ const note = (overrides: Partial<GitlabNote> = {}): GitlabNote => ({
   system: false, noteable_type: 'Issue', noteable_iid: 5, ...overrides })
 const config = (overrides: Partial<GitlabConfig> = {}): GitlabConfig => ({
   host: 'https://gitlab.com', repository: 'acme/widgets', cli: '/bin/glab', configDir: '/config/glab-agent', pollSeconds: 60, failuresBeforeError: 3,
-  observeIssues: true, observeMrs: true, observeComments: true, observeCi: false, ...overrides })
+  observeIssues: true, observeMrs: true, observeComments: true, observeCi: false, webhookUrl: '', webhookPort: 3084,
+  webhookBind: '0.0.0.0', ...overrides })
 
 function context(overrides: Partial<SourceContext> = {}) {
   const state = new Map<string, unknown>()

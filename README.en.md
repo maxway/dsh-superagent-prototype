@@ -16,6 +16,7 @@ Lets this fork work directly with GitLab, including self-managed instances, inst
 
 - The official prototype only connects to GitHub; this fork adds a switchable GitLab Source, and each deployment chooses GitHub or GitLab.
 - The GitLab Source polls project issues, merge requests, notes and pipelines, replies in the original note, binds merge requests to Tickets, and returns CI status to the Executor.
+- An optional GitLab webhook: the Source creates or updates the project webhook automatically and starts a sync as soon as an event arrives; without it the Source falls back to polling, which suits deployments with a fixed IP.
 - Self-managed GitLab is supported, including instances served over HTTP. Commits, pushes, merge requests, review replies and CI fixes go through `glab`.
 
 #### Native Windows deployment
