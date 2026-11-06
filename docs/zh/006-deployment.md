@@ -184,6 +184,8 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
    git -C /home/me/src/widgets worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
    ```
 
+   Windows 上用 PowerShell 7（`pwsh`）而不是 `sh` 运行准备命令；执行环境的变量写作 `$env:DSH_SUPERAGENT_DIR`、`$env:DSH_SUPERAGENT_NAME` 等，上面的示例需要改写成 PowerShell 语法。
+
    把个人 CLI（例如登录你自己账号的 CLI）列为禁止调用的命令。
 4. **提示词。** 设置团队段落：GitHub 声明行、评审机器人、提交作者和自动合并条件。
 
