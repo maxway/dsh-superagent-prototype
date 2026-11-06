@@ -9,13 +9,17 @@ const slash = (path: string): string => path.split(sep).join('/')
 const NUMBERED = /^(\d{3})-[a-z0-9-]+\.md$/
 const numbered = readdirSync(join(ROOT, 'docs')).filter(name => NUMBERED.test(name)).sort()
 const entries = ['README.md', 'SETUP.md']
-const documents = [...entries, ...readdirSync(join(ROOT, 'docs')).filter(name => name.endsWith('.md')).map(name => `docs/${name}`)]
+/** README.md is the Chinese default; its English counterpart is README.en.md. */
+const englishReadme = 'README.en.md'
+const documents = [...entries, englishReadme, ...readdirSync(join(ROOT, 'docs')).filter(name => name.endsWith('.md')).map(name => `docs/${name}`)]
 /** Windows checkouts with `core.autocrlf=true` use CRLF; normalize so the structure checks behave the same on both platforms. */
 const read = (path: string): string => readFileSync(join(ROOT, path), 'utf8').replace(/\r\n/g, '\n')
 function links(file: string): string[] {
   return [...readFileSync(file, 'utf8').matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!.split('#')[0]!).filter(target => target && !/^[a-z]+:/.test(target))
 }
-const translation = (path: string): string => path.startsWith('docs/') ? path.replace(/^docs\//, 'docs/zh/') : path.replace(/\.md$/, '.zh-CN.md')
+const translation = (path: string): string => path === 'README.md'
+  ? englishReadme
+  : path.startsWith('docs/') ? path.replace(/^docs\//, 'docs/zh/') : path.replace(/\.md$/, '.zh-CN.md')
 const translations = [...entries, ...numbered.map(name => `docs/${name}`)].map(path => [path, translation(path)] as const)
 /** Removes fenced code so structural checks compare prose, not code samples. */
 const withoutCode = (text: string): string => text.replace(/^[ \t]*```[^\n]*\n[\s\S]*?^[ \t]*```[ \t]*$/gm, '')
@@ -62,7 +66,7 @@ describe('documentation', () => {
     expect(violations).toEqual([])
   })
   it('resolves every local link', () => {
-    const files = [...entries.map(name => join(ROOT, name)), ...numbered.map(name => join(ROOT, 'docs', name))]
+    const files = [...entries.map(name => join(ROOT, name)), join(ROOT, englishReadme), ...numbered.map(name => join(ROOT, 'docs', name))]
     const missing = files.flatMap(file => links(file).filter(target => !existsSync(resolve(dirname(file), target))).map(target => `${file.slice(ROOT.length + 1)} → ${target}`))
     expect(missing).toEqual([])
   })
@@ -81,7 +85,7 @@ describe('documentation', () => {
   })
 })
 
-describe('Chinese translations', () => {
+describe('translations', () => {
   it('exists for every document', () => {
     expect(translations.filter(([, path]) => !existsSync(join(ROOT, path))).map(([, path]) => path)).toEqual([])
   })
