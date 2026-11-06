@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { vi, type Mock } from 'vitest'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { Runtime } from '../../src/app/runtime.ts'
 import { Store } from '../../src/app/store.ts'
 import { SettingsSchema } from '../../src/policy.ts'
@@ -231,9 +232,11 @@ export async function startRuntime(seed?: (store: Store) => void) {
     }),
     selectModel: vi.fn(async () => {}), resolveAgent: vi.fn(resolveDefault), rename: vi.fn(async () => {}),
     prompt: vi.fn(() => { throw new Error('Plugin delivery must not use user RPC') }),
-    inspect: vi.fn(async () => ({ events: [] })),
   }
-  const reader = { read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} }
+  /** Events a read handle reports; tests append the worker transcript they want to read. */
+  const transcript: SessionEvent[] = []
+  const reader = { read: async (offset = 0, length = Number.POSITIVE_INFINITY) => ({ events: transcript.slice(offset, offset + length), eventState: 'shared' }),
+    [Symbol.asyncDispose]: async () => {} }
   const persistence = { flush: vi.fn(async () => {}), open: vi.fn(async () => reader) }
   const webServer = { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }
   const jobs = jobRegistry(id => agents.get(id))
@@ -294,6 +297,6 @@ export async function startRuntime(seed?: (store: Store) => void) {
   /** A step of the worker claims what waits for it, and is cut off before the Session took it. */
   const claim = (sessionId: string) => { claims.get(sessionId)!() }
   return { runtime, ctx, directory, agents, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
-    jobs, subagents, step, claim }
+    jobs, subagents, step, claim, transcript }
 }
 export type Host = Awaited<ReturnType<typeof startRuntime>>

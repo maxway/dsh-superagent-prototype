@@ -21,7 +21,7 @@ The setup follows [docs/000-philosophy.md](docs/000-philosophy.md): it takes as 
 
 Windows support covers the Git Sources and the Feishu Source at prototype quality: the code paths are implemented and tested on Windows, the suite runs in CI on a project Windows runner, and a real ticket has completed the end-to-end flow on a scratch project. Feishu uses the npm `lark-cli` `.cmd` shim, which the host resolves to its Node entry and runs without a shell ([docs/009-windows-deployment.md](docs/009-windows-deployment.md), WP6); a live bot was not enabled on the scratch host, which must not receive Feishu credentials. A Windows host runs one Git Source. Follow the numbered steps with these differences.
 
-- **Prerequisites:** Windows 10/11 or Windows Server with Node.js 22.19+ or 24+, pnpm, Git for Windows 2.32+, PowerShell 7 (`pwsh` on `PATH`) and the native `gh.exe` or `glab.exe`. No tmux, Python or WSL is needed.
+- **Prerequisites:** Windows 10/11 or Windows Server with Node.js 24.9+, pnpm, Git for Windows 2.32+, PowerShell 7 (`pwsh` on `PATH`) and the native `gh.exe` or `glab.exe`. No tmux, Python or WSL is needed.
 - **Probe:** in PowerShell, run `node -v; pnpm -v; git --version; gh --version; dsh --version`, `Get-Command pwsh` and `Get-ChildItem "$env:USERPROFILE\.dsh\profiles\*\cordis.patch.yml"`. `tmux` and `python3` are not required.
 - **Accounts:** sign the native CLI in to the agent account with its configuration directory, then set the same directory in the Source's **Agent account configuration directory** advanced field (see Windows credentials in [docs/006-deployment.md](docs/006-deployment.md)). Do not write a `.cmd` wrapper: it corrupts arguments.
 - **Service:** start, stop and check status through Node, because the script has no `.cmd` shim: `node scripts\dsh-superagent start`, `node scripts\dsh-superagent status`, and so on.
@@ -39,7 +39,7 @@ command -v lark-cli
 grep -l -E 'id: dsh-superagent\b' "${DSH_HOME:-$HOME/.dsh}"/profiles/*/cordis.patch.yml 2>/dev/null
 ```
 
-- **Prerequisites:** Node.js 22.19+ or 24+, pnpm, git 2.32+, tmux, Python 3.8+, GitHub CLI 2.48+, and DSH within the `engines.dsh` range of `package.json`; on a Windows host, see Windows hosts above for the different list. A missing one becomes an item of the plan, not a question. DSH also needs a model provider; if the operator has never run DSH with a model, configuring one is an operator step.
+- **Prerequisites:** Node.js 24.9+, pnpm, git 2.32+, tmux, Python 3.8+, GitHub CLI 2.48+, and DSH within the `engines.dsh` range of `package.json`; on a Windows host, see Windows hosts above for the different list. A missing one becomes an item of the plan, not a question. DSH also needs a model provider; if the operator has never run DSH with a model, configuring one is an operator step.
 - **Operator login:** the `gh api user` result is the operator's own GitHub login, used as the recommendation in question 5.
 - **Existing profile:** a profile with a `dsh-superagent` entry is an earlier setup: ask whether to continue it, keep its configuration, and read Upgrade in `docs/006-deployment.md`.
 
