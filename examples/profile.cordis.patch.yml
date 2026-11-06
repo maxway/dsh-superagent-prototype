@@ -6,8 +6,10 @@
     port: 3082
 - id: dsh-superagent
   config:
-    stateDir: <absolute path, for example /home/me/.dsh/state/superagent>
+    # A native absolute path: /home/me/... on POSIX, C:\Users\me\... on Windows.
+    stateDir: <absolute path, for example /home/me/.dsh/state/superagent or C:\Users\me\.dsh\state\superagent>
 # Feishu is optional: uncomment to enable its Source, then set the bot's lark-cli on the Feishu Source.
+# A Windows host does not support the Feishu Source yet.
 # - id: dsh-superagent-feishu
 #   disabled: false
 # One Git Source is active at a time. For GitLab, enable dsh-superagent-gitlab and disable dsh-superagent-github.

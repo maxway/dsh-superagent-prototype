@@ -9,6 +9,7 @@ The question is about the host, not about who can use the agent. Every user open
 - **Required for this project's host.** The workers must run the project's Windows-only toolchain, so the agent host must be Windows. This plan ports the deployment only; the project's own build and smoke work is out of scope.
 - **Estimate:** a usable internal build takes about 9-13 person-days: 2-2.5 weeks for one developer, including the proof of concept and end-to-end verification, without Feishu and without a Windows CI runner.
 - **Full parity** — Feishu, Windows CI, bilingual setup documentation and the hardening that keeps both platforms tested — takes about 12-18 person-days, or 3-4 weeks for one developer.
+- **Status (2026-11-06):** stages 1-3 are implemented and tested on Linux; stage 4 adds the bilingual setup and deployment documentation. The proof of concept, a Windows runner and the end-to-end run are not done, so Windows remains experimental and the Feishu Source is not supported there.
 - **Recommendation:** port the deployment; start with the 1-2 day proof of concept, then follow the staged plan below. The project's toolchain work is separate.
 
 ## What deploying on Windows means
@@ -36,11 +37,11 @@ No upstream DSH work is needed for this port.
 
 ### dsh-superagent
 
-The bundle already switches its two agent presets between bash and pwsh by platform (`cordis.patch.yml`), so a Windows worker receives the PowerShell tool. The runtime and deployment layers did not follow.
+The bundle already switches its two agent presets between bash and pwsh by platform (`cordis.patch.yml`), so a Windows worker receives the PowerShell tool. When this plan was written, the runtime and deployment layers did not follow.
 
 | Area | Current implementation | Native Windows status |
 | --- | --- | --- |
-| Service control | `scripts/dsh-superagent` uses Python 3, tmux, `ps`, `fcntl.flock`, `os.kill(SIGINT)` and `umask` | Does not run; no portable graceful stop |
+| Service control | `scripts/dsh-superagent` is a Node script: tmux and `ps` on POSIX, a detached process and the management stop route on Windows | Runs on both; Windows has no `SIGINT`, so stop uses `POST /orchestrator/api/service/stop` |
 | Worker command shims | Extensionless `#!/bin/sh` files in `worker-bin`, prepended to `PATH` | PowerShell and `CreateProcess` do not execute them; account selection and blocked commands are lost |
 | CLI wrappers and probes | Shell-script wrappers; setup probes run `env PATH=... <cli>`; `execFile` and `spawn` call the CLI directly | No `env` on Windows; `execFile` cannot run `.cmd`; npm-installed `lark-cli` is a `.cmd` |
 | Prepare command | Always `sh -c <command>` | No `sh` by default; the documented command uses POSIX variables |
@@ -49,7 +50,17 @@ The bundle already switches its two agent presets between bash and pwsh by platf
 | Setup and docs | `~/.local/bin`, `cat > ... <<'EOF'`, tmux, Python, `$HOME` | Need Windows equivalents |
 | Tests and CI | POSIX fixtures, shells, `:` as the PATH separator; no Windows job | `pnpm check` is not expected to pass on Windows |
 
-[006 Deployment](006-deployment.md) documents only the POSIX path, so even a hand-started Windows service would fail setup before it could poll.
+[006 Deployment](006-deployment.md) documented only the POSIX path when this plan was written, so even a hand-started Windows service would fail setup before it could poll. Stage 4 adds the Windows guidance; the status below records what is still missing.
+
+### Implementation status (2026-11-06)
+
+The table above is the assessment this plan started from. Stages 1-4 have since addressed these gaps:
+
+- **Stage 1.** `scripts/dsh-superagent` is a Node script. POSIX keeps tmux and `SIGINT`; Windows starts a detached process and stops through `POST /orchestrator/api/service/stop`. The POSIX path passed a real start/stop test; the Windows path has unit tests only.
+- **Stage 2.** The worker command layer resolves `PATHEXT`, writes `.cmd` guardrails only for blocked and inactive commands, and selects the agent account with `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR` and `LARKSUITE_CLI_CONFIG_DIR`; probes and git credentials use native argv.
+- **Stage 3.** The prepare command runs through `sh -c` on POSIX and `pwsh -NoProfile -NonInteractive -Command` on Windows; the router accepts `pwsh`; prompts and skills are shell-neutral.
+- **Stage 4.** This documentation change adds the Windows setup and deployment path in both languages.
+- **Not done.** Stage 0's proof of concept, a Windows runner running `pnpm check`, and stage 5's end-to-end run. The Feishu Source is still unsupported on Windows (WP6). Windows therefore remains experimental; do not call it supported until stage 5 passes.
 
 ## Is it necessary?
 

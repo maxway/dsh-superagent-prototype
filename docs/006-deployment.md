@@ -10,21 +10,24 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
 
+Windows hosts are experimental. The Windows paths for service control, the worker command layer, the prepare command and the router tools are implemented and unit-tested on Linux, but no Windows runner or end-to-end run has verified them yet (stage 5 of the Windows deployment plan). A Windows host supports the Git Sources; the Feishu Source is not supported there yet. Workers and the router use the `pwsh` tool instead of `bash` there, and the prepare command runs through PowerShell 7. Where a step below differs on Windows, its Windows form is given.
+
 ### Permissions and isolation
 
 The bundle defines `dsh-superagent-worker` for Executors and `dsh-superagent-router` for the main Session. They appear in the DeepSeek Harness preset list but are intended only for dsh-superagent. Do not select them for personal Sessions or disable their configuration rows. The application needs them to create and resume its Sessions.
 
 Opening a blank managed Session in the Web UI can select the profile's default preset. dsh-superagent restores its role-specific preset before the first turn.
 
-Both presets run with `danger-full-access` as the operator's OS user and read messages from subscribed Threads. Account wrappers choose the agent's credentials by default; they do not isolate the process. A worker can execute programs by path and read the operator's home directory. For isolation, use a dedicated OS account containing only the agent's credentials.
+Both presets run with `danger-full-access` as the operator's OS user and read messages from subscribed Threads. Account wrappers choose the agent's credentials by default; they do not isolate the process. A worker can execute programs by path and read the operator's home directory. For isolation, use a dedicated OS account containing only the agent's credentials. On Windows the same applies with no OS sandbox: the `.cmd` shims only block commands, so use a dedicated Windows account that holds only the agent's credentials and repository access. The Windows path has not completed end-to-end verification.
 
 ## Prerequisites
 
-- Node.js 22.19+ or 24+, pnpm, git 2.32+, Python 3.8+ and tmux
-- GitHub CLI (`gh`) 2.48 or later for a GitHub deployment, or GitLab CLI (`glab`) for a GitLab deployment. Source CLI fields must point to `gh`, `glab` or `lark-cli` wrappers; the host relies on their subcommands and output formats.
+- Node.js 22.19+ or 24+, pnpm and git 2.32+ (Git for Windows on a Windows host). POSIX also needs tmux; Windows needs PowerShell 7 (`pwsh`) and has no tmux or Python requirement.
+- GitHub CLI (`gh`) 2.48 or later for a GitHub deployment, or GitLab CLI (`glab`) for a GitLab deployment. Source CLI fields must point to the agent CLI's command name or absolute path (`gh`, `glab` or `lark-cli`; on POSIX usually a wrapper script); the host relies on their subcommands and output formats.
+- **Windows host:** the native `gh.exe` or `glab.exe`, signed in to the agent account as Windows credentials below describes. Do not use a `.cmd` wrapper.
 - A repository on github.com, or a GitLab project on gitlab.com or a self-managed instance. GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
 - A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.
-- For Feishu: `lark-cli` (tested with 1.0.90) and a Feishu or Lark app with a bot
+- For Feishu: `lark-cli` (tested with 1.0.90) and a Feishu or Lark app with a bot. Feishu runs on POSIX only for now.
 
 ## Accounts
 
@@ -44,7 +47,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
    gh-agent api user --jq .login
    ```
 
-   Sign in as the agent account; the last command prints its login. dsh-superagent reads the login the same way.
+   Sign in as the agent account; the last command prints its login. dsh-superagent reads the login the same way. On Windows, use the native CLI and its configuration directory instead of this wrapper; see Windows credentials below.
 
 ### Agent GitLab account (GitLab deployments)
 
@@ -62,13 +65,35 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
    glab-agent api user
    ```
 
-   Use the self-managed host, not `gitlab.com`. The same host and protocol must be set on the GitLab Source: `https://gitlab.example.com`, or `http://gitlab.example.com` for an instance served over HTTP; the worker's git credential helper then uses that protocol. `glab auth git-credential` needs a glab version that provides it (1.36 or newer); check with `glab-agent auth git-credential --help` and update glab if the command is missing. If the instance uses a private certificate authority, teach glab and the worker's git to trust it (for git, set `GIT_SSL_CAINFO` in the service environment or install the CA in the OS trust store).
+   Use the self-managed host, not `gitlab.com`. The same host and protocol must be set on the GitLab Source: `https://gitlab.example.com`, or `http://gitlab.example.com` for an instance served over HTTP; the worker's git credential helper then uses that protocol. `glab auth git-credential` needs a glab version that provides it (1.36 or newer); check with `glab-agent auth git-credential --help` and update glab if the command is missing. If the instance uses a private certificate authority, teach glab and the worker's git to trust it (for git, set `GIT_SSL_CAINFO` in the service environment or install the CA in the OS trust store). On Windows, use the native CLI and its configuration directory instead of this wrapper; see Windows credentials below.
 
 3. A deployment has one active Git Source. In the profile's `cordis.patch.yml`, enable `dsh-superagent-gitlab` and disable `dsh-superagent-github`; enable exactly one of them. In **Sources**, set the GitLab URL, the project (`group/project`) and the wrapper path.
 
 Switching a deployment from one Git host to the other leaves existing Tickets on the old host: finish or stop them first. The state directory keeps both hosts' records, and switching back reuses them.
 
+### Windows credentials
+
+A Windows host selects the agent account with a configuration directory instead of a wrapper script. Do not write a `.cmd` wrapper for `gh` or `glab`: it would forward every argument through `cmd.exe` and corrupt JSON and message text. Sign the native CLI in to the agent account with its configuration directory, then set the same directory in the Source's **Agent account configuration directory** advanced field; leaving the field empty uses the default shown below. Set the Source's `cli` field to the native executable, `gh` or `glab`, not a `.cmd` wrapper. The plugin and its workers inherit the directory, so both act as the same account.
+
+GitHub:
+
+```powershell
+$env:GH_CONFIG_DIR = "$env:USERPROFILE\.config\gh-agent"
+gh auth login
+gh api user --jq .login
+```
+
+GitLab:
+
+```powershell
+$env:GLAB_CONFIG_DIR = "$env:USERPROFILE\.config\glab-agent"
+glab auth login --hostname gitlab.example.com
+glab api user
+```
+
 ### Feishu bot (optional)
+
+The Feishu Source is not supported on a Windows host yet: its npm `lark-cli` is a `.cmd` launcher, and passing message text through `cmd.exe` is unsafe (WP6 of the Windows deployment plan). Run Feishu on a POSIX host.
 
 1. Create a self-built app with the bot capability. Grant it the permissions to receive message events and to send messages as the bot, then publish the app version. It needs no permission to read messages, chat history, chats or chat members: the Source works from the event payload and replies only. The removed read paths called APIs that require `im:message`, `im:message:readonly` and `im:message.history:readonly` for messages, and `im:chat`, `im:chat:readonly`, `im:chat.group_info:readonly`, `im:chat:read` and `im:chat.members:read` for chats and members; this build does not call them. It therefore cannot recover messages sent while dsh-superagent was offline, cannot read a message or Thread by ID, cannot list chats or sync members, and cannot read images. Enter chat IDs and the allowed list by hand. Choosing **All** for a group additionally needs Feishu's permission to receive every group message; without it only messages that mention the bot arrive.
 2. Give the bot its own `lark-cli` configuration, restricted to the bot identity, and a wrapper:
@@ -106,15 +131,17 @@ The pinned version above is public; other versions must satisfy `engines.dsh` in
 
 The fourth command creates `~/.dsh/profiles/superagent` from the DeepSeek Harness Web template. The fifth installs this bundle. Set `DSH_HOME` to relocate the default `~/.dsh` directory.
 
+On Windows, run the same block in PowerShell with `> $null` in place of `> /dev/null`; `$PWD` is the checkout's native path, so the installed link is `link:C:\...\dsh-superagent`. `dsh` is the npm `.cmd` shim, and the profile lives under `%USERPROFILE%\.dsh\profiles\superagent` unless `DSH_HOME` relocates it.
+
 Run the profile-creation command only for a new installation. If the profile already exists, that command replaces it and deletes its `cordis.patch.yml`, including machine configuration. Do not use it for upgrades.
 
 ## Machine configuration
 
-Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. For Feishu, also enable the `dsh-superagent-feishu` entry there. The `webserver` entry sets the panel's port.
+Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. On Windows the profile is `%USERPROFILE%\.dsh\profiles\superagent\cordis.patch.yml`. For Feishu, also enable the `dsh-superagent-feishu` entry there. The `webserver` entry sets the panel's port.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `stateDir` | yes | Absolute path: the database, the lock, the command shims in `worker-bin`, the agent's git configuration and, by default, the Ticket directories in `work`. Back it up before upgrades |
+| `stateDir` | yes | Native absolute path: the database, the lock, the command shims in `worker-bin`, the agent's git configuration and, by default, the Ticket directories in `work`. On POSIX, for example `/home/me/.dsh/state/superagent`; on Windows, for example `C:\Users\me\.dsh\state\superagent`. A WSL path is not native to a Windows host. Back it up before upgrades |
 | `promptMaxChars`, `admissionContextMaxPages`, `admissionContextTimeoutMs` | no | The largest saved prompt configuration, and how many Thread pages one assessment reads within what time |
 
 After the first start, edit machine limits in **Settings → Deployment** or the DeepSeek Harness Plugin Manager. Changes apply without restart. `stateDir` cannot be changed there. Invalid values or unknown configuration keys prevent startup; the log identifies the key.
@@ -126,11 +153,21 @@ scripts/dsh-superagent start
 scripts/dsh-superagent status
 ```
 
+On Windows, run the same script through Node, because the file has no `.cmd` shim:
+
+```powershell
+node scripts\dsh-superagent start
+node scripts\dsh-superagent status
+node scripts\dsh-superagent stop
+```
+
 `start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script. Each profile uses its own named tmux socket. The pane uses the caller's `DSH_HOME`, `HOME`, and `PATH` (including unset values) and clears `TMUX` and `TMUX_PANE` before starting DSH, so a worker does not inherit the service socket. Setting `TMUX_TMPDIR` alone does not override an inherited `TMUX`; these measures are guardrails, not an OS security boundary.
 
-`stop` and `restart` request a graceful drain and wait up to five minutes for the process to exit. The Executor drain is bounded at ten seconds and DSH's launcher adds a five-second grace, so a stop normally finishes within about fifteen seconds; a worker still in a turn after the drain can be interrupted. They never force-kill the process or touch other tmux sessions.
+On Windows, `start` requires `dsh` on `PATH` (the npm `.cmd` shim), spawns `dsh --profile <profile> --no-open` as a detached process with the same log and control files, and waits for the management API; it does not use tmux. `status` lists processes through Windows PowerShell (`powershell.exe`, part of Windows). `stop` asks DSH to exit through `POST /orchestrator/api/service/stop` instead of sending a signal; it waits up to five minutes and never force-kills. The tmux socket and `TMUX` details above apply to POSIX only. The same exit codes, log names and `manually-stopped` marker apply on both.
 
-`status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`.
+`stop` and `restart` request a graceful drain and wait up to five minutes for the process to exit. The Executor drain is bounded at ten seconds and DSH's launcher adds a five-second grace, so a stop normally finishes within about fifteen seconds; a worker still in a turn after the drain can be interrupted. On POSIX they never force-kill the process or touch other tmux sessions.
+
+`status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`; in PowerShell, set `$env:DSH_SUPERAGENT_PROFILE` and `$env:DSH_SUPERAGENT_URL`.
 
 `status`, `start` and `restart` exit with one of four codes:
 
@@ -160,13 +197,13 @@ Create the hourly check in the DeepSeek Harness profile you normally use, not in
 Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest .artifacts/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
 ```
 
-`--respect-stop` preserves an intentional stop. Only `stop` writes the marker; `start` clears it. `restart` writes no marker, so the check can recover a restart whose shutdown timed out.
+`--respect-stop` preserves an intentional stop. Only `stop` writes the marker; `start` clears it. `restart` writes no marker, so the check can recover a restart whose shutdown timed out. On Windows, use the same prompt with `node scripts\dsh-superagent ...` as the command.
 
 ## Settings
 
 Setup must succeed before polling or work starts. Overview lists missing requirements and links to their settings. A settings change runs setup again. If you fix something outside the application, such as CLI authentication, choose **Check again**.
 
-1. **Sources.** Enable exactly one Git Source. For GitHub, set the repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For GitLab, enable the GitLab Source, disable the GitHub one, and set the GitLab URL, project and agent CLI, for example `/home/me/.local/bin/glab-agent`; its project scan reads Issues, merge requests, notes and pipeline changes since the Source was switched on. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages.
+1. **Sources.** Enable exactly one Git Source. For GitHub, set the repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For GitLab, enable the GitLab Source, disable the GitHub one, and set the GitLab URL, project and agent CLI, for example `/home/me/.local/bin/glab-agent`; its project scan reads Issues, merge requests, notes and pipeline changes since the Source was switched on. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages. On Windows, set the CLI to the native `gh` or `glab` and set the advanced configuration directory instead of a wrapper path; see Windows credentials above.
 2. **Policy.** The two example rules can be edited or removed. Under **On each Source**, add the GitHub or GitLab accounts and Feishu users who may ask for work; until a list has someone, no request can become a Ticket. With Feishu, a chat can be chosen to sync the list from, at startup and on **Sync now**.
 3. **Execution.** The directory root and a prepare command. To give each Ticket a checkout of the repository on GitHub:
 
@@ -182,7 +219,21 @@ Setup must succeed before polling or work starts. Overview lists missing require
    git -C /home/me/src/widgets worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
    ```
 
-   On Windows the prepare command runs with PowerShell 7 (`pwsh`) instead of `sh`; read the execution environment's variables as `$env:DSH_SUPERAGENT_DIR`, `$env:DSH_SUPERAGENT_NAME` and so on, and write the examples above in PowerShell syntax.
+   On Windows the prepare command runs with PowerShell 7 (`pwsh`) instead of `sh`, and the variables are `$env:DSH_SUPERAGENT_DIR`, `$env:DSH_SUPERAGENT_NAME` and so on. For GitHub, with the clone at `C:\src\widgets`:
+
+   ```powershell
+   $head = if ($env:DSH_SUPERAGENT_GITHUB_PR_HEAD) { $env:DSH_SUPERAGENT_GITHUB_PR_HEAD } else { "HEAD" }
+   git -C C:\src\widgets fetch --no-tags "https://github.com/$($env:DSH_SUPERAGENT_GITHUB_REPOSITORY).git" "${head}:refs/dsh-superagent/$($env:DSH_SUPERAGENT_TICKET)"
+   git -C C:\src\widgets worktree add -b "agent/$($env:DSH_SUPERAGENT_NAME)" "$($env:DSH_SUPERAGENT_DIR)" "refs/dsh-superagent/$($env:DSH_SUPERAGENT_TICKET)"
+   ```
+
+   For GitLab, replace the repository and head variables with the GitLab ones:
+
+   ```powershell
+   $head = if ($env:DSH_SUPERAGENT_GITLAB_MR_HEAD) { $env:DSH_SUPERAGENT_GITLAB_MR_HEAD } else { "HEAD" }
+   git -C C:\src\widgets fetch --no-tags "$($env:DSH_SUPERAGENT_GITLAB_HOST)/$($env:DSH_SUPERAGENT_GITLAB_PROJECT).git" "${head}:refs/dsh-superagent/$($env:DSH_SUPERAGENT_TICKET)"
+   git -C C:\src\widgets worktree add -b "agent/$($env:DSH_SUPERAGENT_NAME)" "$($env:DSH_SUPERAGENT_DIR)" "refs/dsh-superagent/$($env:DSH_SUPERAGENT_TICKET)"
+   ```
 
    List personal CLIs, such as one signed in to your own account, as blocked commands.
 4. **Prompts.** Set the team sections: the GitHub disclosure line, review bots, the commit author and the auto-merge condition.
@@ -231,7 +282,7 @@ A refusal has a status and `error`, its English text:
 
 The blocks:
 
-- `source:github`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
+- `source:github`, `source:gitlab`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository`, `cli` and the advanced `configDir`, the `GH_CONFIG_DIR` that selects the agent account, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI. GitLab's has `host`, `repository` as `group/project`, `cli`, `configDir` (`GLAB_CONFIG_DIR`), `pollSeconds`, `failuresBeforeError` and the same observe switches. Feishu's has `cli`, `configDir` (`LARKSUITE_CLI_CONFIG_DIR`), `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
 - `policy`: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
 - `eval`: `mode`, `timeoutSeconds` and `model`.
 - `executor`: `model`, `maxWorkers`, `offPeak`, `directory`, `prepare` and `blockedCommands`. `offPeak` is `{"enabled": false, "start": "22:00", "end": "08:00", "timezone": "Asia/Shanghai"}` by default: Tickets Superagent judges complex and not urgent start new Assignments only inside that daily window (see [003 Execution](003-execution.md)). Alibaba Cloud Model Studio bills DeepSeek at off-peak rates from 22:00 to 08:00 Beijing time, peak 08:00–22:00 ([billing](https://help.aliyun.com/zh/model-studio/billing-for-model-studio)), which the defaults match. The processing pause is a setting of its own, `paused`, which `POST executor/pause` sets.
@@ -245,6 +296,8 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
   -d "{\"value\": {\"enabled\": true, \"config\": {\"repository\": \"acme/widgets\", \"cli\": \"$HOME/.local/bin/gh-agent\"}}, \"revision\": $rev}"
 ```
 
+On Windows, use `curl.exe`, which current Windows versions ship, set `cli` to `gh` or `glab`, and add the account directory as `configDir`, for example `"configDir": "C:\\Users\\me\\.config\\gh-agent"`.
+
 ## Setup checks
 
 Setup uses the DeepSeek Harness subprocess service, as worker shells do. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
@@ -253,7 +306,7 @@ Setup verifies the active Git Source's repository or project and the agent's pus
 
 The process environment that setup writes:
 
-- **Command shims** in `<stateDir>/worker-bin`, first on `PATH`: `gh` runs the agent's CLI; `lark-cli` runs the bot's CLI; blocked commands fail. A shim removes its own directory from `PATH` before it runs its target.
+- **Command shims** in `<stateDir>/worker-bin`, first on `PATH`. On POSIX, `gh` runs the agent's CLI, `lark-cli` runs the bot's CLI, and blocked commands fail; a shim removes its own directory from `PATH` before it runs its target. On Windows, only blocked and inactive commands get a `.cmd` shim (the inactive Git host's shim fails); the active CLIs run as native executables selected by `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR` and `LARKSUITE_CLI_CONFIG_DIR`, so arguments never pass through `cmd.exe`.
 - **git configuration** in `<stateDir>/worker-gitconfig`: replaces the operator's global and system git configuration. It selects the agent CLI as the active host's credential helper, rewrites that host's SSH addresses to HTTPS and defines Git LFS filters. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN`, `GITHUB_TOKEN`, `GLAB_TOKEN` and `GITLAB_TOKEN` are removed.
 
 A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write stops setup. A Ticket directory inside a git repository whose own configuration adds credentials fails the Ticket.
@@ -272,6 +325,8 @@ The steps below apply only to deployments where an in-place upgrade has been exp
 2. Back up `<stateDir>/orchestrator.sqlite`.
 3. Run `git pull && pnpm install && pnpm build`.
 4. Run `scripts/dsh-superagent restart` and inspect its status.
+
+On Windows, run the same steps in PowerShell; `&&` works in PowerShell 7, and the service command is `node scripts\dsh-superagent restart`.
 
 A restart ends running Assignments and starts replacements with recovery notes. Team text and overridden prompt parts are retained; parts without overrides follow the new defaults. Review parts marked **Default updated** after upgrading.
 
@@ -293,6 +348,11 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `@… cannot read …` or `@… cannot push to …` | Give the agent account write access to the repository |
 | `The GitHub Source names no repository.` | Set the repository, `owner/name`, on the GitHub card |
 | A Ticket fails with `The prepare command failed: …` | The output names the cause, such as a wrong clone path; fix the command, then retry the Ticket |
+| `pwsh` is not found, or the prepare command fails with a PowerShell error | Install PowerShell 7 and put `pwsh` on `PATH`; Windows PowerShell 5.1 is not used for the prepare command |
+| `dsh must be on PATH.` when starting on Windows | Install DSH globally and open a new shell; `start` resolves the npm `dsh.cmd` |
+| PowerShell or `cmd.exe` cannot run `scripts\dsh-superagent` | The script has no `.cmd` shim on Windows; run `node scripts\dsh-superagent <command>` |
+| A `.cmd` wrapper for `gh` or `glab` drops or corrupts an argument | Use the native `gh.exe` or `glab.exe` with its configuration directory (see Windows credentials); never pass JSON or message text through `cmd.exe` |
+| The Feishu Source is refused on a Windows host | Not supported there yet; run the Feishu Source on a POSIX host (WP6 of the Windows plan) |
 | `git does not read the credential configuration dsh-superagent writes` | Install git 2.32 or later |
 | A Ticket fails with `The git configuration of the repository in … sets …` | Remove the named credential or `http.*.extraheader` settings from the clone's `.git/config` |
 | `… was not written by dsh-superagent` | Move the named file out of `<stateDir>/worker-bin` or `<stateDir>/worker-gitconfig`, or choose another `stateDir` |

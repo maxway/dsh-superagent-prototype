@@ -11,6 +11,7 @@
 - **本项目的主机需要。** worker 必须运行项目仅 Windows 的工具链，因此 agent 主机必须是 Windows。本方案只移植部署本身；项目自己的构建和冒烟工作不在范围内。
 - **工期：** 一个可用的内部版本约需 9-13 人日：一名开发者 2-2.5 周，包含概念验证和端到端验证，不含飞书，也不含 Windows CI runner。
 - **完整对齐**——飞书、Windows CI、双语的安装文档，以及让两个平台都持续被测试的加固——约需 12-18 人日，即一名开发者 3-4 周。
+- **状态（2026-11-06）：** 阶段 1-3 已实现并在 Linux 上测试；阶段 4 补上双语的安装与部署文档。概念验证、Windows runner 和端到端运行都还没有做，因此 Windows 仍是实验性的，飞书来源在 Windows 上不受支持。
 - **建议：** 移植部署；先做 1-2 天的概念验证，然后按下面的分阶段计划执行。项目自己的工具链工作另行处理。
 
 ## “在 Windows 上部署”意味着什么
@@ -38,11 +39,11 @@ DSH 已经能在 Windows 上运行，并把 Windows 当作一等平台：
 
 ### dsh-superagent
 
-bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`cordis.patch.yml`），因此 Windows 上的 worker 会拿到 PowerShell 工具。运行时和部署层没有跟上。
+bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`cordis.patch.yml`），因此 Windows 上的 worker 会拿到 PowerShell 工具。写这份方案时，运行时和部署层还没有跟上。
 
 | 领域 | 当前实现 | 原生 Windows 状态 |
 | --- | --- | --- |
-| 服务控制 | `scripts/dsh-superagent` 使用 Python 3、tmux、`ps`、`fcntl.flock`、`os.kill(SIGINT)` 和 `umask` | 无法运行；没有可移植的优雅停止 |
+| 服务控制 | `scripts/dsh-superagent` 是 Node 脚本：POSIX 上用 tmux 和 `ps`，Windows 上用分离进程和管理停止路由 | 两个平台都能运行；Windows 没有 `SIGINT`，停止走 `POST /orchestrator/api/service/stop` |
 | worker 命令 shim | `worker-bin` 中无扩展名的 `#!/bin/sh` 文件，被加到 `PATH` 前面 | PowerShell 和 `CreateProcess` 不会执行它们；账号选择与 blocked commands 失效 |
 | CLI 包装与探测 | Shell 脚本包装；setup 用 `env PATH=... <cli>` 探测；`execFile` 和 `spawn` 直接调用 CLI | Windows 没有 `env`；`execFile` 不能运行 `.cmd`；npm 安装的 `lark-cli` 是 `.cmd` |
 | 准备命令 | 固定 `sh -c <command>` | 默认没有 `sh`；文档中的命令使用 POSIX 变量 |
@@ -51,7 +52,17 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 | 安装与文档 | `~/.local/bin`、`cat > ... <<'EOF'`、tmux、Python、`$HOME` | 需要 Windows 等价写法 |
 | 测试与 CI | POSIX fixture、shell、以 `:` 分隔的 PATH；没有 Windows job | 预计 `pnpm check` 在 Windows 上不能通过 |
 
-[006 部署](006-deployment.md) 只记录了 POSIX 路径，因此即使手工在 Windows 上启动服务，setup 也会在轮询之前失败。
+[006 部署](006-deployment.md) 在写这份方案时只记录了 POSIX 路径，因此即使手工在 Windows 上启动服务，setup 也会在轮询之前失败。阶段 4 补上了 Windows 指引；下面的状态记录还缺什么。
+
+### 实现状态（2026-11-06）
+
+上表是这份方案开始时所做的评估。阶段 1-4 此后已处理这些缺口：
+
+- **阶段 1。** `scripts/dsh-superagent` 是 Node 脚本。POSIX 保留 tmux 和 `SIGINT`；Windows 启动分离进程，并通过 `POST /orchestrator/api/service/stop` 停止。POSIX 路径通过了真实的启停测试；Windows 路径只有单元测试。
+- **阶段 2。** worker 命令层解析 `PATHEXT`，只为被禁止和未启用的命令生成 `.cmd` 护栏，并用 `GH_CONFIG_DIR`、`GLAB_CONFIG_DIR` 和 `LARKSUITE_CLI_CONFIG_DIR` 选择智能体账号；探测和 git 凭据都走原生 argv。
+- **阶段 3。** 准备命令在 POSIX 上走 `sh -c`，在 Windows 上走 `pwsh -NoProfile -NonInteractive -Command`；路由 Session 接受 `pwsh`；提示词和技能已不依赖具体 shell。
+- **阶段 4。** 本次文档改动补上两种语言的 Windows 安装与部署路径。
+- **未完成。** 阶段 0 的概念验证、运行 `pnpm check` 的 Windows runner，以及阶段 5 的端到端运行。飞书来源在 Windows 上仍不受支持（WP6）。因此 Windows 仍是实验性的；在阶段 5 通过之前，不要称它受支持。
 
 ## 有没有必要？
 

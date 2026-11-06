@@ -6,6 +6,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 
 let root: string
@@ -27,6 +28,8 @@ const started = (...lines: string[]) => writeFileSync(join(root, 'ps-started.txt
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'service script '))
   mkdirSync(join(root, 'scripts')); mkdirSync(join(root, 'bin'))
+  // The copied script is an ES module; give its temporary checkout the same package type as the repository.
+  writeFileSync(join(root, 'package.json'), '{ "type": "module" }\n')
   copyFileSync(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent'), join(root, 'scripts', 'dsh-superagent'))
   processes()
   program('ps', `list='${root}/ps.txt'; [ -f '${root}/launched' ] && [ -f '${root}/ps-started.txt' ] && list='${root}/ps-started.txt'
@@ -48,7 +51,7 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true })
 })
 function runWithEnvironment(environment: NodeJS.ProcessEnv, ...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise(resolve => execFile('python3', [join(root, 'scripts', 'dsh-superagent'), ...args],
+  return new Promise(resolve => execFile(process.execPath, [join(root, 'scripts', 'dsh-superagent'), ...args],
     { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '', ...environment },
       timeout: 20_000 },
     (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr })))
@@ -221,18 +224,31 @@ it('restarts the service, and a restart whose graceful stop timed out does not k
   expect(await status('superagent')).toMatchObject({ manually_stopped: false })
 }, 20_000)
 it('refuses a second control operation while one holds the profile\'s lock', async () => {
-  mkdirSync(control('superagent'), { recursive: true })
-  const held = join(root, 'held')
-  const holder = spawn('python3', ['-c', `import fcntl, pathlib, time
-lock = open(${JSON.stringify(join(control('superagent'), 'operation.lock'))}, 'a')
-fcntl.flock(lock, fcntl.LOCK_EX)
-pathlib.Path(${JSON.stringify(held)}).touch()
-time.sleep(30)`], { stdio: 'ignore' })
-  sleepers.push(holder)
-  while (!existsSync(held)) await new Promise(resolve => setTimeout(resolve, 50))
+  mkdirSync(join(control('superagent'), 'operation.lock'), { recursive: true })
   expect(await run('status')).toMatchObject({ code: 1,
     stderr: expect.stringContaining('Another dsh-superagent control operation is in progress') })
 }, 20_000)
+it('exposes the platform-specific process, start and argument forms', async () => {
+  const module = pathToFileURL(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')).href
+  const script = `import(${JSON.stringify(module)}).then(m => console.log(JSON.stringify({
+    ps: m.parsePs('  123 node node /opt/my tools/dsh --profile superagent --no-open\\n'),
+    windows: m.parseWindowsProcesses(JSON.stringify([{ ProcessId: 7, Name: 'node.exe', CommandLine: 'node /opt/dsh --profile superagent --no-open' },
+      { ProcessId: 8, Name: 'other.exe', CommandLine: 'node /opt/dsh --profile superagent' }])),
+    start: m.windowsStart('C:\\\\Program Files\\\\dsh.cmd', 'superagent'),
+    socket: m.tmuxSocket('superagent'),
+    command: m.tmuxCommand('/opt/dsh', 'superagent', '/tmp/log file.log', { DSH_HOME: '/tmp/home', PATH: '/usr/bin', HOME: undefined, TMUX: '/tmp/x,1,0' }),
+    argv: m.parseArgv(['--respect-stop', 'start', '--profile', 'one', '--timeout', '5'])
+  })))`
+  const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
+    (error, stdout) => error ? reject(error) : resolve(stdout)))
+  const value = JSON.parse(out) as { ps: unknown[]; windows: unknown[]; start: unknown; socket: string; command: string; argv: Record<string, unknown> }
+  expect(value.ps).toEqual([{ pid: 123, name: 'node', args: ['node', '/opt/my', 'tools/dsh', '--profile', 'superagent', '--no-open'] }])
+  expect(value.windows).toEqual([{ pid: 7, name: 'node', args: ['node', '/opt/dsh', '--profile', 'superagent', '--no-open'] }])
+  expect(value.start).toEqual({ file: '"C:\\Program Files\\dsh.cmd"', args: ['--profile', 'superagent', '--no-open'], shell: true })
+  expect(value.socket).toBe('dsh-superagent-f063ff9f0c5ba70eeebc')
+  expect(value.command).toBe("umask 077; export DSH_HOME=/tmp/home; unset HOME; export PATH=/usr/bin; unset TMUX TMUX_PANE; exec /opt/dsh --profile superagent --no-open >> '/tmp/log file.log' 2>&1")
+  expect(value.argv).toMatchObject({ action: 'start', profile: 'one', timeout: 5, respect_stop: true })
+})
 it('refuses to start a service while no process runs it but something answers at its URL', async () => {
   const url = await answering(READY, true)
   expect(await run('start', '--url', url, '--timeout', '5'))

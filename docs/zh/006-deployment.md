@@ -12,21 +12,24 @@
 
 插件配置保存状态目录和本机上限。其他一切都用面板：仓库和账号在来源中设置，允许名单在策略中设置，执行器（worker）目录和命令在执行中设置。
 
+Windows 主机目前是实验性的。服务控制、worker 命令层、准备命令和路由工具的 Windows 路径已经实现，并只在 Linux 上做了单元测试；还没有 Windows runner 或端到端运行验证过它们（Windows 部署计划的阶段 5）。Windows 主机支持 Git 来源，但暂不支持飞书来源。在 Windows 上，worker 和路由 Session 使用 `pwsh` 工具而不是 `bash`，准备命令也通过 PowerShell 7 运行。下面某一步在 Windows 上不同时，会给出它的 Windows 写法。
+
 ### 权限与隔离
 
 bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 `dsh-superagent-router`。它们出现在 DeepSeek Harness 的预设列表中，但只供 dsh-superagent 使用。不要为个人 Session 选择它们，也不要禁用它们的配置行。应用需要它们来创建和恢复自己的 Session。
 
 在 Web UI 中打开一个空白的托管 Session 时，可能会选中该 profile 的默认预设。dsh-superagent 会在第一轮之前恢复其角色专用预设。
 
-两个预设都以运营者的操作系统用户身份、以 `danger-full-access` 运行，并读取已订阅线程中的消息。账号包装器默认选择智能体的凭据；它们不隔离进程。执行器可以按路径执行程序，并读取运营者的主目录。若要隔离，请使用一个只包含智能体凭据的专用操作系统账号。
+两个预设都以运营者的操作系统用户身份、以 `danger-full-access` 运行，并读取已订阅线程中的消息。账号包装器默认选择智能体的凭据；它们不隔离进程。执行器可以按路径执行程序，并读取运营者的主目录。若要隔离，请使用一个只包含智能体凭据的专用操作系统账号。Windows 上同样如此，而且没有操作系统沙箱：`.cmd` shim 只是拦截命令，因此请为服务使用一个只持有智能体凭据和仓库访问权限的专用 Windows 账号。Windows 路径尚未完成端到端验证。
 
 ## 前置条件
 
-- Node.js 22.19+ 或 24+、pnpm、git 2.32+、Python 3.8+ 和 tmux
-- 使用 GitHub 部署时，GitHub CLI（`gh`）2.48 或更高版本；使用 GitLab 部署时，GitLab CLI（`glab`）。来源的 CLI 字段必须指向 `gh`、`glab` 或 `lark-cli` 的包装脚本；宿主依赖它们的子命令和输出格式。
+- Node.js 22.19+ 或 24+、pnpm 和 git 2.32+（Windows 主机用 Git for Windows）。POSIX 上还需要 tmux；Windows 上需要 PowerShell 7（`pwsh`），不需要 tmux 或 Python。
+- 使用 GitHub 部署时，GitHub CLI（`gh`）2.48 或更高版本；使用 GitLab 部署时，GitLab CLI（`glab`）。来源的 CLI 字段必须指向智能体 CLI 的命令名或绝对路径（`gh`、`glab` 或 `lark-cli`；POSIX 上通常是包装脚本）；宿主依赖它们的子命令和输出格式。
+- **Windows 主机：** 使用原生的 `gh.exe` 或 `glab.exe`，按下文 Windows 凭据一节以智能体账号登录。不要使用 `.cmd` 包装脚本。
 - github.com 上的一个仓库，或 gitlab.com / 自建实例上的一个 GitLab 项目；不支持 GitHub Enterprise Server。要为每个工单创建检出，请保留一个本地克隆，让准备命令能从其中添加工作树。如果该仓库使用 Git LFS，请安装 `git-lfs`。
 - 为 DeepSeek Harness 配置的模型服务商。dsh-superagent 使用该 profile 的默认模型，除非评估或执行设置指定了另一个。
-- 使用飞书时：`lark-cli`（已用 1.0.90 测试），以及一个带机器人的飞书或 Lark 应用
+- 使用飞书时：`lark-cli`（已用 1.0.90 测试），以及一个带机器人的飞书或 Lark 应用。飞书目前只在 POSIX 上运行。
 
 ## 账号
 
@@ -46,7 +49,7 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
    gh-agent api user --jq .login
    ```
 
-   以智能体账号登录；最后一条命令会打印其登录名。dsh-superagent 也以同样的方式读取登录名。
+   以智能体账号登录；最后一条命令会打印其登录名。dsh-superagent 也以同样的方式读取登录名。Windows 上请改用原生 CLI 和它的配置目录，见下面的 Windows 凭据。
 
 ### 智能体 GitLab 账号（GitLab 部署）
 
@@ -64,13 +67,35 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
    glab-agent api user
    ```
 
-   这里要写自建实例的 host，不是 `gitlab.com`；来源里的 GitLab 地址必须使用同一 host 和协议：HTTPS 写 `https://gitlab.example.com`，HTTP 写 `http://gitlab.example.com`，worker 的 git credential helper 会按这个协议配置。`glab auth git-credential` 需要 glab 1.36 或更新版本；可用 `glab-agent auth git-credential --help` 检查，命令不存在就升级 glab。实例使用私有 CA 时，让 glab 和 worker 的 git 都信任它（git 可在服务环境里设置 `GIT_SSL_CAINFO`，或把 CA 装进操作系统信任库）。
+   这里要写自建实例的 host，不是 `gitlab.com`；来源里的 GitLab 地址必须使用同一 host 和协议：HTTPS 写 `https://gitlab.example.com`，HTTP 写 `http://gitlab.example.com`，worker 的 git credential helper 会按这个协议配置。`glab auth git-credential` 需要 glab 1.36 或更新版本；可用 `glab-agent auth git-credential --help` 检查，命令不存在就升级 glab。实例使用私有 CA 时，让 glab 和 worker 的 git 都信任它（git 可在服务环境里设置 `GIT_SSL_CAINFO`，或把 CA 装进操作系统信任库）。Windows 上请改用原生 CLI 和它的配置目录，见下面的 Windows 凭据。
 
 3. 一个部署只有一个生效的 Git 来源。在 profile 的 `cordis.patch.yml` 中启用 `dsh-superagent-gitlab` 并禁用 `dsh-superagent-github`；两者只能启用一个。在 **来源** 中设置 GitLab 地址、项目（`group/project`）和包装脚本路径。
 
 从一个 Git 宿主切换到另一个时，旧宿主上已有的工单会保留：请先完成或停止它们。状态目录会保留两个宿主的记录，切回时可以继续使用。
 
+### Windows 凭据
+
+Windows 主机用配置目录而不是包装脚本来选择智能体账号。不要为 `gh` 或 `glab` 写 `.cmd` 包装脚本：它会把每个参数都经由 `cmd.exe` 转发，破坏 JSON 和消息文本。用配置目录以智能体账号登录原生 CLI，然后把同一个目录填进来源的 **智能体账号的配置目录** 高级字段；留空则使用下文所示的默认目录。把来源的 `cli` 字段设为原生可执行文件 `gh` 或 `glab`，不要指向 `.cmd` 包装脚本。插件和它的 worker 会继承这个目录，因此二者使用同一个账号。
+
+GitHub：
+
+```powershell
+$env:GH_CONFIG_DIR = "$env:USERPROFILE\.config\gh-agent"
+gh auth login
+gh api user --jq .login
+```
+
+GitLab：
+
+```powershell
+$env:GLAB_CONFIG_DIR = "$env:USERPROFILE\.config\glab-agent"
+glab auth login --hostname gitlab.example.com
+glab api user
+```
+
 ### 飞书机器人（可选）
+
+Windows 主机暂不支持飞书来源：npm 安装的 `lark-cli` 是 `.cmd` 启动器，把消息文本交给 `cmd.exe` 不安全（Windows 部署计划的 WP6）。请在 POSIX 主机上运行飞书。
 
 1. 创建一个带机器人能力的自建应用。授予它接收消息事件和以机器人身份发送消息的权限，然后发布应用版本。它不需要读取消息、聊天历史、群或群成员的权限：来源只使用事件携带的内容并回复。被移除的读取路径会调用需要 `im:message`、`im:message:readonly`、`im:message.history:readonly`（消息）以及 `im:chat`、`im:chat:readonly`、`im:chat.group_info:readonly`、`im:chat:read`、`im:chat.members:read`（群和成员）的接口；当前版本不再调用它们。因此它无法补收 dsh-superagent 离线期间的消息，无法按 ID 读取消息或话题，无法列出群或同步成员，也无法读取图片。群 chat_id 和允许名单需要手工填写。为群选择**全部消息**还需要飞书“接收群内全部消息”的权限；没有该权限时只会收到 @ 机器人的消息。
 2. 给机器人一份自己的 `lark-cli` 配置，限制为机器人身份，并提供一个包装脚本：
@@ -108,15 +133,17 @@ dsh plugin --profile superagent add "link:$PWD"
 
 第四条命令从 DeepSeek Harness Web 模板创建 `~/.dsh/profiles/superagent`。第五条安装这个 bundle。设置 `DSH_HOME` 可以改变默认的 `~/.dsh` 目录位置。
 
+Windows 上用 PowerShell 运行同一段内容，把 `> /dev/null` 换成 `> $null`；`$PWD` 是检出的原生路径，因此安装的链接形如 `link:C:\...\dsh-superagent`。`dsh` 是 npm 的 `.cmd` shim，除非用 `DSH_HOME` 改变位置，profile 位于 `%USERPROFILE%\.dsh\profiles\superagent`。
+
 只在全新安装时运行创建 profile 的命令。如果 profile 已存在，该命令会替换它并删除它的 `cordis.patch.yml`，包括本机配置。不要用它来升级。
 
 ## 本机配置
 
-把 [examples/profile.cordis.patch.yml](../../examples/profile.cordis.patch.yml) 复制到 `~/.dsh/profiles/superagent/cordis.patch.yml`，替换该文件，并替换每一个 `<placeholder>`。使用飞书时，还要在那里启用 `dsh-superagent-feishu` 条目。`webserver` 条目设置面板的端口。
+把 [examples/profile.cordis.patch.yml](../../examples/profile.cordis.patch.yml) 复制到 `~/.dsh/profiles/superagent/cordis.patch.yml`，替换该文件，并替换每一个 `<placeholder>`。Windows 上该文件位于 `%USERPROFILE%\.dsh\profiles\superagent\cordis.patch.yml`。使用飞书时，还要在那里启用 `dsh-superagent-feishu` 条目。`webserver` 条目设置面板的端口。
 
 | 键 | 是否必需 | 含义 |
 | --- | --- | --- |
-| `stateDir` | 是 | 绝对路径：数据库、锁、`worker-bin` 中的命令 shim、智能体的 git 配置，以及默认情况下 `work` 中的工单目录。升级前备份它 |
+| `stateDir` | 是 | 原生绝对路径：数据库、锁、`worker-bin` 中的命令 shim、智能体的 git 配置，以及默认情况下 `work` 中的工单目录。POSIX 上例如 `/home/me/.dsh/state/superagent`；Windows 上例如 `C:\Users\me\.dsh\state\superagent`。WSL 路径对 Windows 主机不是原生路径。升级前备份它 |
 | `promptMaxChars`、`admissionContextMaxPages`、`admissionContextTimeoutMs` | 否 | 保存的提示词配置的最大大小，以及一次研判读取多少线程页、在多久内读完 |
 
 首次启动后，在 **设置 → 部署** 或 DeepSeek Harness 插件管理器中修改本机上限。改动无需重启即可生效。`stateDir` 不能在那里修改。无效的值或未知的配置键会阻止启动；日志会指出是哪个键。
@@ -128,11 +155,21 @@ scripts/dsh-superagent start
 scripts/dsh-superagent status
 ```
 
+Windows 上通过 Node 运行同一个脚本，因为该文件没有 `.cmd` shim：
+
+```powershell
+node scripts\dsh-superagent start
+node scripts\dsh-superagent status
+node scripts\dsh-superagent stop
+```
+
 `start` 在 tmux 会话 `dsh-superagent` 中运行 `dsh --profile superagent`；其他 profile 则使用 `dsh-<profile>`。它最多等待一分钟，让运行时变为就绪或报告安装配置要求。首次运行时，它会打印缺失的安装配置信息。它会拒绝重复的实例，包括从这个脚本之外启动的实例。每个 profile 使用独立命名的 tmux socket。pane 使用调用者的 `DSH_HOME`、`HOME` 和 `PATH`（包括未设置的情况），并在启动 DSH 前清除 `TMUX` 与 `TMUX_PANE`，避免 worker 继承服务 socket。仅设置 `TMUX_TMPDIR` 不能覆盖继承的 `TMUX`；这些措施只是护栏，不是操作系统安全边界。
 
-`stop` 和 `restart` 请求优雅 drain，并最多等待进程五分钟退出。执行器 drain 的上限是十秒，DSH 启动器再加五秒宽限，因此停止通常约十五秒完成；drain 之后仍在回合中的 worker 可能被打断。它们绝不会强制杀死进程，也不会碰其他 tmux 会话。
+Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以分离进程启动 `dsh --profile <profile> --no-open`，日志和控制文件与 POSIX 相同，并等待管理 API；它不使用 tmux。`status` 通过 Windows PowerShell（`powershell.exe`，Windows 自带）列出进程。`stop` 通过 `POST /orchestrator/api/service/stop` 让 DSH 退出，而不是发送信号；它最多等待五分钟，绝不会强制杀死进程。上面的 tmux socket 与 `TMUX` 细节只适用于 POSIX。两种平台使用相同的退出码、日志名和 `manually-stopped` 标记。
 
-`status` 打印进程 id、健康状况和安装配置问题。要使用其他 profile 或端口，请用 `--profile` 和 `--url`，或设置 `DSH_SUPERAGENT_PROFILE` 和 `DSH_SUPERAGENT_URL`。
+`stop` 和 `restart` 请求优雅 drain，并最多等待进程五分钟退出。执行器 drain 的上限是十秒，DSH 启动器再加五秒宽限，因此停止通常约十五秒完成；drain 之后仍在回合中的 worker 可能被打断。POSIX 上它们绝不会强制杀死进程，也不会碰其他 tmux 会话。
+
+`status` 打印进程 id、健康状况和安装配置问题。要使用其他 profile 或端口，请用 `--profile` 和 `--url`，或设置 `DSH_SUPERAGENT_PROFILE` 和 `DSH_SUPERAGENT_URL`；PowerShell 中设置 `$env:DSH_SUPERAGENT_PROFILE` 和 `$env:DSH_SUPERAGENT_URL`。
 
 `status`、`start` 和 `restart` 会以四种退出码之一退出：
 
@@ -162,13 +199,13 @@ scripts/dsh-superagent status
 Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest .artifacts/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
 ```
 
-`--respect-stop` 保留有意的停止。只有 `stop` 写入标记；`start` 清除它。`restart` 不写标记，因此该检查可以恢复一次关闭超时的重启。
+`--respect-stop` 保留有意的停止。只有 `stop` 写入标记；`start` 清除它。`restart` 不写标记，因此该检查可以恢复一次关闭超时的重启。Windows 上使用同一段提示词，把命令换成 `node scripts\dsh-superagent ...`。
 
 ## 设置
 
 安装配置必须成功，轮询或工作才会开始。概览会列出缺失的要求，并链接到对应的设置。更改设置会再次运行安装配置。如果你在应用之外修复了某些东西，例如 CLI 登录，请选择 **重新检查**。
 
-1. **来源。** 只启用一个 Git 来源。GitHub 部署设置仓库（`owner/name`）和智能体 CLI，例如 `/home/me/.local/bin/gh-agent`；请求通常通过智能体账号的通知到达，提到该账号的新 Issue 或评论会在下一次轮询时到达，通过编辑已有 Issue 正文来添加提及则不会，请改为发表新评论。GitLab 部署启用 GitLab 来源、禁用 GitHub 来源，并设置 GitLab 地址、项目和智能体 CLI（例如 `/home/me/.local/bin/glab-agent`）；它从启用时开始扫描项目里的 Issue、合并请求、note 和流水线变化。使用飞书时，设置机器人 CLI、群、每个群的接收全部消息或仅提及模式，以及是否接收私信。
+1. **来源。** 只启用一个 Git 来源。GitHub 部署设置仓库（`owner/name`）和智能体 CLI，例如 `/home/me/.local/bin/gh-agent`；请求通常通过智能体账号的通知到达，提到该账号的新 Issue 或评论会在下一次轮询时到达，通过编辑已有 Issue 正文来添加提及则不会，请改为发表新评论。GitLab 部署启用 GitLab 来源、禁用 GitHub 来源，并设置 GitLab 地址、项目和智能体 CLI（例如 `/home/me/.local/bin/glab-agent`）；它从启用时开始扫描项目里的 Issue、合并请求、note 和流水线变化。使用飞书时，设置机器人 CLI、群、每个群的接收全部消息或仅提及模式，以及是否接收私信。Windows 上把 CLI 设为原生 `gh` 或 `glab`，并设置高级的配置目录字段而不是包装脚本路径；见上面的 Windows 凭据。
 2. **策略。** 两条示例规则可以编辑或删除。在 **在各来源上** 下，添加可以请求工作的 GitHub 或 GitLab 账号以及飞书用户；在名单里有人之前，任何请求都不能成为工单。使用飞书时，可以选择一个群来同步名单，在启动时和 **立即同步** 时进行。
 3. **执行。** 目录根路径和一个准备命令。要让每个工单都有一份仓库检出，GitHub 部署使用：
 
@@ -184,7 +221,21 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
    git -C /home/me/src/widgets worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
    ```
 
-   Windows 上用 PowerShell 7（`pwsh`）而不是 `sh` 运行准备命令；执行环境的变量写作 `$env:DSH_SUPERAGENT_DIR`、`$env:DSH_SUPERAGENT_NAME` 等，上面的示例需要改写成 PowerShell 语法。
+   Windows 上用 PowerShell 7（`pwsh`）而不是 `sh` 运行准备命令，变量写作 `$env:DSH_SUPERAGENT_DIR`、`$env:DSH_SUPERAGENT_NAME` 等。GitHub 部署、克隆位于 `C:\src\widgets` 时：
+
+   ```powershell
+   $head = if ($env:DSH_SUPERAGENT_GITHUB_PR_HEAD) { $env:DSH_SUPERAGENT_GITHUB_PR_HEAD } else { "HEAD" }
+   git -C C:\src\widgets fetch --no-tags "https://github.com/$($env:DSH_SUPERAGENT_GITHUB_REPOSITORY).git" "${head}:refs/dsh-superagent/$($env:DSH_SUPERAGENT_TICKET)"
+   git -C C:\src\widgets worktree add -b "agent/$($env:DSH_SUPERAGENT_NAME)" "$($env:DSH_SUPERAGENT_DIR)" "refs/dsh-superagent/$($env:DSH_SUPERAGENT_TICKET)"
+   ```
+
+   GitLab 部署把仓库和 head 变量换成 GitLab 的对应变量：
+
+   ```powershell
+   $head = if ($env:DSH_SUPERAGENT_GITLAB_MR_HEAD) { $env:DSH_SUPERAGENT_GITLAB_MR_HEAD } else { "HEAD" }
+   git -C C:\src\widgets fetch --no-tags "$($env:DSH_SUPERAGENT_GITLAB_HOST)/$($env:DSH_SUPERAGENT_GITLAB_PROJECT).git" "${head}:refs/dsh-superagent/$($env:DSH_SUPERAGENT_TICKET)"
+   git -C C:\src\widgets worktree add -b "agent/$($env:DSH_SUPERAGENT_NAME)" "$($env:DSH_SUPERAGENT_DIR)" "refs/dsh-superagent/$($env:DSH_SUPERAGENT_TICKET)"
+   ```
 
    把个人 CLI（例如登录你自己账号的 CLI）列为禁止调用的命令。
 4. **提示词。** 设置团队段落：GitHub 声明行、评审机器人、提交作者和自动合并条件。
@@ -233,7 +284,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 这些块：
 
-- `source:github`、`source:feishu`：`{"enabled": true, "config": {…}}`。GitHub 的配置有 `repository` 和 `cli`，以及开关 `observeIssues`、`observePulls`、`observeComments` 和 `observeCi`，默认关闭，它们接收仓库中每个新 Issue、新 pull request 和评论，以及默认分支的 CI；飞书的配置有 `cli`、`chats`（形如 `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]`，或 `"all"`）、`directMessages`，以及 `otherChats`（`"none"` 或 `"mentions"`）。
+- `source:github`、`source:gitlab`、`source:feishu`：`{"enabled": true, "config": {…}}`。GitHub 的配置有 `repository`、`cli` 和高级的 `configDir`（即选择智能体账号的 `GH_CONFIG_DIR`），以及开关 `observeIssues`、`observePulls`、`observeComments` 和 `observeCi`，默认关闭，它们接收仓库中每个新 Issue、新 pull request 和评论，以及默认分支的 CI。GitLab 的配置有 `host`、写作 `group/project` 的 `repository`、`cli`、`configDir`（`GLAB_CONFIG_DIR`）、`pollSeconds`、`failuresBeforeError` 和同样的 observe 开关。飞书的配置有 `cli`、`configDir`（`LARKSUITE_CLI_CONFIG_DIR`）、`chats`（形如 `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]`，或 `"all"`）、`directMessages`，以及 `otherChats`（`"none"` 或 `"mentions"`）。
 - `policy`：`{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`。`bots` 列出其消息可以成为推断候选的机器人。`admission` 行以群 id 为键；飞书还用 `other` 或 `direct`，GitHub 用 `issues`、`pulls`、`comments` 或 `ci`；未设置的单元格取默认值（见 [002 授权机制](002-authorization.md)）。
 - `eval`：`mode`、`timeoutSeconds` 和 `model`。
 - `executor`：`model`、`maxWorkers`、`offPeak`、`directory`、`prepare` 和 `blockedCommands`。`offPeak` 默认是 `{"enabled": false, "start": "22:00", "end": "08:00", "timezone": "Asia/Shanghai"}`：Superagent 判断为复杂且不紧急的工单只在该每日窗口内启动新的派工（见 [003 执行](003-execution.md)）。阿里云百炼的 DeepSeek 按北京时间 22:00 至次日 08:00 的闲时价计费，忙时为 08:00 至 22:00（[计费说明](https://help.aliyun.com/zh/model-studio/billing-for-model-studio)），默认值与该时段一致。处理暂停是一个单独的设置 `paused`，由 `POST executor/pause` 设置。
@@ -247,6 +298,8 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
   -d "{\"value\": {\"enabled\": true, \"config\": {\"repository\": \"acme/widgets\", \"cli\": \"$HOME/.local/bin/gh-agent\"}}, \"revision\": $rev}"
 ```
 
+Windows 上使用当前 Windows 版本自带的 `curl.exe`，把 `cli` 设为 `gh` 或 `glab`，并把账号目录写成 `configDir`，例如 `"configDir": "C:\\Users\\me\\.config\\gh-agent"`。
+
 ## 安装配置检查
 
 安装配置使用 DeepSeek Harness 的子进程服务，和执行器的 shell 一样。它会移除名称包含 KEY、PASSWORD、SECRET 或 TOKEN 的环境变量。
@@ -255,7 +308,7 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 安装配置写入的进程环境：
 
-- **命令 shim** 位于 `<stateDir>/worker-bin`，在 `PATH` 中排在最前：`gh` 运行智能体的 CLI；`lark-cli` 运行机器人的 CLI；被禁止的命令会失败。shim 在运行目标之前会把自身目录从 `PATH` 中移除。
+- **命令 shim** 位于 `<stateDir>/worker-bin`，在 `PATH` 中排在最前。POSIX 上，`gh` 运行智能体的 CLI，`lark-cli` 运行机器人的 CLI，被禁止的命令会失败；shim 在运行目标之前会把自身目录从 `PATH` 中移除。Windows 上只有被禁止和未启用的命令会生成 `.cmd` shim（未启用的 Git 宿主对应 shim 会失败）；启用的 CLI 由 `GH_CONFIG_DIR`、`GLAB_CONFIG_DIR` 和 `LARKSUITE_CLI_CONFIG_DIR` 选择原生可执行文件运行，参数不会经过 `cmd.exe`。
 - **git 配置**位于 `<stateDir>/worker-gitconfig`：替换运营者的全局和系统 git 配置。它选择智能体 CLI 作为当前宿主的凭据助手，把该宿主的 SSH 地址改写为 HTTPS，并定义 Git LFS 过滤器。个人 git 设置（例如 HTTP 代理）不生效。这里不设置提交身份，git 绝不会提示输入凭据，`GH_TOKEN`、`GITHUB_TOKEN`、`GLAB_TOKEN` 和 `GITLAB_TOKEN` 会被移除。
 
 `worker-bin` 或 `worker-gitconfig` 中不是 dsh-superagent 写入的文件会阻止安装配置。如果工单目录位于一个自身配置添加了凭据的 git 仓库中，该工单会失败。
@@ -274,6 +327,8 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 2. 备份 `<stateDir>/orchestrator.sqlite`。
 3. 运行 `git pull && pnpm install && pnpm build`。
 4. 运行 `scripts/dsh-superagent restart` 并检查其状态。
+
+Windows 上用 PowerShell 执行同样的步骤；PowerShell 7 支持 `&&`，服务命令是 `node scripts\dsh-superagent restart`。
 
 重启会结束正在运行的派工，并带恢复说明启动替代的派工。团队文本和被覆盖的提示词段落会保留；没有覆盖的段落跟随新的默认内容。升级后检查标记为 **默认内容已更新** 的段落。
 
@@ -295,6 +350,11 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 | `@… cannot read …` 或 `@… cannot push to …` | 给智能体账号授予仓库写权限 |
 | `The GitHub Source names no repository.` | 在 GitHub 卡片上设置仓库，`owner/name` |
 | 工单失败并报 `The prepare command failed: …` | 输出会指出原因，例如错误的克隆路径；修正命令，然后重试该工单 |
+| 找不到 `pwsh`，或准备命令报 PowerShell 错误 | 安装 PowerShell 7 并把 `pwsh` 放到 `PATH` 上；准备命令不使用 Windows PowerShell 5.1 |
+| Windows 上启动时报 `dsh must be on PATH.` | 全局安装 DSH 并打开新的 shell；`start` 会解析 npm 的 `dsh.cmd` |
+| PowerShell 或 `cmd.exe` 无法运行 `scripts\dsh-superagent` | 该脚本在 Windows 上没有 `.cmd` shim；请运行 `node scripts\dsh-superagent <command>` |
+| `gh` 或 `glab` 的 `.cmd` 包装脚本丢失或破坏参数 | 使用原生 `gh.exe` 或 `glab.exe` 及其配置目录（见 Windows 凭据）；绝不要让 JSON 或消息文本经过 `cmd.exe` |
+| Windows 主机上飞书来源被拒绝 | 暂不支持；请在 POSIX 主机上运行飞书来源（Windows 计划的 WP6） |
 | `git does not read the credential configuration dsh-superagent writes` | 安装 git 2.32 或更高版本 |
 | 工单失败并报 `The git configuration of the repository in … sets …` | 从克隆的 `.git/config` 中移除所指的凭据或 `http.*.extraheader` 设置 |
 | `… was not written by dsh-superagent` | 把所指的文件移出 `<stateDir>/worker-bin` 或 `<stateDir>/worker-gitconfig`，或选择另一个 `stateDir` |
