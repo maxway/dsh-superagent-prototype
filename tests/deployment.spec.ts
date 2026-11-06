@@ -4,9 +4,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, resolveGitlabDeployment, type Machine, type Probe } from '../src/deployment.ts'
+import { Config, FeishuBotSchema, GithubAccountsSchema, GitlabAccountsSchema, executable, machineOf, resolveDeployment, resolveFeishuBot,
+  resolveGitlabDeployment, type Machine, type Probe } from '../src/deployment.ts'
 import { gitProvider, setupChanged, sourceSwitched } from '../src/app/setup.ts'
 import { SettingsSchema } from '../src/policy.ts'
+import { testConfigDirs } from './fixtures/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 const exec = promisify(execFile)
@@ -63,8 +65,8 @@ describe('setup', () => {
     const deployment = await resolveDeployment(machine(), { repository: 'acme/widgets', cli: 'gh' }, probe, path)
     expect(deployment).toMatchObject({ repository: 'acme/widgets', git: { provider: 'github', host: 'github.com', cli: join(dir, 'bin', 'gh'),
       login: 'Agent-Bot', commitEmail: '7+Agent-Bot@users.noreply.github.com' } })
-    expect(deployment.git).toEqual({ provider: 'github', host: 'github.com', cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot',
-      commitEmail: '7+Agent-Bot@users.noreply.github.com' })
+    expect(deployment.git).toEqual({ provider: 'github', host: 'github.com', cli: join(dir, 'bin', 'gh'), configDir: testConfigDirs.gh,
+      login: 'Agent-Bot', commitEmail: '7+Agent-Bot@users.noreply.github.com' })
     expect(deployment).not.toHaveProperty('feishu')
     // A renamed repository is still resolved by its old name; notifications carry GitHub's current full_name.
     expect((await resolveDeployment(machine(), { repository: 'acme/gadgets', cli: 'gh' }, probe, path)).repository).toBe('acme/widgets')
@@ -89,7 +91,8 @@ describe('setup', () => {
   })
   it('reads the Feishu bot from a bot-only lark-cli, or finds none when the Feishu Source names no CLI', async () => {
     expect(await resolveFeishuBot(machine(), {}, probe, path)).toBeUndefined()
-    expect(await resolveFeishuBot(machine(), { cli: 'lark-cli' }, probe, path)).toEqual({ cli: join(dir, 'bin', 'lark-cli'), appId: 'cli_bot', brand: 'lark', botId: 'ou_bot', name: 'Widgets Bot' })
+    expect(await resolveFeishuBot(machine(), { cli: 'lark-cli' }, probe, path)).toEqual({ cli: join(dir, 'bin', 'lark-cli'), configDir: testConfigDirs.lark,
+      appId: 'cli_bot', brand: 'lark', botId: 'ou_bot', name: 'Widgets Bot' })
     const refuses = async (code: string, values: Record<string, unknown> = {}) => expect(resolveFeishuBot(machine(), { cli: 'lark-cli' }, probe, path)).rejects.toEqual(setupError('feishu', code, values))
     program(join(dir, 'bin', 'lark-cli'), lark({ identities: { bot: { status: 'ready' } } }))
     await refuses('feishuNoApp')
@@ -147,5 +150,47 @@ describe('setup', () => {
     await needs('gitlab', 'gitlabProjectReadOnly', { account: 'agent-bot', repository: 'acme/widgets' }, { repository: 'acme/widgets', cli: join(dir, 'bin', 'glab-reader') })
     await needs('gitlab', 'gitlabCliMissing', { output: expect.stringContaining('is not an executable file') }, { repository: 'acme/widgets', cli: join(dir, 'bin', 'missing') })
     await needs('gitlab', 'gitlabCliSignedOut', { output: expect.stringContaining('Command failed') }, { repository: 'acme/widgets', cli: program(join(dir, 'bin', 'glab-broken'), 'exit 1') })
+  })
+})
+
+describe('account configuration directories', () => {
+  it('defaults to the documented agent directories and accepts native absolute or empty overrides', () => {
+    // Empty selects the documented agent directory at resolution time; a saved absolute path overrides it.
+    expect(GithubAccountsSchema.parse({}).configDir).toBe('')
+    expect(GitlabAccountsSchema.parse({}).configDir).toBe('')
+    expect(FeishuBotSchema.parse({}).configDir).toBe('')
+    expect(GithubAccountsSchema.parse({ configDir: 'C:\\agent\\gh' }).configDir).toBe('C:\\agent\\gh')
+    expect(GithubAccountsSchema.parse({ configDir: '/agent/gh' }).configDir).toBe('/agent/gh')
+    expect(() => GithubAccountsSchema.parse({ configDir: 'relative/dir' })).toThrow('An absolute path')
+  })
+  it('passes each account directory to its setup probe through the child environment', async () => {
+    const called: { argv: string[]; env?: Record<string, string> }[] = []
+    const recording: Probe = async (argv, env) => { called.push({ argv, env }); return probe(argv) }
+    const configDir = join(dir, 'agent-config')
+    await resolveDeployment(machine(), { repository: 'acme/widgets', cli: 'gh', configDir }, recording, path)
+    expect(called.length).toBe(2)
+    expect(called.every(call => call.env?.GH_CONFIG_DIR === configDir)).toBe(true)
+    program(join(dir, 'bin', 'glab'))
+    await resolveGitlabDeployment(machine(), { repository: 'acme/widgets', cli: 'glab', configDir }, recording, path).catch(() => {})
+    expect(called.at(-1)?.env?.GLAB_CONFIG_DIR).toBe(configDir)
+    await resolveFeishuBot(machine(), { cli: 'lark-cli', configDir }, recording, path).catch(() => {})
+    expect(called.at(-1)?.env).toMatchObject({ LARKSUITE_CLI_CONFIG_DIR: configDir })
+  })
+})
+
+describe('executable lookup', () => {
+  it('resolves Windows names through PATHEXT without a POSIX execute bit', () => {
+    const exe = join(dir, 'bin', 'tool.exe')
+    writeFileSync(exe, '')
+    chmodSync(exe, 0o644)
+    expect(executable('tool', join(dir, 'bin'), undefined, 'win32')).toBe(exe)
+    // POSIX still requires the execute bit, so the same file is not an executable there.
+    expect(() => executable('tool', join(dir, 'bin'))).toThrow('tool is not an executable file on PATH')
+    // PATHEXT order prefers .exe over .cmd.
+    writeFileSync(join(dir, 'bin', 'tool.cmd'), '')
+    expect(executable('tool', join(dir, 'bin'), undefined, 'win32')).toBe(exe)
+    // A relative Windows path is refused like a relative POSIX one, and an absolute path resolves as given.
+    expect(() => executable('bin\\tool', join(dir, 'bin'), undefined, 'win32')).toThrow('must be a command name or an absolute path')
+    expect(executable(exe, '', undefined, 'win32')).toBe(exe)
   })
 })
