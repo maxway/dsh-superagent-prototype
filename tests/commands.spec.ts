@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { CliError, Commands, commandError } from '../src/infra/commands.ts'
@@ -29,6 +32,15 @@ describe('account-isolated operations', () => {
       expect(output).toContain('DSH_SUPERAGENT_PROBE=agent')
       expect(output).not.toContain('GH_TOKEN=personal')
     } finally { delete process.env.GH_TOKEN }
+  })
+  it.skipIf(process.platform !== 'win32')('runs an npm .cmd CLI through its Node entry on Windows', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'commands-win-'))
+    try {
+      writeFileSync(join(dir, 'tool.js'), "process.stdout.write(process.argv.slice(2).join('|'))")
+      writeFileSync(join(dir, 'tool.cmd'), '@ECHO off\r\n"%dp0%\\node.exe" "%dp0%\\tool.js" %*\r\n')
+      const output = await new Commands(() => deployment, {}, new AbortController().signal).run(join(dir, 'tool.cmd'), ['a', 'b c'])
+      expect(output).toBe('a|b c')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
   it('refuses Feishu commands when the deployment has no Feishu bot', async () => {
     await expect(new Commands(() => testDeployment({ feishu: undefined }), {}, new AbortController().signal).lark(['im', '+chat-list'])).rejects.toThrow('The Feishu Source has no working bot CLI')

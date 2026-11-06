@@ -92,8 +92,8 @@ reason in the test source; the behavior they cover is exercised elsewhere.
 - **`tests/environment.spec.ts` worker shims.** The POSIX shim wrappers select an account with a shell script. Windows
   selects accounts with `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR` and `LARKSUITE_CLI_CONFIG_DIR` and writes only `.cmd`
   guardrails; the "Windows command layer" cases cover that behavior.
-- **`tests/sources.spec.ts` Feishu event consumer.** The Feishu Source is not supported on Windows yet (WP6): npm
-  `lark-cli` is a `.cmd` launcher. The GitLab and GitHub Sources are unaffected.
+- **`tests/sources.spec.ts` Feishu event consumer.** It now runs on Windows too: the fake CLI is a Node program reached
+  through an npm-style `.cmd` shim, so the same launcher the real `lark-cli.cmd` uses is exercised.
 - **`tests/deployment.spec.ts` POSIX setup fixtures.** Four setup cases run POSIX shell stand-ins for the CLIs. Windows
   resolution is covered by the PATHEXT case and the account-directory probe case; the real Windows CLIs are for the
   end-to-end run.
@@ -119,13 +119,24 @@ The runner is a workstation runner: it stops when the machine is off or nobody i
 operator's credentials. A dedicated CI host with a dedicated Windows account is the follow-up before the runner is
 used as a release gate.
 
+## Feishu on Windows (WP6, 2026-11-07)
+
+The Feishu Source is implemented for Windows. The host resolves an npm `.cmd` shim to the Node entry named by its
+`%dp0%` path and runs that entry with Node, so message text and JSON never pass through `cmd.exe`; a `.js` entry runs the
+same way, and a `.cmd` without a Node entry is refused. The long-running event consumer closes stdin and allows five
+seconds before terminating, because Windows has no `SIGTERM`. The Feishu consumer suite now runs on Windows against a
+Node fake reached through an npm-style `.cmd` shim, covering the launcher, the event stream and the stop path.
+
+A live bot was not enabled on the scratch host: only production may enable Feishu, and the scratch host must not receive
+Feishu credentials. Connecting a live bot is an operator step on the host that takes over production; the launcher and
+event-consumer paths are verified without credentials.
+
 ## Remaining stage 5 work
 
-- Feishu on Windows (WP6), still optional and not supported today.
 - Merge request !1 in the scratch project waits for a person to merge it; merging is not part of this acceptance.
 - Moving the runner to a dedicated CI host, which the plan records as a remaining question.
 
-The end-to-end run passed and a Windows runner now runs `pnpm check` in CI; the only stage 5 item left is the optional
-Feishu Source (WP6).
+The end-to-end run passed, a Windows runner now runs `pnpm check` in CI, and WP6 is implemented and covered by the
+Windows suite.
 
 No user-interface change comes with this evidence, so it has no before-and-after screenshots.

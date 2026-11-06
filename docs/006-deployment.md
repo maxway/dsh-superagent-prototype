@@ -10,7 +10,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
 
-Windows hosts are supported for the Git Sources at prototype quality. The Windows paths for service control, the worker command layer, the prepare command and the router tools are implemented. The test suite runs in CI on a project Windows runner and passes with documented POSIX-only skips; a real Windows start/status/stop/restart smoke passes, and a real ticket on a scratch GitLab project has completed the end-to-end flow: Issue, Ticket, prepare, PowerShell worker, commit, push, merge request and source reply. The Feishu Source is still missing (WP6 of the Windows deployment plan) and is not supported there yet. Workers and the router use the `pwsh` tool instead of `bash` there, and the prepare command runs through PowerShell 7. Where a step below differs on Windows, its Windows form is given.
+Windows hosts are supported for the Git Sources and the Feishu Source at prototype quality. The Windows paths for service control, the worker command layer, the prepare command and the router tools are implemented. The test suite runs in CI on a project Windows runner and passes with documented POSIX-only skips; a real Windows start/status/stop/restart smoke passes, and a real ticket on a scratch GitLab project has completed the end-to-end flow: Issue, Ticket, prepare, PowerShell worker, commit, push, merge request and source reply. Feishu is supported through the npm `lark-cli` `.cmd` shim, which the host resolves to its Node entry and runs without a shell; the Windows test suite covers that path. A live bot was not enabled on the scratch host, which must not receive Feishu credentials. Workers and the router use the `pwsh` tool instead of `bash` there, and the prepare command runs through PowerShell 7. Where a step below differs on Windows, its Windows form is given.
 
 ### Permissions and isolation
 
@@ -27,7 +27,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 - **Windows host:** the native `gh.exe` or `glab.exe`, signed in to the agent account as Windows credentials below describes. Do not use a `.cmd` wrapper.
 - A repository on github.com, or a GitLab project on gitlab.com or a self-managed instance. GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
 - A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another. Configure it in the deployment profile itself; that profile does not inherit the credentials or provider configuration of the profile you work in, and without a provider it reports a missing credential and cannot assess requests.
-- For Feishu: `lark-cli` (tested with 1.0.90) and a Feishu or Lark app with a bot. Feishu runs on POSIX only for now.
+- For Feishu: `lark-cli` (tested with 1.0.90) and a Feishu or Lark app with a bot. On Windows install the npm package `@larksuite/cli`; the host resolves its `.cmd` shim to the package's Node entry.
 
 ## Accounts
 
@@ -93,10 +93,10 @@ glab api user
 
 ### Feishu bot (optional)
 
-The Feishu Source is not supported on a Windows host yet: its npm `lark-cli` is a `.cmd` launcher, and passing message text through `cmd.exe` is unsafe (WP6 of the Windows deployment plan). Run Feishu on a POSIX host.
+On Windows the npm `lark-cli` is a `.cmd`. The host resolves the shim's `%dp0%` Node entry and runs it with Node, so message text and JSON never pass through `cmd.exe`. A `.cmd` without a Node entry is refused; use the npm package or a native executable rather than a custom wrapper.
 
 1. Create a self-built app with the bot capability. Grant it the permissions to receive message events and to send messages as the bot, then publish the app version. It needs no permission to read messages, chat history, chats or chat members: the Source works from the event payload and replies only. The removed read paths called APIs that require `im:message`, `im:message:readonly` and `im:message.history:readonly` for messages, and `im:chat`, `im:chat:readonly`, `im:chat.group_info:readonly`, `im:chat:read` and `im:chat.members:read` for chats and members; this build does not call them. It therefore cannot recover messages sent while dsh-superagent was offline, cannot read a message or Thread by ID, cannot list chats or sync members, and cannot read images. Enter chat IDs and the allowed list by hand. Choosing **All** for a group additionally needs Feishu's permission to receive every group message; without it only messages that mention the bot arrive.
-2. Give the bot its own `lark-cli` configuration, restricted to the bot identity, and a wrapper:
+2. Give the bot its own `lark-cli` configuration, restricted to the bot identity. On POSIX, also create a wrapper:
 
    ```sh
    LARKSUITE_CLI_CONFIG_DIR="$HOME/.lark-cli-dsh-superagent" lark-cli config init --app-id <cli_…> --app-secret-stdin
@@ -109,7 +109,16 @@ The Feishu Source is not supported on a Windows host yet: its npm `lark-cli` is 
    chmod +x ~/.local/bin/lark-bot
    ```
 
-   The first command reads the app secret from standard input. Use a separate configuration directory: `lark-cli` allows one profile per app id, and your personal configuration may already contain a user login for that app.
+   On Windows install the package and point the Source's **Bot lark-cli** field at `lark-cli` (the npm `.cmd` shim) and its advanced configuration directory at `%USERPROFILE%\.lark-cli-dsh-superagent`:
+
+   ```powershell
+   npm install -g @larksuite/cli
+   $env:LARKSUITE_CLI_CONFIG_DIR = "$env:USERPROFILE\.lark-cli-dsh-superagent"
+   lark-cli config init --app-id <cli_…> --app-secret-stdin
+   lark-cli config strict-mode bot --global
+   ```
+
+   The first command reads the app secret from standard input (`Get-Content secret.txt | lark-cli config init ...` in PowerShell). Use a separate configuration directory: `lark-cli` allows one profile per app id, and your personal configuration may already contain a user login for that app.
 
    The host refuses a CLI that can act as a user. It reads the app id, Feishu/Lark brand and bot `open_id` from the bot configuration.
 
@@ -306,7 +315,7 @@ Setup verifies the active Git Source's repository or project and the agent's pus
 
 The process environment that setup writes:
 
-- **Command shims** in `<stateDir>/worker-bin`, first on `PATH`. On POSIX, `gh` runs the agent's CLI, `lark-cli` runs the bot's CLI, and blocked commands fail; a shim removes its own directory from `PATH` before it runs its target. On Windows, only blocked and inactive commands get a `.cmd` shim (the inactive Git host's shim fails); the active CLIs run as native executables selected by `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR` and `LARKSUITE_CLI_CONFIG_DIR`, so arguments never pass through `cmd.exe`.
+- **Command shims** in `<stateDir>/worker-bin`, first on `PATH`. On POSIX, `gh` runs the agent's CLI, `lark-cli` runs the bot's CLI, and blocked commands fail; a shim removes its own directory from `PATH` before it runs its target. On Windows, only blocked and inactive commands get a `.cmd` shim (the inactive Git host's shim fails); the active Git CLI runs as a native executable selected by `GH_CONFIG_DIR` or `GLAB_CONFIG_DIR`, and `lark-cli` is resolved through its npm `.cmd` shim's Node entry, so arguments never pass through `cmd.exe`.
 - **git configuration** in `<stateDir>/worker-gitconfig`: replaces the operator's global and system git configuration. It selects the agent CLI as the active host's credential helper, rewrites that host's SSH addresses to HTTPS and defines Git LFS filters. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN`, `GITHUB_TOKEN`, `GLAB_TOKEN` and `GITLAB_TOKEN` are removed.
 
 A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write stops setup. A Ticket directory inside a git repository whose own configuration adds credentials fails the Ticket.
@@ -352,7 +361,7 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `dsh must be on PATH.` when starting on Windows | Install DSH globally and open a new shell; `start` resolves the npm `dsh.cmd` |
 | PowerShell or `cmd.exe` cannot run `scripts\dsh-superagent` | The script has no `.cmd` shim on Windows; run `node scripts\dsh-superagent <command>` |
 | A `.cmd` wrapper for `gh` or `glab` drops or corrupts an argument | Use the native `gh.exe` or `glab.exe` with its configuration directory (see Windows credentials); never pass JSON or message text through `cmd.exe` |
-| The Feishu Source is refused on a Windows host | Not supported there yet; run the Feishu Source on a POSIX host (WP6 of the Windows plan) |
+| The Feishu Source is refused on a Windows host | Point the Source's **Bot lark-cli** field at `lark-cli` (the npm `.cmd` shim) or at the package's Node entry; a custom `.cmd` wrapper without a Node entry is refused |
 | `git does not read the credential configuration dsh-superagent writes` | Install git 2.32 or later |
 | A Ticket fails with `The git configuration of the repository in … sets …` | Remove the named credential or `http.*.extraheader` settings from the clone's `.git/config` |
 | `… was not written by dsh-superagent` | Move the named file out of `<stateDir>/worker-bin` or `<stateDir>/worker-gitconfig`, or choose another `stateDir` |

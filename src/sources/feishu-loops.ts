@@ -11,6 +11,7 @@ import { feishuChatLink } from './feishu-channel.ts'
 import type { FeishuBot } from '../deployment.ts'
 import { feishuTrigger } from './feishu-trigger.ts'
 import { health, type SourceContext } from './host.ts'
+import { launch } from '../infra/launch.ts'
 import type { FeishuConfig } from './feishu.ts'
 
 export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> => watch(ctx, signal)
@@ -64,12 +65,27 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
 export const consumerRetry = (previous: number | undefined, ranMs: number): number =>
   previous === undefined || ranMs >= 60_000 ? 1000 : Math.min(previous * 2, 60_000)
 async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
-  const child = spawn(bot(ctx).cli, ['event', 'consume', 'im.message.receive_v1', '--as', 'bot'],
+  const resolved = launch([bot(ctx).cli, 'event', 'consume', 'im.message.receive_v1', '--as', 'bot'])
+  const child = spawn(resolved.program, resolved.args,
     { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
       LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
   const stdout = createInterface({ input: child.stdout }); const stderr = createInterface({ input: child.stderr })
   let chain = Promise.resolve(); let diagnostic = ''; let ready = false
-  const stop = (): void => { child.stdin.end(); child.kill('SIGTERM') }
+  // Closing stdin asks the consumer to finish; Windows has no SIGTERM, so give that exit five seconds before terminating.
+  let stopping = false
+  const stop = (): void => {
+    if (stopping) return
+    stopping = true
+    child.stdin.end()
+    if (process.platform !== 'win32') { child.kill('SIGTERM'); return }
+    if (child.exitCode !== null) return
+    // The npm shim runs a Node launcher whose child is the real consumer, so end the whole tree if stdin close was not enough.
+    const terminate = setTimeout(() => {
+      if (child.pid === undefined) return
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => {})
+    }, 5000)
+    child.once('exit', () => clearTimeout(terminate))
+  }
   signal.addEventListener('abort', stop, { once: true })
   const timeout = setTimeout(() => { diagnostic = 'Feishu event consumer did not become ready within 45 seconds'; stop() }, 45_000)
   stderr.on('line', (line: string) => {
