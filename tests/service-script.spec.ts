@@ -1,5 +1,5 @@
 /** Tests for scripts/dsh-superagent using a temporary checkout path with spaces and stubbed ps, tmux, and dsh binaries. */
-import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync }
   from 'node:fs'
 import { createServer, type Server } from 'node:http'
@@ -47,12 +47,13 @@ afterEach(() => {
   sleepers = []
   rmSync(root, { recursive: true, force: true })
 })
-function run(...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+function runWithEnvironment(environment: NodeJS.ProcessEnv, ...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise(resolve => execFile('python3', [join(root, 'scripts', 'dsh-superagent'), ...args],
-    { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '' },
+    { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '', ...environment },
       timeout: 20_000 },
     (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr })))
 }
+const run = (...args: string[]) => runWithEnvironment({}, ...args)
 const READY = { health: { runtime: { state: 'ready', detail: '' } }, setup: { problem: null, feishuProblem: null } }
 /** Start a mock HTTP server that returns 503 until tmux launches the service (unless always is true). */
 async function answering(state: unknown = READY, always = false): Promise<string> {
@@ -102,12 +103,25 @@ it('records the service PID at start, and still refuses a second instance the sc
   const checkout = realpathSync(root)
   expect(tmux).toEqual(expect.arrayContaining(['-P', '-F', '#{pane_pid}', '-c', checkout]))
   const log = new RegExp(`>> '${checkout}/\\.artifacts/dsh-superagent-superagent-\\d{8}-\\d{6}-\\d+\\.log' 2>&1$`)
-  expect(tmux.find(word => word.startsWith('umask 077; exec '))).toMatch(log)
+  expect(tmux.find(word => word.startsWith('umask 077; '))).toMatch(log)
   const second = sleeper()
   started(service(pid), `${second} node node /opt/dsh --profile superagent`)
   const again = await run('start', '--url', url, '--timeout', '10')
   expect(again).toMatchObject({ code: 1, stderr: expect.stringContaining('Multiple dsh-superagent processes') })
   expect(await status('superagent')).toMatchObject({ pids: [pid, second] })
+}, 20_000)
+it.each([undefined, '', "/tmp/profile with 'quotes'"])('uses the caller environment instead of the tmux server environment for DSH_HOME %s', async dshHome => {
+  const url = await answering()
+  const pid = sleeper()
+  const home = "/tmp/home with 'quotes'"
+  const path = `${join(root, 'bin')}:/usr/bin:/bin`
+  program('dsh', `printf '%s\\n' "\${DSH_HOME-<unset>}" "$HOME" "$PATH" > '${root}/environment'`)
+  writeFileSync(join(root, 'pane'), `${pid}\n`)
+  started(service(pid))
+  expect(await runWithEnvironment({ DSH_HOME: dshHome, HOME: home, PATH: path }, 'start', '--url', url, '--timeout', '10')).toMatchObject({ code: 0 })
+  const command = readFileSync(join(root, 'tmux.log'), 'utf8').split('\n').find(line => line.startsWith('umask 077; '))!
+  execFileSync('/bin/sh', ['-c', command], { env: { DSH_HOME: '/tmp/wrong-profile', HOME: '/tmp/wrong-home', PATH: '/usr/bin:/bin' } })
+  expect(readFileSync(join(root, 'environment'), 'utf8').split('\n')).toEqual([dshHome ?? '<unset>', home, path, ''])
 }, 20_000)
 it('waits only for the process it stopped', async () => {
   const pid = sleeper()

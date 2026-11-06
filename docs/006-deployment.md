@@ -126,7 +126,7 @@ scripts/dsh-superagent start
 scripts/dsh-superagent status
 ```
 
-`start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script.
+`start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script. The pane uses the caller's `DSH_HOME`, `HOME`, and `PATH` (including unset values), rather than a different profile's values retained by the tmux server.
 
 `stop` and `restart` request a graceful drain and wait up to five minutes for the process to exit. The Executor drain is bounded at ten seconds and DSH's launcher adds a five-second grace, so a stop normally finishes within about fifteen seconds; a worker still in a turn after the drain can be interrupted. They never force-kill the process or touch other tmux sessions.
 

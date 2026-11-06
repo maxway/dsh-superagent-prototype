@@ -179,7 +179,9 @@ def start(args):
         log.touch()
         prune_logs(args.profile)
         # `exec` replaces the shell so the pane PID printed by tmux is the DSH service process itself.
-        command = ('umask 077; exec ' + shlex.join([dsh, '--profile', args.profile, '--no-open'])
+        environment = [f'export {name}={shlex.quote(os.environ[name])}' if name in os.environ else f'unset {name}'
+                       for name in ('DSH_HOME', 'HOME', 'PATH')]
+        command = ('umask 077; ' + '; '.join(environment) + '; exec ' + shlex.join([dsh, '--profile', args.profile, '--no-open'])
                    + ' >> ' + shlex.quote(str(log)) + ' 2>&1')
         # Reuse an existing tmux session without disturbing other windows.
         target = ['new-window', '-t', '=' + session + ':'] if exists else ['new-session', '-s', session]
