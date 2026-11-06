@@ -9,7 +9,7 @@ The question is about the host, not about who can use the agent. Every user open
 - **Required for this project's host.** The workers must run the project's Windows-only toolchain, so the agent host must be Windows. This plan ports the deployment only; the project's own build and smoke work is out of scope.
 - **Estimate:** a usable internal build takes about 9-13 person-days: 2-2.5 weeks for one developer, including the proof of concept and end-to-end verification, without Feishu and without a Windows CI runner.
 - **Full parity** — Feishu, Windows CI, bilingual setup documentation and the hardening that keeps both platforms tested — takes about 12-18 person-days, or 3-4 weeks for one developer.
-- **Status (2026-11-06):** stages 1-4 are implemented and tested on Linux. A manual Windows run of `pnpm check` passes with documented POSIX-only skips, the proof of concept's native-path blocker is fixed, a real Windows `start`/`status`/`stop`/`restart` smoke through the service script passes, and a real ticket on the scratch project `ngd/dsh-superagent-test` completed the end-to-end flow: Issue, Ticket, prepare, PowerShell worker, commit, push, merge request and source reply. A Windows CI runner and Feishu support are still missing, so Windows remains experimental and the Feishu Source is not supported there.
+- **Status (2026-11-06):** the usable internal build is complete. Stages 1-5 are implemented, and a manual Windows run of `pnpm check` passes with documented POSIX-only skips. The proof of concept's native-path blocker is fixed, a real Windows `start`/`status`/`stop`/`restart` smoke through the service script passes, and a real ticket on the scratch project `ngd/dsh-superagent-test` completed the end-to-end flow: Issue, Ticket, prepare, PowerShell worker, commit, push, merge request and source reply. Full parity is still missing a Windows CI runner and the optional Feishu Source (WP6); without a runner Windows stays experimental, and the Feishu Source is not supported there.
 - **Recommendation:** port the deployment; start with the 1-2 day proof of concept, then follow the staged plan below. The project's toolchain work is separate.
 
 ## What deploying on Windows means
@@ -45,6 +45,7 @@ The bundle already switches its two agent presets between bash and pwsh by platf
 | Worker command shims | Extensionless `#!/bin/sh` files in `worker-bin`, prepended to `PATH` | PowerShell and `CreateProcess` do not execute them; account selection and blocked commands are lost |
 | CLI wrappers and probes | Shell-script wrappers; setup probes run `env PATH=... <cli>`; `execFile` and `spawn` call the CLI directly | No `env` on Windows; `execFile` cannot run `.cmd`; npm-installed `lark-cli` is a `.cmd` |
 | Prepare command | Always `sh -c <command>` | No `sh` by default; the documented command uses POSIX variables |
+| Configuration paths | `stateDir` and `executor.directory` require a leading `/` | Windows paths such as `C:\...` are rejected; the plugin fails to load |
 | Router tools | The master Session's allow list and wait guard hard-code `bash` | The `pwsh` tool is removed from the router; its wait guard never applies |
 | Prompts and skills | "Workers use bash" and bash examples | The worker has PowerShell, so the instructions and examples are wrong for it |
 | Setup and docs | `~/.local/bin`, `cat > ... <<'EOF'`, tmux, Python, `$HOME` | Need Windows equivalents |
@@ -54,15 +55,15 @@ The bundle already switches its two agent presets between bash and pwsh by platf
 
 ### Implementation status (2026-11-06)
 
-The table above is the assessment this plan started from. Stages 1-4 have since addressed these gaps:
+The table above is the assessment this plan started from. Stages 1-5 have since addressed these gaps:
 
-- **Stage 0 (partial).** The proof of concept on the operator's Windows machine found two blockers: `stateDir` and `executor.directory` rejected native `C:\...` paths, and the setup probe passed its environment through a POSIX `env` executable. Both fixes are in main. A real Windows start/status/stop/restart smoke and the prepare command now pass there too; the end-to-end run against a scratch repository has since passed under stage 5.
+- **Stage 0 (complete).** The proof of concept on the operator's Windows machine found two blockers: `stateDir` and `executor.directory` rejected native `C:\...` paths, and the setup probe passed its environment through a POSIX `env` executable. Both fixes are in main. A real Windows start/status/stop/restart smoke and the prepare command now pass there too; the end-to-end run against a scratch repository has since passed under stage 5.
 - **Stage 1.** `scripts/dsh-superagent` is a Node script. POSIX keeps tmux and `SIGINT`; Windows starts a detached process and stops through `POST /orchestrator/api/service/stop`. Both the POSIX path and an isolated Windows profile pass start/status/stop/restart; the Windows smoke also found and fixed two process-detection defects (see [the stage 5 evidence](evidence/windows-stage5/)).
 - **Stage 2.** The worker command layer resolves `PATHEXT`, writes `.cmd` guardrails only for blocked and inactive commands, and selects the agent account with `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR` and `LARKSUITE_CLI_CONFIG_DIR`; probes and git credentials use native argv.
 - **Stage 3.** The prepare command runs through `sh -c` on POSIX and `pwsh -NoProfile -NonInteractive -Command` on Windows; the router accepts `pwsh`; prompts and skills are shell-neutral.
 - **Stage 4.** Added the Windows setup and deployment path in both languages.
-- **Stage 5 (end-to-end verified).** `pnpm check` passes on a Windows host (Windows 10 19045, Node.js 24.21.0, pnpm 11.7.0) with the POSIX-only suites skipped for the reasons recorded in [the stage 5 evidence](evidence/windows-stage5/), and a real Windows `start`/`status`/`stop`/`restart` smoke through the service script passes. A real ticket on the scratch GitLab project `ngd/dsh-superagent-test` also completed the full flow: an isolated `stage5-e2e` profile accepted a person's mention in Issue #1 as a Ticket, the PowerShell prepare command created the worktree, a `pwsh` worker changed `README.md`, committed `a2412af`, pushed the branch, opened merge request !1 and replied in Issue #1; the panel showed the Ticket waiting for a person to merge. The run is recorded in [the stage 5 evidence](evidence/windows-stage5/). A Windows CI runner is still missing.
-- **Not done.** A Windows CI runner, and the Feishu Source on Windows (WP6). The end-to-end candidate profile needed its own model-provider configuration; a profile without one reports `MISSING_CREDENTIAL` and cannot assess requests. Windows remains experimental until a runner keeps the Windows path tested on every change; the Feishu Source is not supported there.
+- **Stage 5 (end-to-end verified; CI runner outstanding).** `pnpm check` passes on a Windows host (Windows 10 19045, Node.js 24.21.0, pnpm 11.7.0) with the POSIX-only suites skipped for the reasons recorded in [the stage 5 evidence](evidence/windows-stage5/), and a real Windows `start`/`status`/`stop`/`restart` smoke through the service script passes. A real ticket on the scratch GitLab project `ngd/dsh-superagent-test` also completed the full flow: an isolated `stage5-e2e` profile accepted a person's mention in Issue #1 as a Ticket, the PowerShell prepare command created the worktree, a `pwsh` worker changed `README.md`, committed `a2412af`, pushed the branch, opened merge request !1 and replied in Issue #1; the panel showed the Ticket waiting for a person to merge. The run is recorded in [the stage 5 evidence](evidence/windows-stage5/). The last acceptance item of this stage, a Windows CI runner, is still missing.
+- **Remaining.** A Windows CI runner (stage 5 acceptance) and the Feishu Source on Windows (WP6, optional). The end-to-end candidate profile needed its own model-provider configuration; a profile without one reports `MISSING_CREDENTIAL` and cannot assess requests. Windows remains experimental until a runner keeps the Windows path tested on every change; the Feishu Source is not supported there. Neither item blocks the usable internal build.
 
 ## Is it necessary?
 
@@ -149,6 +150,7 @@ Recommended design:
 
 - Select credentials with environment variables rather than wrapper scripts: `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR` and `LARKSUITE_CLI_CONFIG_DIR`, set for the plugin process and inherited by worker shells. Add optional `configDir` fields to the Git and Feishu Source settings, with the current documented paths as defaults, so the panel can manage them.
 - Point the `cli` setting at the real executable, `gh.exe` or `glab.exe`, and run it with normal argv, never through a shell: arbitrary text such as a merge-request body must not pass through `cmd.exe` quoting. Keep POSIX wrapper support for existing installations.
+- Accept native absolute paths for `stateDir` and `executor.directory` — drive letters and UNC on Windows, POSIX paths on POSIX — and test the validator on both.
 - Fix the probes: `workerProbe` and the Feishu probe pass `PATH` through the child environment instead of launching `env`; `executable()` learns `PATHEXT` and no longer requires the POSIX execute bit.
 - Keep blocked commands as guardrail shims, written as `.cmd` files on Windows so PowerShell resolves them first. `gh`, `glab` and `lark-cli` no longer need account shims because the environment selects the account.
 - Feishu: `lark-cli` on Windows is normally an npm `.cmd`; run it through a small Node launcher or require a native build, and keep message text out of `cmd.exe` quoting. This is WP6.
@@ -230,7 +232,7 @@ The usable internal build is about 2-2.5 weeks of focused work; the full parity 
 | Prepare command | Required | Required | Real worktree creation in WP7 |
 | Feishu, if in scope | Required | Required | Bot event and message in WP7, optional |
 
-## Risks and open decisions
+## Risks and decisions
 
 ### Risks
 
@@ -243,13 +245,18 @@ The usable internal build is about 2-2.5 weeks of focused work; the full parity 
 | Weaker isolation | A worker can act as the operator | Keep the dedicated OS account recommendation; blocked commands remain a guardrail only |
 | Feishu's npm `.cmd` launcher | Feishu unavailable on Windows | Node launcher or native CLI; keep Feishu optional |
 
-### Open decisions
+### Decisions taken
 
-- Node service script versus PowerShell twin.
-- Whether Feishu is in the first release or a follow-up.
-- Whether the account configuration moves to `configDir` settings or stays in wrapper scripts for POSIX and environment variables on Windows.
-- Whether a Windows CI runner is available; without one, mark Windows as experimental.
-- Whether the operator can provide remote access to the local Windows machine for the POC, and whether its project-toolchain prerequisites are installed.
+- One Node service script instead of a PowerShell twin (stage 1).
+- Account selection through the `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR` and `LARKSUITE_CLI_CONFIG_DIR` environment variables plus optional `configDir` Source settings, not `.cmd` wrappers for the Git CLIs (stage 2).
+- Native CLI executables with argv, and the platform shell for the prepare command (stages 2-3).
+- Feishu kept out of the first release; a Windows host supports the Git Sources only (stages 4-5).
+- The operator provided the Windows machine and remote access for the proof of concept and the end-to-end run (stages 0 and 5).
+
+### Remaining questions
+
+- Whether to provide a Windows CI runner. Without one the plan keeps Windows experimental; it is the only unmet stage 5 acceptance item, and it needs a runner registered to the project.
+- Whether Feishu on Windows (WP6) is required before a Windows host replaces the POSIX production host. It is not implemented, and a test host may not enable Feishu, so it cannot be verified there.
 
 ## Out of scope
 
