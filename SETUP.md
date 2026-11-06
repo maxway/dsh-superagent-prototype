@@ -19,7 +19,7 @@ The setup follows [docs/000-philosophy.md](docs/000-philosophy.md): it takes as 
 
 ## Windows hosts
 
-Windows support is experimental: the code paths are implemented and unit-tested on Linux, but no Windows runner or end-to-end run has verified them yet (stage 5 of [docs/009-windows-deployment.md](docs/009-windows-deployment.md)). A Windows host runs one Git Source; the Feishu Source is not supported there yet. Follow the numbered steps with these differences.
+Windows support is experimental: the code paths are implemented and tested on Windows, and a real ticket has completed the end-to-end flow on a scratch project, but a Windows CI runner is still missing (stage 5 of [docs/009-windows-deployment.md](docs/009-windows-deployment.md)). A Windows host runs one Git Source; the Feishu Source is not supported there yet. Follow the numbered steps with these differences.
 
 - **Prerequisites:** Windows 10/11 or Windows Server with Node.js 22.19+ or 24+, pnpm, Git for Windows 2.32+, PowerShell 7 (`pwsh` on `PATH`) and the native `gh.exe` or `glab.exe`. No tmux, Python or WSL is needed.
 - **Probe:** in PowerShell, run `node -v; pnpm -v; git --version; gh --version; dsh --version`, `Get-Command pwsh` and `Get-ChildItem "$env:USERPROFILE\.dsh\profiles\*\cordis.patch.yml"`. `tmux` and `python3` are not required.
