@@ -9,7 +9,7 @@ The question is about the host, not about who can use the agent. Every user open
 - **Required for this project's host.** The workers must run the project's Windows-only toolchain, so the agent host must be Windows. This plan ports the deployment only; the project's own build and smoke work is out of scope.
 - **Estimate:** a usable internal build takes about 9-13 person-days: 2-2.5 weeks for one developer, including the proof of concept and end-to-end verification, without Feishu and without a Windows CI runner.
 - **Full parity** — Feishu, Windows CI, bilingual setup documentation and the hardening that keeps both platforms tested — takes about 12-18 person-days, or 3-4 weeks for one developer.
-- **Status (2026-11-07):** the usable internal build is complete, and stage 5 is verified end to end. Stages 1-5 are implemented; a project Windows runner runs `pnpm check` for merge requests and the default branch, and the manual Windows run passes with documented POSIX-only skips. The proof of concept's native-path blocker is fixed, a real Windows `start`/`status`/`stop`/`restart` smoke through the service script passes, and a real ticket on the scratch project `ngd/dsh-superagent-test` completed the end-to-end flow: Issue, Ticket, prepare, PowerShell worker, commit, push, merge request and source reply. Only the optional Feishu Source (WP6) remains, so the Feishu Source is not supported on Windows.
+- **Status (2026-11-07):** the usable internal build and the optional Feishu work package are complete, and stage 5 is verified end to end. Stages 1-5 and WP6 are implemented; a project Windows runner runs `pnpm check` for merge requests and the default branch, and the manual Windows run passes with documented POSIX-only skips. The proof of concept's native-path blocker is fixed, a real Windows `start`/`status`/`stop`/`restart` smoke through the service script passes, and a real ticket on the scratch project `ngd/dsh-superagent-test` completed the end-to-end flow: Issue, Ticket, prepare, PowerShell worker, commit, push, merge request and source reply. The Feishu Source resolves the npm `lark-cli` `.cmd` shim to its Node entry and runs it without a shell; a Windows test exercises that path. A live bot was not enabled on the scratch host, which must not receive Feishu credentials; connecting one remains an operator step on the production host.
 - **Recommendation:** port the deployment; start with the 1-2 day proof of concept, then follow the staged plan below. The project's toolchain work is separate.
 
 ## What deploying on Windows means
@@ -55,7 +55,7 @@ The bundle already switches its two agent presets between bash and pwsh by platf
 
 ### Implementation status (2026-11-07)
 
-The table above is the assessment this plan started from. Stages 1-5 have since addressed these gaps:
+The table above is the assessment this plan started from. Stages 1-5 and WP6 have since addressed these gaps:
 
 - **Stage 0 (complete).** The proof of concept on the operator's Windows machine found two blockers: `stateDir` and `executor.directory` rejected native `C:\...` paths, and the setup probe passed its environment through a POSIX `env` executable. Both fixes are in main. A real Windows start/status/stop/restart smoke and the prepare command now pass there too; the end-to-end run against a scratch repository has since passed under stage 5.
 - **Stage 1.** `scripts/dsh-superagent` is a Node script. POSIX keeps tmux and `SIGINT`; Windows starts a detached process and stops through `POST /orchestrator/api/service/stop`. Both the POSIX path and an isolated Windows profile pass start/status/stop/restart; the Windows smoke also found and fixed two process-detection defects (see [the stage 5 evidence](evidence/windows-stage5/)).
@@ -63,7 +63,8 @@ The table above is the assessment this plan started from. Stages 1-5 have since 
 - **Stage 3.** The prepare command runs through `sh -c` on POSIX and `pwsh -NoProfile -NonInteractive -Command` on Windows; the router accepts `pwsh`; prompts and skills are shell-neutral.
 - **Stage 4.** Added the Windows setup and deployment path in both languages.
 - **Stage 5 (complete).** `pnpm check` passes on a Windows host (Windows 10 19045, Node.js 24.21.0, pnpm 11.7.0) with the POSIX-only suites skipped for the reasons recorded in [the stage 5 evidence](evidence/windows-stage5/), and a real Windows `start`/`status`/`stop`/`restart` smoke through the service script passes. A real ticket on the scratch GitLab project `ngd/dsh-superagent-test` also completed the full flow: an isolated `stage5-e2e` profile accepted a person's mention in Issue #1 as a Ticket, the PowerShell prepare command created the worktree, a `pwsh` worker changed `README.md`, committed `a2412af`, pushed the branch, opened merge request !1 and replied in Issue #1; the panel showed the Ticket waiting for a person to merge. The run is recorded in [the stage 5 evidence](evidence/windows-stage5/). The Windows CI runner is in place: the project-specific `windows-workstation-dd` runner (tag `windows`, shell executor on the operator's Windows workstation under `D:\dsh-ci`) runs the `windows-check` job in `.gitlab-ci.yml` for merge requests and the default branch. Its first run found and fixed a line-ending assumption in the documentation tests: a default Windows checkout uses CRLF, so the tests now normalize it. The CI run is recorded in [the stage 5 evidence](evidence/windows-stage5/).
-- **Remaining.** The Feishu Source on Windows (WP6, optional). The end-to-end candidate profile needed its own model-provider configuration; a profile without one reports `MISSING_CREDENTIAL` and cannot assess requests. A Windows host supports the Git Sources; the Feishu Source is not supported there.
+- **WP6 (complete).** The Feishu Source runs on Windows. The host resolves an npm `.cmd` shim to the Node entry named by its `%dp0%` path and runs it with Node, so message text and JSON never pass through `cmd.exe`; a `.js` entry runs the same way, and a `.cmd` without a Node entry is refused. The event consumer closes stdin and allows five seconds before terminating, because Windows has no `SIGTERM`. The Feishu consumer suite runs on Windows against a Node fake reached through an npm-style `.cmd` shim. A live bot was not enabled on the scratch host, which must not receive Feishu credentials; connecting one is an operator step on the production host.
+- **Remaining.** No planned stage remains. WP6 is implemented and covered by Windows tests; a live bot was not connected on the scratch host because only production may enable Feishu. The end-to-end candidate profile needed its own model-provider configuration; a profile without one reports `MISSING_CREDENTIAL` and cannot assess requests. A Windows host supports the Git Sources and the Feishu Source.
 
 ## Is it necessary?
 
@@ -104,7 +105,7 @@ A port is not a one-time cost. After it, every change must be checked on two pla
 | WP3 | Prepare command, router tools, prompts and skills | 1-1.5 | WP2 |
 | WP4 | Setup and deployment documentation, both languages | 1.5-2 | WP1-3 |
 | WP5 | Windows tests and CI | 2-3 | WP1-4 |
-| WP6 | Feishu on Windows, optional | 1-2 | WP2 |
+| WP6 | Feishu on Windows | 1-2 | WP2 |
 | WP7 | End-to-end verification and hardening | 1.5-2 | WP1-5 |
 
 ### Staged execution
@@ -118,7 +119,7 @@ The work packages are the technical breakdown; the stages are the execution and 
 | 2 | Worker command layer: platform runner and probes, Win32 shims, `PATHEXT`, blocked commands, account selection | Unit tests cover generated files and argument handling; POSIX behavior is unchanged | No |
 | 3 | Prepare, router tools, prompts and skills | Tests pass; Linux keeps the `sh` path; Windows commands are documented | No |
 | 4 | Setup and deployment documentation | `pnpm check` and the documentation tests pass; a person reviews the Windows path | No |
-| 5 | Windows CI and end-to-end verification, Feishu optional | A Windows runner runs `pnpm check`; a real ticket completes setup, prepare, push and merge request; Linux still passes | Required |
+| 5 | Windows CI and end-to-end verification, Feishu included | A Windows runner runs `pnpm check`; a real ticket completes setup, prepare, push and merge request; the Feishu launcher test passes on Windows; Linux still passes | Required |
 
 ### WP0: proof of concept
 
@@ -153,7 +154,7 @@ Recommended design:
 - Accept native absolute paths for `stateDir` and `executor.directory` — drive letters and UNC on Windows, POSIX paths on POSIX — and test the validator on both.
 - Fix the probes: `workerProbe` and the Feishu probe pass `PATH` through the child environment instead of launching `env`; `executable()` learns `PATHEXT` and no longer requires the POSIX execute bit.
 - Keep blocked commands as guardrail shims, written as `.cmd` files on Windows so PowerShell resolves them first. `gh`, `glab` and `lark-cli` no longer need account shims because the environment selects the account.
-- Feishu: `lark-cli` on Windows is normally an npm `.cmd`; run it through a small Node launcher or require a native build, and keep message text out of `cmd.exe` quoting. This is WP6.
+- Feishu: `lark-cli` on Windows is normally an npm `.cmd`. The host resolves the shim's `%dp0%` Node entry and runs it with Node, so message text never passes through `cmd.exe` quoting. This is WP6.
 
 Alternative considered: keep the wrapper model and launch `.cmd` wrappers through `cmd.exe`. It is less work in settings but unsafe for CLI arguments that carry JSON or arbitrary message text, so it is not recommended as the long-term shape. A short internal trial can use it, provided the service environment sets the three configuration directories and the `cli` fields point at the wrappers.
 
@@ -178,9 +179,11 @@ Alternative considered: keep the wrapper model and launch `.cmd` wrappers throug
 - Triage `pnpm check` on Windows: many tests use POSIX fixtures, `:` PATH separators, `python3` and `#!/bin/sh` helpers. Skip POSIX-only tests on Windows only when a Windows-specific test covers the same behavior, and record why in the test.
 - Add a Windows runner, for example a GitLab runner tag or a scheduled job, that runs `pnpm check` and, if feasible, a smoke test against a scratch repository. Without it, Windows support will rot.
 
-### WP6: Feishu on Windows, optional
+### WP6: Feishu on Windows
 
-`lark-cli` from npm is a `.cmd`; the Feishu Source uses `spawn` for the long-running event consumer and `Commands.run` for one-shot calls. Run it through a Node launcher (the package's JS entry) or a native executable, keep message text out of shell quoting, and re-check the consumer's stop behavior on Windows, where stdin close plus `kill` becomes a terminate. If Feishu is out of scope, the Windows deployment supports only the Git Sources and the documentation must say so.
+`lark-cli` from npm is a `.cmd`; the Feishu Source uses `spawn` for the long-running event consumer and `Commands.run` for one-shot calls. The host now resolves an npm `.cmd` shim to the Node entry named by its `%dp0%` path and runs that entry with the host's Node executable, so argv never passes through a shell. A `.js` entry is run the same way, and a `.cmd` without a Node entry is refused rather than quoted through `cmd.exe`. On Windows the consumer asks the CLI to finish by closing stdin and allows five seconds before terminating, because there is no `SIGTERM` there.
+
+The Windows test suite runs the Feishu consumer against a `.cmd` shim on Windows, covering the launcher, the event stream and the stop path. A live bot was not connected on the scratch host: only production may enable Feishu, and the scratch host must not receive Feishu credentials. Connecting a bot remains an operator step when the Windows host takes over production.
 
 ### WP7: end-to-end verification and hardening
 
@@ -230,7 +233,7 @@ The usable internal build is about 2-2.5 weeks of focused work; the full parity 
 | Service lifecycle | Required | Required | Fake DSH and HTTP in tests; real DSH in WP7 |
 | CLI invocation and blocked commands | Required | Required | Unit tests for argv, PATHEXT and `.cmd`; real CLIs in WP7 |
 | Prepare command | Required | Required | Real worktree creation in WP7 |
-| Feishu, if in scope | Required | Required | Bot event and message in WP7, optional |
+| Feishu | Required | Required | Launcher and event consumer in the Windows suite; a live bot message needs the production app and is an operator step |
 
 ## Risks and decisions
 
@@ -243,21 +246,21 @@ The usable internal build is about 2-2.5 weeks of focused work; the full parity 
 | Windows paths, line endings, executable bits or symlinks change commits | Broken scripts or noisy diffs in merge requests | Verify in WP7; set the isolated git configuration explicitly; use `git add --chmod=+x` when needed |
 | Dual-platform drift | Windows breaks silently | Windows CI and a smoke test; platform-argument unit tests |
 | Weaker isolation | A worker can act as the operator | Keep the dedicated OS account recommendation; blocked commands remain a guardrail only |
-| Feishu's npm `.cmd` launcher | Feishu unavailable on Windows | Node launcher or native CLI; keep Feishu optional |
+| Feishu's npm `.cmd` launcher | Feishu unavailable on Windows | Resolve the shim's Node entry and run it with Node, never through `cmd.exe`; covered by a Windows test |
 
 ### Decisions taken
 
 - One Node service script instead of a PowerShell twin (stage 1).
 - Account selection through the `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR` and `LARKSUITE_CLI_CONFIG_DIR` environment variables plus optional `configDir` Source settings, not `.cmd` wrappers for the Git CLIs (stage 2).
 - Native CLI executables with argv, and the platform shell for the prepare command (stages 2-3).
-- Feishu kept out of the first release; a Windows host supports the Git Sources only (stages 4-5).
+- Feishu included on Windows through a Node-entry launcher (WP6); a live bot still requires an operator-provided app and is not enabled on the scratch host.
 - A project-specific Windows runner runs `pnpm check` in CI for merge requests and the default branch (stage 5).
 - The operator provided the Windows machine and remote access for the proof of concept and the end-to-end run (stages 0 and 5).
 
 ### Remaining questions
 
 - Whether to move the Windows CI runner from the operator's workstation to a dedicated CI host with a dedicated Windows account. Today it is a user-level shell runner under `D:\dsh-ci` that starts at logon, so it runs jobs with the operator's credentials and stops when nobody is logged in.
-- Whether Feishu on Windows (WP6) is required before a Windows host replaces the POSIX production host. It is not implemented, and a test host may not enable Feishu, so it cannot be verified there.
+- Connecting a live Feishu bot to the Windows host, which needs the production app credentials and is therefore an operator step during cutover. The launcher and event-consumer paths are implemented and tested without credentials.
 
 ## Out of scope
 
@@ -269,4 +272,4 @@ The usable internal build is about 2-2.5 weeks of focused work; the full parity 
 
 ## Recommendation
 
-Port the deployment for this project. The workers must run the project's Windows-only toolchain, so the host is Windows; this plan is limited to making dsh-superagent run correctly there. Start with the 1-2 day proof of concept on the target machine, then follow WP0-WP7 and the staged order above. Keep the project's own Unity build, exe packaging and smoke-test work with the project, and keep Feishu optional. The Windows CI runner is in place; keep it running, and move it to a dedicated host before relying on it as a release gate.
+Port the deployment for this project. The workers must run the project's Windows-only toolchain, so the host is Windows; this plan is limited to making dsh-superagent run correctly there. The 1-2 day proof of concept, WP0-WP7 and the staged order above are complete, including the Feishu launcher. Keep the project's own Unity build, exe packaging and smoke-test work with the project. The Windows CI runner is in place; keep it running, and move it to a dedicated host before relying on it as a release gate.

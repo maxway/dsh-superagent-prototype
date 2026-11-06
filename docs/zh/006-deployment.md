@@ -12,7 +12,7 @@
 
 插件配置保存状态目录和本机上限。其他一切都用面板：仓库和账号在来源中设置，允许名单在策略中设置，执行器（worker）目录和命令在执行中设置。
 
-Windows 主机以原型质量支持 Git 来源。服务控制、worker 命令层、准备命令和路由工具的 Windows 路径已经实现。测试套件在 CI 中由项目的 Windows runner 运行，并通过记录在案的 POSIX 专用跳过项；真实的 Windows 启动/状态/停止/重启冒烟已通过；针对临时 GitLab 项目的真实工单也完成了端到端流程：Issue、工单、准备、PowerShell worker、提交、推送、合并请求和来源回复。飞书来源仍然缺失（Windows 部署计划的 WP6），暂不支持。在 Windows 上，worker 和路由 Session 使用 `pwsh` 工具而不是 `bash`，准备命令也通过 PowerShell 7 运行。下面某一步在 Windows 上不同时，会给出它的 Windows 写法。
+Windows 主机以原型质量支持 Git 来源和飞书来源。服务控制、worker 命令层、准备命令和路由工具的 Windows 路径已经实现。测试套件在 CI 中由项目的 Windows runner 运行，并通过记录在案的 POSIX 专用跳过项；真实的 Windows 启动/状态/停止/重启冒烟已通过；针对临时 GitLab 项目的真实工单也完成了端到端流程：Issue、工单、准备、PowerShell worker、提交、推送、合并请求和来源回复。飞书通过 npm `lark-cli` 的 `.cmd` shim 支持：宿主把它解析到 Node 入口，不经过 shell 运行；Windows 测试覆盖了这条路径。临时主机没有启用真实机器人，因为它不能持有飞书凭据。在 Windows 上，worker 和路由 Session 使用 `pwsh` 工具而不是 `bash`，准备命令也通过 PowerShell 7 运行。下面某一步在 Windows 上不同时，会给出它的 Windows 写法。
 
 ### 权限与隔离
 
@@ -29,7 +29,7 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
 - **Windows 主机：** 使用原生的 `gh.exe` 或 `glab.exe`，按下文 Windows 凭据一节以智能体账号登录。不要使用 `.cmd` 包装脚本。
 - github.com 上的一个仓库，或 gitlab.com / 自建实例上的一个 GitLab 项目；不支持 GitHub Enterprise Server。要为每个工单创建检出，请保留一个本地克隆，让准备命令能从其中添加工作树。如果该仓库使用 Git LFS，请安装 `git-lfs`。
 - 为 DeepSeek Harness 配置的模型服务商。dsh-superagent 使用该 profile 的默认模型，除非评估或执行设置指定了另一个。请在实际部署的 profile 中配置；它不会继承你日常使用 profile 的账号凭据或服务商配置，没有配置服务商时会报缺少凭据，无法研判请求。
-- 使用飞书时：`lark-cli`（已用 1.0.90 测试），以及一个带机器人的飞书或 Lark 应用。飞书目前只在 POSIX 上运行。
+- 使用飞书时：`lark-cli`（已用 1.0.90 测试），以及一个带机器人的飞书或 Lark 应用。Windows 上请安装 npm 包 `@larksuite/cli`；宿主会把它的 `.cmd` shim 解析到包的 Node 入口。
 
 ## 账号
 
@@ -95,10 +95,10 @@ glab api user
 
 ### 飞书机器人（可选）
 
-Windows 主机暂不支持飞书来源：npm 安装的 `lark-cli` 是 `.cmd` 启动器，把消息文本交给 `cmd.exe` 不安全（Windows 部署计划的 WP6）。请在 POSIX 主机上运行飞书。
+Windows 上 npm 安装的 `lark-cli` 是 `.cmd`。宿主会解析 shim 的 `%dp0%` Node 入口并用 Node 运行它，因此消息文本和 JSON 从不经过 `cmd.exe`。没有 Node 入口的 `.cmd` 会被拒绝；请使用 npm 包或原生可执行文件，不要用自定义包装脚本。
 
 1. 创建一个带机器人能力的自建应用。授予它接收消息事件和以机器人身份发送消息的权限，然后发布应用版本。它不需要读取消息、聊天历史、群或群成员的权限：来源只使用事件携带的内容并回复。被移除的读取路径会调用需要 `im:message`、`im:message:readonly`、`im:message.history:readonly`（消息）以及 `im:chat`、`im:chat:readonly`、`im:chat.group_info:readonly`、`im:chat:read`、`im:chat.members:read`（群和成员）的接口；当前版本不再调用它们。因此它无法补收 dsh-superagent 离线期间的消息，无法按 ID 读取消息或话题，无法列出群或同步成员，也无法读取图片。群 chat_id 和允许名单需要手工填写。为群选择**全部消息**还需要飞书“接收群内全部消息”的权限；没有该权限时只会收到 @ 机器人的消息。
-2. 给机器人一份自己的 `lark-cli` 配置，限制为机器人身份，并提供一个包装脚本：
+2. 给机器人一份自己的 `lark-cli` 配置，限制为机器人身份；在 POSIX 上再提供一个包装脚本：
 
    ```sh
    LARKSUITE_CLI_CONFIG_DIR="$HOME/.lark-cli-dsh-superagent" lark-cli config init --app-id <cli_…> --app-secret-stdin
@@ -111,7 +111,16 @@ Windows 主机暂不支持飞书来源：npm 安装的 `lark-cli` 是 `.cmd` 启
    chmod +x ~/.local/bin/lark-bot
    ```
 
-   第一条命令从标准输入读取应用密钥。请使用单独的配置目录：`lark-cli` 每个应用 id 只允许一个 profile，而你的个人配置可能已经包含该应用的用户登录。
+   在 Windows 上安装包，并把来源的 **机器人的 lark-cli** 字段指向 `lark-cli`（npm 的 `.cmd` shim），高级配置目录指向 `%USERPROFILE%\.lark-cli-dsh-superagent`：
+
+   ```powershell
+   npm install -g @larksuite/cli
+   $env:LARKSUITE_CLI_CONFIG_DIR = "$env:USERPROFILE\.lark-cli-dsh-superagent"
+   lark-cli config init --app-id <cli_…> --app-secret-stdin
+   lark-cli config strict-mode bot --global
+   ```
+
+   第一条命令从标准输入读取应用密钥（PowerShell 中用 `Get-Content secret.txt | lark-cli config init ...`）。请使用单独的配置目录：`lark-cli` 每个应用 id 只允许一个 profile，而你的个人配置可能已经包含该应用的用户登录。
 
    宿主会拒绝能充当用户的 CLI。它从机器人配置中读取应用 id、飞书/Lark 品牌和机器人的 `open_id`。
 
@@ -308,7 +317,7 @@ Windows 上使用当前 Windows 版本自带的 `curl.exe`，把 `cli` 设为 `g
 
 安装配置写入的进程环境：
 
-- **命令 shim** 位于 `<stateDir>/worker-bin`，在 `PATH` 中排在最前。POSIX 上，`gh` 运行智能体的 CLI，`lark-cli` 运行机器人的 CLI，被禁止的命令会失败；shim 在运行目标之前会把自身目录从 `PATH` 中移除。Windows 上只有被禁止和未启用的命令会生成 `.cmd` shim（未启用的 Git 宿主对应 shim 会失败）；启用的 CLI 由 `GH_CONFIG_DIR`、`GLAB_CONFIG_DIR` 和 `LARKSUITE_CLI_CONFIG_DIR` 选择原生可执行文件运行，参数不会经过 `cmd.exe`。
+- **命令 shim** 位于 `<stateDir>/worker-bin`，在 `PATH` 中排在最前。POSIX 上，`gh` 运行智能体的 CLI，`lark-cli` 运行机器人的 CLI，被禁止的命令会失败；shim 在运行目标之前会把自身目录从 `PATH` 中移除。Windows 上只有被禁止和未启用的命令会生成 `.cmd` shim（未启用的 Git 宿主对应 shim 会失败）；启用的 Git CLI 以 `GH_CONFIG_DIR` 或 `GLAB_CONFIG_DIR` 选择原生可执行文件运行，`lark-cli` 则通过其 npm `.cmd` shim 的 Node 入口运行，参数不会经过 `cmd.exe`。
 - **git 配置**位于 `<stateDir>/worker-gitconfig`：替换运营者的全局和系统 git 配置。它选择智能体 CLI 作为当前宿主的凭据助手，把该宿主的 SSH 地址改写为 HTTPS，并定义 Git LFS 过滤器。个人 git 设置（例如 HTTP 代理）不生效。这里不设置提交身份，git 绝不会提示输入凭据，`GH_TOKEN`、`GITHUB_TOKEN`、`GLAB_TOKEN` 和 `GITLAB_TOKEN` 会被移除。
 
 `worker-bin` 或 `worker-gitconfig` 中不是 dsh-superagent 写入的文件会阻止安装配置。如果工单目录位于一个自身配置添加了凭据的 git 仓库中，该工单会失败。
@@ -354,7 +363,7 @@ Windows 上用 PowerShell 执行同样的步骤；PowerShell 7 支持 `&&`，服
 | Windows 上启动时报 `dsh must be on PATH.` | 全局安装 DSH 并打开新的 shell；`start` 会解析 npm 的 `dsh.cmd` |
 | PowerShell 或 `cmd.exe` 无法运行 `scripts\dsh-superagent` | 该脚本在 Windows 上没有 `.cmd` shim；请运行 `node scripts\dsh-superagent <command>` |
 | `gh` 或 `glab` 的 `.cmd` 包装脚本丢失或破坏参数 | 使用原生 `gh.exe` 或 `glab.exe` 及其配置目录（见 Windows 凭据）；绝不要让 JSON 或消息文本经过 `cmd.exe` |
-| Windows 主机上飞书来源被拒绝 | 暂不支持；请在 POSIX 主机上运行飞书来源（Windows 计划的 WP6） |
+| Windows 主机上飞书来源被拒绝 | 把来源的 **机器人的 lark-cli** 字段指向 `lark-cli`（npm 的 `.cmd` shim）或包的 Node 入口；没有 Node 入口的自定义 `.cmd` 包装会被拒绝 |
 | `git does not read the credential configuration dsh-superagent writes` | 安装 git 2.32 或更高版本 |
 | 工单失败并报 `The git configuration of the repository in … sets …` | 从克隆的 `.git/config` 中移除所指的凭据或 `http.*.extraheader` 设置 |
 | `… was not written by dsh-superagent` | 把所指的文件移出 `<stateDir>/worker-bin` 或 `<stateDir>/worker-gitconfig`，或选择另一个 `stateDir` |

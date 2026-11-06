@@ -11,7 +11,7 @@
 - **本项目的主机需要。** worker 必须运行项目仅 Windows 的工具链，因此 agent 主机必须是 Windows。本方案只移植部署本身；项目自己的构建和冒烟工作不在范围内。
 - **工期：** 一个可用的内部版本约需 9-13 人日：一名开发者 2-2.5 周，包含概念验证和端到端验证，不含飞书，也不含 Windows CI runner。
 - **完整对齐**——飞书、Windows CI、双语的安装文档，以及让两个平台都持续被测试的加固——约需 12-18 人日，即一名开发者 3-4 周。
-- **状态（2026-11-07）：** 可用的内部版本已经完成，阶段 5 也已端到端验证。阶段 1-5 均已实现；项目 Windows runner 为合并请求和默认分支运行 `pnpm check`，手工 Windows 运行也通过，并有记录在案的 POSIX 专用跳过项。概念验证发现的原生路径阻塞已修复，服务脚本的真实 Windows 启动/状态/停止/重启冒烟已通过，针对临时项目 `ngd/dsh-superagent-test` 的真实工单还完成了端到端流程：Issue、工单、准备命令、PowerShell worker、提交、推送、合并请求和来源回复。只剩可选的飞书来源（WP6），因此飞书来源在 Windows 上不受支持。
+- **状态（2026-11-07）：** 可用的内部版本和可选的飞书工作包都已完成，阶段 5 也已端到端验证。阶段 1-5 与 WP6 均已实现；项目 Windows runner 为合并请求和默认分支运行 `pnpm check`，手工 Windows 运行也通过，并有记录在案的 POSIX 专用跳过项。概念验证发现的原生路径阻塞已修复，服务脚本的真实 Windows 启动/状态/停止/重启冒烟已通过，针对临时项目 `ngd/dsh-superagent-test` 的真实工单还完成了端到端流程：Issue、工单、准备命令、PowerShell worker、提交、推送、合并请求和来源回复。飞书来源会把 npm `lark-cli` 的 `.cmd` shim 解析到它的 Node 入口，不经过 shell 直接运行；Windows 测试覆盖了这条路径。临时主机没有启用真实机器人，因为它不能持有飞书凭据；接上真实机器人仍是生产主机上的运营者步骤。
 - **建议：** 移植部署；先做 1-2 天的概念验证，然后按下面的分阶段计划执行。项目自己的工具链工作另行处理。
 
 ## “在 Windows 上部署”意味着什么
@@ -57,7 +57,7 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 
 ### 实现状态（2026-11-07）
 
-上表是这份方案开始时所做的评估。阶段 1-5 此后已处理这些缺口：
+上表是这份方案开始时所做的评估。阶段 1-5 与 WP6 此后已处理这些缺口：
 
 - **阶段 0（已完成）。** 在运营者 Windows 机器上的概念验证发现两个阻塞：`stateDir` 和 `executor.directory` 不接受原生 `C:\...` 路径，setup 探测通过 POSIX 的 `env` 可执行文件传递环境。两处修复都已进入 main。真实的 Windows 启动/状态/停止/重启冒烟与准备命令现在也在该主机上通过；针对临时仓库的端到端运行已在阶段 5 通过。
 - **阶段 1。** `scripts/dsh-superagent` 是 Node 脚本。POSIX 保留 tmux 和 `SIGINT`；Windows 启动分离进程，并通过 `POST /orchestrator/api/service/stop` 停止。POSIX 路径与一个隔离的 Windows profile 都通过了启动/状态/停止/重启；Windows 冒烟还发现并修复了两处进程识别缺陷（见[阶段 5 证据](../evidence/windows-stage5/)）。
@@ -65,7 +65,8 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 - **阶段 3。** 准备命令在 POSIX 上走 `sh -c`，在 Windows 上走 `pwsh -NoProfile -NonInteractive -Command`；路由 Session 接受 `pwsh`；提示词和技能已不依赖具体 shell。
 - **阶段 4。** 补上两种语言的 Windows 安装与部署路径。
 - **阶段 5（已完成）。** `pnpm check` 已在 Windows 主机（Windows 10 19045、Node.js 24.21.0、pnpm 11.7.0）上通过，POSIX 专用套件按[阶段 5 证据](../evidence/windows-stage5/)中记录的原因跳过；服务脚本的真实 Windows 启动/状态/停止/重启冒烟也已通过。针对临时 GitLab 项目 `ngd/dsh-superagent-test` 的真实工单还完成了完整流程：隔离的 `stage5-e2e` profile 把人发在 Issue #1 中的提及接受为工单，PowerShell 准备命令创建了工作树，`pwsh` worker 修改了 `README.md`，提交 `a2412af`，推送分支，打开合并请求 !1 并在 Issue #1 中回复；面板把该工单显示为等待人工合并。本次运行记录在[阶段 5 证据](../evidence/windows-stage5/)中。Windows CI runner 已就位：项目专用的 `windows-workstation-dd` runner（tag `windows`，shell executor，位于运营者 Windows 工作站的 `D:\dsh-ci`）为合并请求和默认分支运行 `.gitlab-ci.yml` 中的 `windows-check` job。它的首次运行发现并修复了文档测试中的换行假设：默认 Windows 检出使用 CRLF，测试现在会先规范化。CI 运行记录在[阶段 5 证据](../evidence/windows-stage5/)中。
-- **剩余工作。** Windows 上的飞书来源（WP6，可选）。端到端候选 profile 需要自己的模型提供方配置；没有该配置的 profile 会报 `MISSING_CREDENTIAL`，无法研判请求。Windows 主机支持 Git 来源；飞书来源不受支持。
+- **WP6（已完成）。** 飞书来源可在 Windows 上运行。宿主会把 npm `.cmd` shim 解析到它 `%dp0%` 路径所指的 Node 入口，并用 Node 运行，因此消息文本和 JSON 从不经过 `cmd.exe`；`.js` 入口也按同样方式运行，没有 Node 入口的 `.cmd` 会被拒绝。事件消费者通过关闭 stdin 请求结束，并等待五秒后终止，因为 Windows 没有 `SIGTERM`。飞书消费者测试套件会在 Windows 上通过 npm 风格的 `.cmd` shim 运行一个 Node 假实现。临时主机没有启用真实机器人，因为它不能持有飞书凭据；接上机器人是生产主机上的运营者步骤。
+- **剩余工作。** 计划内没有剩余阶段。WP6 已实现并有 Windows 测试覆盖；临时主机没有接入真实机器人，因为只有生产可以启用飞书。端到端候选 profile 需要自己的模型提供方配置；没有该配置的 profile 会报 `MISSING_CREDENTIAL`，无法研判请求。Windows 主机支持 Git 来源和飞书来源。
 
 ## 有没有必要？
 
@@ -106,7 +107,7 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 | WP3 | 准备命令、路由工具、提示词与技能 | 1-1.5 | WP2 |
 | WP4 | 安装与部署文档，两种语言 | 1.5-2 | WP1-3 |
 | WP5 | Windows 测试与 CI | 2-3 | WP1-4 |
-| WP6 | Windows 上的飞书，可选 | 1-2 | WP2 |
+| WP6 | Windows 上的飞书 | 1-2 | WP2 |
 | WP7 | 端到端验证与加固 | 1.5-2 | WP1-5 |
 
 ### 分阶段执行
@@ -120,7 +121,7 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 | 2 | worker 命令层：平台运行器与探测、Win32 shim、`PATHEXT`、blocked commands、账号选择 | 单元测试覆盖生成的文件和参数处理；POSIX 行为不变 | 不需要 |
 | 3 | 准备命令、路由工具、提示词与技能 | 测试通过；Linux 保留 `sh` 路径；Windows 命令有文档 | 不需要 |
 | 4 | 安装与部署文档 | `pnpm check` 和文档测试通过；人工审查 Windows 路径 | 不需要 |
-| 5 | Windows CI 与端到端验证，飞书可选 | Windows runner 运行 `pnpm check`；真实工单完成 setup、准备、推送和合并请求；Linux 仍然通过 | 需要 |
+| 5 | Windows CI 与端到端验证，包含飞书 | Windows runner 运行 `pnpm check`；真实工单完成 setup、准备、推送和合并请求；飞书启动器测试在 Windows 上通过；Linux 仍然通过 | 需要 |
 
 ### WP0：概念验证
 
@@ -155,7 +156,7 @@ CLI 和账号层最需要仔细设计。当前模型有两层：`worker-bin` 中
 - 接受 `stateDir` 和 `executor.directory` 的原生绝对路径——Windows 上的盘符和 UNC、POSIX 上的 POSIX 路径——并在两个平台上测试校验器。
 - 修正探测：`workerProbe` 和飞书探测通过子进程环境传入 `PATH`，不再启动 `env`；`executable()` 识别 `PATHEXT`，不再要求 POSIX 的可执行位。
 - 把 blocked commands 保留为护栏 shim，在 Windows 上写成 `.cmd` 文件，使 PowerShell 优先解析它们。`gh`、`glab` 和 `lark-cli` 不再需要账号 shim，因为环境变量已经选择了账号。
-- 飞书：Windows 上的 `lark-cli` 通常是 npm 的 `.cmd`；通过一个小型 Node 启动器或原生构建来运行它，并让消息文本不经过 `cmd.exe` 的引号解析。这属于 WP6。
+- 飞书：Windows 上的 `lark-cli` 通常是 npm 的 `.cmd`。宿主会解析 shim 的 `%dp0%` Node 入口并用 Node 运行它，因此消息文本从不经过 `cmd.exe` 的引号解析。这属于 WP6。
 
 考虑过的备选：保留包装模型，通过 `cmd.exe` 启动 `.cmd` 包装。它在设置上改动更少，但对携带 JSON 或任意消息文本的 CLI 参数不安全，因此不推荐作为长期形态。短期的内部试用可以使用它，前提是服务环境设置三个配置目录，并且 `cli` 字段指向包装。
 
@@ -180,9 +181,11 @@ CLI 和账号层最需要仔细设计。当前模型有两层：`worker-bin` 中
 - 在 Windows 上梳理 `pnpm check`：许多测试使用 POSIX fixture、`:` PATH 分隔符、`python3` 和 `#!/bin/sh` helper。只有在 Windows 专用测试覆盖同一行为时，才在 Windows 上跳过 POSIX 专用测试，并在测试中记录原因。
 - 增加一个 Windows runner，例如一个 GitLab runner tag 或定时 job，运行 `pnpm check`，如果可行，再对一个临时仓库跑冒烟测试。没有它，Windows 支持会逐渐失效。
 
-### WP6：Windows 上的飞书，可选
+### WP6：Windows 上的飞书
 
-npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费者，用 `Commands.run` 做一次性调用。通过 Node 启动器（包的 JS 入口）或原生可执行文件运行它，让消息文本不经过 shell 引号解析，并重新检查消费者在 Windows 上的停止行为——在那里，关闭 stdin 加 `kill` 会变成强制终止。如果飞书不在范围内，Windows 部署只支持 Git 来源，文档必须说明这一点。
+npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费者，用 `Commands.run` 做一次性调用。宿主现在会把 npm `.cmd` shim 解析到它 `%dp0%` 路径所指的 Node 入口，并用宿主的 Node 可执行文件运行该入口，因此 argv 从不经过 shell。`.js` 入口也按同样方式运行；没有 Node 入口的 `.cmd` 会被拒绝，而不是交给 `cmd.exe` 做引号解析。在 Windows 上，消费者通过关闭 stdin 请求 CLI 结束，并等待五秒后终止，因为那里没有 `SIGTERM`。
+
+Windows 测试套件会在 Windows 上通过 `.cmd` shim 运行飞书消费者，覆盖启动器、事件流和停止路径。临时主机没有接入真实机器人：只有生产可以启用飞书，而临时主机不能持有飞书凭据。等 Windows 主机接管生产时，接入机器人仍是运营者步骤。
 
 ### WP7：端到端验证与加固
 
@@ -232,7 +235,7 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 | 服务生命周期 | 必须 | 必须 | 测试中使用假 DSH 和 HTTP；WP7 中使用真实 DSH |
 | CLI 调用与 blocked commands | 必须 | 必须 | 针对 argv、PATHEXT 和 `.cmd` 的单元测试；WP7 中使用真实 CLI |
 | 准备命令 | 必须 | 必须 | WP7 中真实创建工作树 |
-| 飞书（如果在范围内） | 必须 | 必须 | WP7 中的机器人事件与消息，可选 |
+| 飞书 | 必须 | 必须 | Windows 套件覆盖启动器和事件消费者；真实机器人消息需要生产应用，属于运营者步骤 |
 
 ## 风险与决策
 
@@ -245,21 +248,21 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 | Windows 的路径、换行符、可执行位或符号链接改变提交 | 脚本损坏或合并请求出现噪声 diff | 在 WP7 中验证；显式设置隔离的 git 配置；必要时用 `git add --chmod=+x` |
 | 双平台漂移 | Windows 悄悄失效 | Windows CI 和冒烟测试；platform 参数单元测试 |
 | 隔离更弱 | worker 可能以运营者身份行动 | 保留专用操作系统账号的建议；blocked commands 仍然只是护栏 |
-| 飞书的 npm `.cmd` 启动器 | Windows 上飞书不可用 | Node 启动器或原生 CLI；飞书保持可选 |
+| 飞书的 npm `.cmd` 启动器 | Windows 上飞书不可用 | 解析 shim 的 Node 入口并用 Node 运行，绝不经过 `cmd.exe`；由 Windows 测试覆盖 |
 
 ### 已定决策
 
 - 使用一个 Node 服务脚本，而不是 PowerShell 孪生脚本（阶段 1）。
 - 账号选择使用 `GH_CONFIG_DIR`、`GLAB_CONFIG_DIR` 和 `LARKSUITE_CLI_CONFIG_DIR` 环境变量，并辅以可选的 `configDir` 来源设置；Git CLI 不再使用 `.cmd` 包装脚本（阶段 2）。
 - Git CLI 使用原生可执行文件和 argv，准备命令使用平台 shell（阶段 2-3）。
-- 飞书不进入首个版本；Windows 主机只支持 Git 来源（阶段 4-5）。
+- Windows 上的飞书通过 Node 入口启动器实现（WP6）；真实机器人仍需要运营者提供应用，且未在临时主机上启用。
 - 项目专用的 Windows runner 在 CI 中为合并请求和默认分支运行 `pnpm check`（阶段 5）。
 - 运营者为概念验证和端到端运行提供了 Windows 机器与远程访问（阶段 0 和 5）。
 
 ### 剩余问题
 
 - 是否把 Windows CI runner 从运营者工作站迁移到专用 CI 主机，并使用专用 Windows 账号。目前它是 `D:\dsh-ci` 下的用户级 shell runner，随登录启动，因此以运营者凭据运行 job，且无人登录时会停止。
-- 在 Windows 主机取代 POSIX 生产主机之前，是否需要 Windows 上的飞书支持（WP6）。该功能尚未实现，而测试主机不得启用飞书，因此无法在那里验证。
+- 把真实飞书机器人接到 Windows 主机；这需要生产应用凭据，因此属于切换期间的运营者步骤。启动器和事件消费者路径已实现并在无凭据条件下测试。
 
 ## 不在范围内
 
@@ -271,4 +274,4 @@ npm 的 `lark-cli` 是 `.cmd`；飞书来源用 `spawn` 运行长期事件消费
 
 ## 建议
 
-为本项目移植部署。worker 必须运行项目仅 Windows 的工具链，所以主机是 Windows；本方案只限于让 dsh-superagent 在那里正确运行。先在目标机器上做 1-2 天的概念验证，然后按 WP0-WP7 和上面的阶段顺序执行。把项目自己的 Unity 构建、exe 打包和冒烟测试工作留给项目，飞书保持可选。Windows CI runner 已就位；保持其运行，并在把它当作发布门禁之前迁移到专用主机。
+为本项目移植部署。worker 必须运行项目仅 Windows 的工具链，所以主机是 Windows；本方案只限于让 dsh-superagent 在那里正确运行。1-2 天的概念验证、WP0-WP7 和上面的阶段顺序均已完成，包括飞书启动器。把项目自己的 Unity 构建、exe 打包和冒烟测试工作留给项目。Windows CI runner 已就位；保持其运行，并在把它当作发布门禁之前迁移到专用主机。

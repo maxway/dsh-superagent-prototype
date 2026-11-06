@@ -17,7 +17,7 @@ import { testDeployment } from './fixtures/deployment.ts'
 import { SettingsSchema, settingsPolicy } from '../src/policy.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
 import { SetupError, type SetupProblem } from '../src/setup.ts'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -838,9 +838,9 @@ it('reports GitHub as failing only after the configured number of consecutive fa
   expect(githubKind.schema.parse({})).toEqual({ repository: '', cli: '', configDir: '', pollSeconds: 60, failuresBeforeError: 3, observeIssues: false,
     observePulls: false, observeComments: false, observeCi: false })
 })
-// The Feishu Source is not supported on Windows yet (WP6): lark-cli from npm is a .cmd that the long-running spooler
-// cannot launch directly. The GitLab and GitHub Sources are unaffected.
-describe.skipIf(process.platform === 'win32')('feishu event consumer', () => {
+// The fake CLI is a Node program on both platforms. On Windows it is reached through an npm-style `.cmd` shim, which
+// exercises the same launcher as the real `lark-cli.cmd`; on POSIX it runs directly through its shebang.
+describe('feishu event consumer', () => {
   let dir: string
   let controller: AbortController
   let running: Promise<unknown> | undefined
@@ -855,23 +855,39 @@ describe.skipIf(process.platform === 'win32')('feishu event consumer', () => {
   })
   /**
    * A bot CLI whose `event consume` behaves as `mode` says: `never` gets ready, `warn` warns once ready, `ready` stays up,
-   * and `flaky` exits after its first ready. It records each run and the PID of the latest.
+   * and `flaky` exits after its first ready. It records each run and the PID of the latest. The program is Node so it runs
+   * on both platforms; on Windows it is wrapped in the npm `.cmd` shim that the real `lark-cli` install produces.
    */
   function cli(mode: 'never' | 'warn' | 'ready' | 'flaky' | 'events' | 'late'): string {
-    const path = join(dir, 'lark-bot')
-    writeFileSync(path, `#!/bin/sh
-  [ "$1" = event ] || { echo '{"ok":true,"data":{}}'; exit 0; }
-  n=$(cat '${dir}/runs' 2>/dev/null || echo 0); n=$((n + 1)); echo $n > '${dir}/runs'; echo $$ > '${dir}/pid'
-  case ${mode} in
-    never) exec sleep 60 ;;
-    warn) echo '[event] ready' >&2; echo 'WARN the connection was reset' >&2; exec sleep 60 ;;
-    ready) echo '[event] ready' >&2; exec sleep 60 ;;
-    flaky) echo '[event] ready' >&2; [ "$n" -gt 1 ] && exec sleep 60; exit 1 ;;
-    events) echo '[event] ready' >&2; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
-    late) echo '[event] ready' >&2; sleep 1; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
-  esac
-  `, { mode: 0o755 })
-    return path
+    const script = join(dir, 'lark-bot.js')
+    const quote = (value: string): string => JSON.stringify(value)
+    writeFileSync(script, `#!/usr/bin/env node
+const fs = require('node:fs')
+const path = require('node:path')
+const dir = ${quote(dir)}
+const mode = ${quote(mode)}
+const args = process.argv.slice(2)
+if (args[0] !== 'event') { process.stdout.write('{"ok":true,"data":{}}\\n'); process.exit(0) }
+const runsFile = path.join(dir, 'runs')
+const run = (fs.existsSync(runsFile) ? Number(fs.readFileSync(runsFile, 'utf8')) : 0) + 1
+fs.writeFileSync(runsFile, String(run))
+fs.writeFileSync(path.join(dir, 'pid'), String(process.pid))
+const ready = () => process.stderr.write('[event] ready\\n')
+const printEvents = () => { process.stdout.write(fs.readFileSync(path.join(dir, 'events'), 'utf8')); fs.writeFileSync(path.join(dir, 'printed'), '') }
+process.stdin.resume()
+process.stdin.on('end', () => process.exit(0))
+if (mode === 'never') { setInterval(() => {}, 1000) }
+else if (mode === 'warn') { ready(); process.stderr.write('WARN the connection was reset\\n'); setInterval(() => {}, 1000) }
+else if (mode === 'ready') { ready(); setInterval(() => {}, 1000) }
+else if (mode === 'flaky') { ready(); if (run > 1) setInterval(() => {}, 1000); else process.exit(1) }
+else if (mode === 'events') { ready(); printEvents(); setInterval(() => {}, 1000) }
+else { ready(); setTimeout(() => { printEvents(); setInterval(() => {}, 1000) }, 1000) }
+`, { mode: 0o755 })
+    if (process.platform !== 'win32') { chmodSync(script, 0o755); return script }
+    // The npm shim names the Node entry relative to the directory it is run from.
+    const shim = join(dir, 'lark-bot.cmd')
+    writeFileSync(shim, `@ECHO off\r\n"%dp0%\\node.exe" "%dp0%\\lark-bot.js" %*\r\n`)
+    return shim
   }
   const runs = () => existsSync(join(dir, 'runs')) ? Number(readFileSync(join(dir, 'runs'), 'utf8')) : 0
   const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
