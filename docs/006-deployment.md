@@ -22,7 +22,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 ## Prerequisites
 
-- Node.js 22.19+ or 24+, pnpm and git 2.32+ (Git for Windows on a Windows host). POSIX also needs tmux; Windows needs PowerShell 7 (`pwsh`) and has no tmux or Python requirement.
+- Node.js 24.9+, pnpm and git 2.32+ (Git for Windows on a Windows host). POSIX also needs tmux; Windows needs PowerShell 7 (`pwsh`) and has no tmux or Python requirement.
 - GitHub CLI (`gh`) 2.48 or later for a GitHub deployment, or GitLab CLI (`glab`) for a GitLab deployment. Source CLI fields must point to the agent CLI's command name or absolute path (`gh`, `glab` or `lark-cli`; on POSIX usually a wrapper script); the host relies on their subcommands and output formats.
 - **Windows host:** the native `gh.exe` or `glab.exe`, signed in to the agent account as Windows credentials below describes. Do not use a `.cmd` wrapper.
 - A repository on github.com, or a GitLab project on gitlab.com or a self-managed instance. GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
@@ -129,7 +129,7 @@ On Windows the npm `lark-cli` is a `.cmd`. The host resolves the shim's `%dp0%` 
 Run this block once, on a machine that has no `superagent` profile yet:
 
 ```sh
-npm install -g @deepseek-ai/dsh@0.2.1-rc.3
+npm install -g @deepseek-ai/dsh@0.2.2-rc.1
 git clone <this repository> dsh-superagent && cd dsh-superagent
 pnpm install && pnpm build
 dsh superagent --from-default-profile web --dump-config > /dev/null

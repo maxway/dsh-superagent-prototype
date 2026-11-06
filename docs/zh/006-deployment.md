@@ -24,7 +24,7 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
 
 ## 前置条件
 
-- Node.js 22.19+ 或 24+、pnpm 和 git 2.32+（Windows 主机用 Git for Windows）。POSIX 上还需要 tmux；Windows 上需要 PowerShell 7（`pwsh`），不需要 tmux 或 Python。
+- Node.js 24.9+、pnpm 和 git 2.32+（Windows 主机用 Git for Windows）。POSIX 上还需要 tmux；Windows 上需要 PowerShell 7（`pwsh`），不需要 tmux 或 Python。
 - 使用 GitHub 部署时，GitHub CLI（`gh`）2.48 或更高版本；使用 GitLab 部署时，GitLab CLI（`glab`）。来源的 CLI 字段必须指向智能体 CLI 的命令名或绝对路径（`gh`、`glab` 或 `lark-cli`；POSIX 上通常是包装脚本）；宿主依赖它们的子命令和输出格式。
 - **Windows 主机：** 使用原生的 `gh.exe` 或 `glab.exe`，按下文 Windows 凭据一节以智能体账号登录。不要使用 `.cmd` 包装脚本。
 - github.com 上的一个仓库，或 gitlab.com / 自建实例上的一个 GitLab 项目；不支持 GitHub Enterprise Server。要为每个工单创建检出，请保留一个本地克隆，让准备命令能从其中添加工作树。如果该仓库使用 Git LFS，请安装 `git-lfs`。
@@ -131,7 +131,7 @@ Windows 上 npm 安装的 `lark-cli` 是 `.cmd`。宿主会解析 shim 的 `%dp0
 在一台还没有 `superagent` profile 的机器上运行一次这段内容：
 
 ```sh
-npm install -g @deepseek-ai/dsh@0.2.1-rc.3
+npm install -g @deepseek-ai/dsh@0.2.2-rc.1
 git clone <this repository> dsh-superagent && cd dsh-superagent
 pnpm install && pnpm build
 dsh superagent --from-default-profile web --dump-config > /dev/null

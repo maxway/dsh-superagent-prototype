@@ -1,5 +1,5 @@
 /** Serves paginated context resources to orchestrator_read so large bodies stay out of model prompts until requested. */
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { UserError, key, latestReport, reached, runningAssignment, threadKey, type Ticket, type Trigger } from '../core/index.ts'
 import { batchOf, inputMessage, triggerMessage, workerSessionId } from '../executor/dsh.ts'
 import { readGithub } from '../sources/github-read.ts'
@@ -109,8 +109,17 @@ async function sourcePage(read: Read, source: string, fetch: () => Promise<unkno
 const THREAD_DECISIONS = 5
 const triggerLine = (trigger: Trigger) => ({ trigger_id: trigger.id, actor: trigger.actor.id, human: trigger.human, at: trigger.at,
   preview: preview(trigger.text), chars: trigger.text.length, read: `trigger/${trigger.id}` })
+/** Read a worker Session's full event log; DSH 0.2.2 removed the combined `sessionController.inspect` reader. */
 async function transcript(host: ResourceHost, ticketId: string) {
-  return (await host.context.sessionController.inspect(workerSessionId(ticketId) as SessionId)).events
+  await using handle = await host.context.sessionPersistence.open(workerSessionId(ticketId) as SessionId, 'read')
+  const events: SessionEvent[] = []
+  for (let offset = 0; ; ) {
+    const { events: batch } = await handle.read(offset, 512)
+    if (batch.length === 0) break
+    events.push(...batch)
+    offset += batch.length
+  }
+  return events
 }
 
 const ROUTES: readonly Route[] = [

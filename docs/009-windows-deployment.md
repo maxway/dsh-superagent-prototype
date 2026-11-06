@@ -123,7 +123,7 @@ The work packages are the technical breakdown; the stages are the execution and 
 
 ### WP0: proof of concept
 
-On a clean Windows 11 or Windows Server machine, install Node 22.19+ or 24, pnpm, git, PowerShell 7 and the DSH version pinned in [006 Deployment](006-deployment.md). Create the `superagent` profile, add the bundle with `link:`, open the panel and confirm that the Web profile, the `pwsh` tool and the isolation settings load. Then reproduce the three blockers on purpose: setup's `env` probe, an `execFile`/`spawn` call with a `.cmd` wrapper, and the prepare command under `sh -c`. Exit when the three have a measured answer; stop if DSH itself fails to run, because that would change the whole estimate. The target is the operator's local Windows machine; the agent process runs on Linux and cannot operate it directly, so the operator runs these commands or provides a remote channel.
+On a clean Windows 11 or Windows Server machine, install Node 24.9+, pnpm, git, PowerShell 7 and the DSH version pinned in [006 Deployment](006-deployment.md). Create the `superagent` profile, add the bundle with `link:`, open the panel and confirm that the Web profile, the `pwsh` tool and the isolation settings load. Then reproduce the three blockers on purpose: setup's `env` probe, an `execFile`/`spawn` call with a `.cmd` wrapper, and the prepare command under `sh -c`. Exit when the three have a measured answer; stop if DSH itself fails to run, because that would change the whole estimate. The target is the operator's local Windows machine; the agent process runs on Linux and cannot operate it directly, so the operator runs these commands or provides a remote channel.
 
 ### WP1: service lifecycle
 

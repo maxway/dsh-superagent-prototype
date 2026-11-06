@@ -21,7 +21,7 @@
 
 Windows 支持以原型质量覆盖 Git 来源和飞书来源：代码路径已经实现并在 Windows 上测试过，测试套件在 CI 中由项目的 Windows runner 运行，真实的工单也已在临时项目上完成端到端流程。飞书使用 npm `lark-cli` 的 `.cmd` shim，宿主把它解析到 Node 入口，不经过 shell 运行（[docs/zh/009-windows-deployment.md](docs/zh/009-windows-deployment.md)，WP6）；临时主机没有启用真实机器人，因为它不能持有飞书凭据。Windows 主机只运行一个 Git 来源。按下面编号的步骤操作，并把以下差异考虑进去。
 
-- **前置条件：** Windows 10/11 或 Windows Server，Node.js 22.19+ 或 24+、pnpm、Git for Windows 2.32+、PowerShell 7（`pwsh` 在 `PATH` 上），以及原生的 `gh.exe` 或 `glab.exe`。不需要 tmux、Python 或 WSL。
+- **前置条件：** Windows 10/11 或 Windows Server，Node.js 24.9+、pnpm、Git for Windows 2.32+、PowerShell 7（`pwsh` 在 `PATH` 上），以及原生的 `gh.exe` 或 `glab.exe`。不需要 tmux、Python 或 WSL。
 - **探测：** 在 PowerShell 中运行 `node -v; pnpm -v; git --version; gh --version; dsh --version`、`Get-Command pwsh` 和 `Get-ChildItem "$env:USERPROFILE\.dsh\profiles\*\cordis.patch.yml"`。不需要 `tmux` 和 `python3`。
 - **账号：** 用配置目录以智能体账号登录原生 CLI，然后把同一个目录填进来源的 **智能体账号的配置目录** 高级字段（见 [docs/zh/006-deployment.md](docs/zh/006-deployment.md) 的 Windows 凭据）。不要写 `.cmd` 包装脚本：它会破坏参数。
 - **服务：** 通过 Node 启动、停止和检查状态，因为脚本没有 `.cmd` shim：`node scripts\dsh-superagent start`、`node scripts\dsh-superagent status` 等。
@@ -39,7 +39,7 @@ command -v lark-cli
 grep -l -E 'id: dsh-superagent\b' "${DSH_HOME:-$HOME/.dsh}"/profiles/*/cordis.patch.yml 2>/dev/null
 ```
 
-- **前置条件：** Node.js 22.19+ 或 24+、pnpm、git 2.32+、tmux、Python 3.8+、GitHub CLI 2.48+，以及处于 `package.json` 的 `engines.dsh` 范围内的 DSH；Windows 主机见上面的 Windows 主机一节，要求不同。缺少的项会成为计划中的一项，而不是一个问题。DSH 还需要模型服务；如果运营者从未用模型运行过 DSH，配置模型是运营者要做的步骤。
+- **前置条件：** Node.js 24.9+、pnpm、git 2.32+、tmux、Python 3.8+、GitHub CLI 2.48+，以及处于 `package.json` 的 `engines.dsh` 范围内的 DSH；Windows 主机见上面的 Windows 主机一节，要求不同。缺少的项会成为计划中的一项，而不是一个问题。DSH 还需要模型服务；如果运营者从未用模型运行过 DSH，配置模型是运营者要做的步骤。
 - **运营者登录名：** `gh api user` 的结果是运营者自己的 GitHub 登录名，用作第 5 个问题的推荐答案。
 - **已有的 profile：** 如果一个 profile 中已有 `dsh-superagent` 条目，说明之前安装配置过：询问是否继续使用它、保留其配置，并阅读 `docs/zh/006-deployment.md` 中的升级一节。
 
