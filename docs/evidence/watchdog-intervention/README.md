@@ -9,6 +9,6 @@ These captures show the same page in an isolated candidate: **Superagent → 设
 
 The candidate was a separate DSH profile with its own `DSH_HOME`, state directory and port; Feishu, GitHub and GitLab
 Sources were disabled, and it had no tickets, credentials or production data. The setup banner is expected because the
-candidate has no Source configured; it is identical in both captures. The panel is scrolled to the Execution settings
-block where the new Watchdog section lives. The after capture shows the default `observe` mode, `retry` allowed, `stop`
-off, and the default thresholds (30 / 15 / 2 / 6). No private Feishu content or credentials are present.
+candidate has no Source configured; it is identical in both captures. Both captures are scrolled to the bottom of the
+Execution settings page, where the new block appears in the after build. The after capture shows the default `observe`
+mode, `retry` allowed, `stop` off, and the default thresholds (30 / 15 / 2 / 6). No private Feishu content or credentials are present.
