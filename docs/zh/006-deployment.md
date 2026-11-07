@@ -297,7 +297,7 @@ Windows 上用 `node scripts\dsh-superagent ...`。`--stale-minutes` 只改变�
    git -C C:\src\widgets worktree add -b "agent/$($env:DSH_SUPERAGENT_NAME)" "$($env:DSH_SUPERAGENT_DIR)" "refs/dsh-superagent/$($env:DSH_SUPERAGENT_TICKET)"
    ```
 
-   把个人 CLI（例如登录你自己账号的 CLI）列为禁止调用的命令。工单结束后，只要它的 worktree 干净且每个提交都在远端（或 prepare 命令取回的 ref 上），执行器就会回收该链接 worktree 并删除本地 `agent/<name>` 分支；有未提交或未推送工作的目录会保留，恢复工单时会再次运行 prepare 命令。
+   把个人 CLI（例如登录你自己账号的 CLI）列为禁止调用的命令。工单结束后，只要它的 worktree 干净且每个提交都在远端（或 prepare 命令取回的 ref 上），执行器就会回收该链接 worktree 并删除本地 `agent/<name>` 分支；有未提交或未推送工作的目录会保留，恢复工单时会再次运行 prepare 命令。当工单自己打开的 pull request 全部合并时，执行器也会删除远端分支，但只限远端分支的顶端仍是本地 HEAD 的情况；否则远端分支保留。
 4. **提示词。** 设置团队段落：GitHub 声明行、评审机器人、提交作者和自动合并条件。
 
 ### 管理 API

@@ -209,7 +209,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 
 `install` 订阅 Session 事件；`dispose` 取消订阅。回合结束通常报告等待，但就绪之后或需要人行动时除外。错误报告失败。启动时，`resume` 通过 `assignmentInterrupted` 报告被中断的派工，并重新排队不等待人工的待启动派工，最早的工单优先。
 
-`stop` 还会为已结束的工单排队一个 `cleanup` 副作用，`resume` 会为它找到的每个已结束工单排队一个，因此升级前结束的工单也会被回收。`cleanupQueued` 等待工单的后台工作停止，让同一工单的启动等待，避免两者重叠，然后调用 `reclaimWorkspace`（`src/executor/workspace.ts`）。该辅助函数只在 worktree 位于工单的 `agent/<name>` 分支、`git status --porcelain` 为空，且 `git rev-list HEAD --not --remotes refs/dsh-superagent/<ticket>` 为零时移除链接 worktree，然后删除本地分支和取回的 ref。有改动、未推送或检出了其他分支的目录会保留；远端分支、pull request 和主检出始终不变。恢复的工单如果发现目录已不存在，会再次运行 prepare 命令。
+`stop` 还会为已结束的工单排队一个 `cleanup` 副作用，`resume` 会为它找到的每个已结束工单排队一个，因此升级前结束的工单也会被回收。`cleanupQueued` 等待工单的后台工作停止，让同一工单的启动等待，避免两者重叠，然后调用 `reclaimWorkspace`（`src/executor/workspace.ts`）。该辅助函数只在 worktree 位于工单的 `agent/<name>` 分支、`git status --porcelain` 为空，且 `git rev-list HEAD --not --remotes refs/dsh-superagent/<ticket>` 为零时移除链接 worktree，然后删除本地分支和取回的 ref。有改动、未推送或检出了其他分支的目录会保留。当工单自己打开的 pull request 全部合并时，它也会删除远端分支，但只限远端分支的顶端仍是本地 HEAD 的情况；pull request 和主检出始终不变。恢复的工单如果发现目录已不存在，会再次运行 prepare 命令。
 
 ### MasterAssessor
 

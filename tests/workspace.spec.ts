@@ -75,16 +75,36 @@ describe('reclaiming a finished workspace', () => {
     expect(existsSync(path)).toBe(true)
   })
 
-  it('removes a worktree whose branch, including its commits, was pushed to the remote', async () => {
-    const { main } = await repository()
+  it('removes a worktree whose branch, including its commits, was pushed to the remote, and deletes that remote branch', async () => {
+    const { main, remote } = await repository()
     const name = 'fix-abcdef123456'
     const path = await worktree(main, name)
     writeFileSync(join(path, 'README.md'), 'pushed change\n')
     await commit(path, 'pushed')
     await git(path, 'push', '-u', 'origin', ticketBranch(name))
-    const result = await reclaimWorkspace(run, { id: 'ticket-1', name, directory: path }, () => true)
+    const result = await reclaimWorkspace(run, { id: 'ticket-1', name, directory: path, remote: { url: remote } }, () => true)
     expect(result).toMatchObject({ status: 'reclaimed' })
     expect(existsSync(path)).toBe(false)
+    expect((await git(directory, 'ls-remote', '--heads', remote, ticketBranch(name))).trim()).toBe('')
+  })
+
+  it('keeps a remote branch someone else moved on, though it still reclaims the local worktree', async () => {
+    const { main, remote } = await repository()
+    const name = 'fix-abcdef123456'
+    const path = await worktree(main, name)
+    writeFileSync(join(path, 'README.md'), 'pushed change\n')
+    await commit(path, 'pushed')
+    await git(path, 'push', '-u', 'origin', ticketBranch(name))
+    // Another person pushes a commit on the same remote branch after this checkout.
+    await git(main, 'switch', '-c', 'later-work', `origin/${ticketBranch(name)}`)
+    writeFileSync(join(main, 'later.txt'), 'later\n')
+    await git(main, 'add', '.')
+    await commit(main, 'later')
+    await git(main, 'push', 'origin', `HEAD:refs/heads/${ticketBranch(name)}`)
+    const result = await reclaimWorkspace(run, { id: 'ticket-1', name, directory: path, remote: { url: remote } }, () => true)
+    expect(result).toMatchObject({ status: 'reclaimed' })
+    expect(existsSync(path)).toBe(false)
+    expect((await git(directory, 'ls-remote', '--heads', remote, ticketBranch(name))).trim()).not.toBe('')
   })
 
   it('treats the Ticket\'s fetched ref as remote, so a worktree based on it is reclaimable', async () => {

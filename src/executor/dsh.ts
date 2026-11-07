@@ -261,6 +261,24 @@ export class DshExecutor implements Executor {
     const accepted = ticket.git?.provider
     return current && accepted && accepted !== current.provider ? hostMoved(accepted, current.provider) : undefined
   }
+  /**
+   * The remote URL of a Ticket whose own pull requests all merged, so the remote branch its worktree pushed is no longer
+   * needed; undefined for any other Ticket, for a Ticket accepted on another Git host, or while setup names no repository.
+   */
+  private remoteOf(ticket: Ticket): { url: string } | undefined {
+    if (ticket.ended?.outcome !== 'merged' || !ticket.git) return undefined
+    const own = ticket.follows?.filter(follow => follow.own) ?? []
+    if (!own.length || own.some(follow => follow.closed?.outcome !== 'merged')) return undefined
+    const provider = this.host.git()?.provider
+    if (!provider || provider !== ticket.git.provider) return undefined
+    const env = Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value]))
+    if (provider === 'gitlab') {
+      const host = env.DSH_SUPERAGENT_GITLAB_HOST, project = env.DSH_SUPERAGENT_GITLAB_PROJECT
+      return host && project ? { url: `${host.replace(/\/+$/, '')}/${project}.git` } : undefined
+    }
+    const repository = provider === 'github' ? env.DSH_SUPERAGENT_GITHUB_REPOSITORY : undefined
+    return repository ? { url: `https://github.com/${repository}.git` } : undefined
+  }
   /** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
   prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
     return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir) }
@@ -687,7 +705,9 @@ export class DshExecutor implements Executor {
     }
     const run: GitRun = (argv, cwd) => runAsWorker(this.host.context.subprocess, ['git', ...argv], cwd,
       AbortSignal.any([this.host.lifetime, AbortSignal.timeout(CLEANUP_TIMEOUT_MS)]))
-    const result = await reclaimWorkspace(run, { id: ticket.id, name: ticket.execution.name, directory: ticket.execution.directory }, stillEnded)
+    const remote = this.remoteOf(ticket)
+    const result = await reclaimWorkspace(run, { id: ticket.id, name: ticket.execution.name, directory: ticket.execution.directory,
+      ...remote ? { remote } : {} }, stillEnded)
     if (result.status === 'reclaimed') this.host.context.logger.info('dsh-superagent removed the workspace of ticket %s', ticket.id)
   }
   private async workerIdle(ticket: Ticket, idle: Assignment, agent: Agent): Promise<void> {

@@ -295,7 +295,7 @@ Setup must succeed before polling or work starts. Overview lists missing require
    git -C C:\src\widgets worktree add -b "agent/$($env:DSH_SUPERAGENT_NAME)" "$($env:DSH_SUPERAGENT_DIR)" "refs/dsh-superagent/$($env:DSH_SUPERAGENT_TICKET)"
    ```
 
-   List personal CLIs, such as one signed in to your own account, as blocked commands. When a Ticket ends, the Executor reclaims its linked worktree and deletes its local `agent/<name>` branch once the worktree is clean and every commit is on a remote (or on the ref the prepare command fetched); a directory with uncommitted or unpushed work is kept, and a resumed Ticket runs the prepare command again.
+   List personal CLIs, such as one signed in to your own account, as blocked commands. When a Ticket ends, the Executor reclaims its linked worktree and deletes its local `agent/<name>` branch once the worktree is clean and every commit is on a remote (or on the ref the prepare command fetched); a directory with uncommitted or unpushed work is kept, and a resumed Ticket runs the prepare command again. When the Ticket's own pull requests all merged, it also deletes the remote branch, but only while the remote tip is still the local HEAD; otherwise the remote branch stays.
 4. **Prompts.** Set the team sections: the GitHub disclosure line, review bots, the commit author and the auto-merge condition.
 
 ### Management API

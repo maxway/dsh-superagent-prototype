@@ -5,7 +5,7 @@ dsh-superagent keeps almost every artifact it produces. A Ticket leaves a DSH Se
 ## Summary
 
 - **What grows.** One `worker-<ticket>` Session per Ticket plus the deployment's orchestrator Session; one checkout per Ticket; the rows for every Trigger, disposition, Decision, Thread, Ticket, receipt and stored value; the DSH workspace registry; and the projection cache. At the time of writing this deployment held 21 session logs (13.2 MB), 8 checkout directories (188 MB) and a 312 KB database with a 4 MB write-ahead log. The checkouts dominate; the Sessions are small. The Executor now removes a finished Ticket's checkout when it is clean and every commit is remote, so only checkouts with local work remain.
-- **The rule.** The checkout part is implemented: a finished Ticket's linked worktree and local `agent/<name>` branch are removed when `git status --porcelain` is empty and every commit is on a remote branch or the Ticket's fetched ref. The rest of this document proposes a later 45-day purge for the artifacts that remain: the Ticket row, its reports and its Thread subscription stay, so the Ticket still resumes.
+- **The rule.** The checkout part is implemented: a finished Ticket's linked worktree and local `agent/<name>` branch are removed when `git status --porcelain` is empty and every commit is on a remote branch or the Ticket's fetched ref. The remote branch is deleted too when the Ticket's own pull requests all merged and its tip is still the local HEAD. The rest of this document proposes a later 45-day purge for the artifacts that remain: the Ticket row, its reports and its Thread subscription stay, so the Ticket still resumes.
 - **The sweep.** The implemented cleanup is one durable effect per finished Ticket, checked again when the host starts; a proposed daily sweep would cover a broader purge. One indexed query a day, one safety check per candidate, one atomic rename into a trash directory, and a background removal after a 12-hour grace period. There is no new table and no full scan.
 - **What this does not do.** No warm archive tier, no summary of the lost context, no per-file LRU, no Trigger or settings pruning, no orchestrator rotation. Each added a moving part without matching value at today's sizes; they are listed as deferred.
 - **Reliability.** Dry-run first; pin an exception; every deletion re-checks that nothing runs and that no work is unpushed; the trash grace period keeps an undo window. The only upstream dependency is the Session deletion API.
@@ -19,7 +19,7 @@ Every artifact below survives a restart. Only the checkout has a retention path 
 | Worker Session | `~/.dsh/sessions/<normalized-cwd>/worker-<ticket>/` | One per Ticket; grows with every turn and tool result | Nothing |
 | Orchestrator Session | `~/.dsh/sessions/<normalized-cwd>/orchestrator-<deployment>/` | One forever | Nothing |
 | Other Sessions | `~/.dsh/sessions/<normalized-cwd>/session-<uuid>/` | One per Session a person opens in the Web UI, or a subagent creates | Nothing |
-| Checkout directory | `<stateDir>/work/<name>`, or `executor.directory` | One per Ticket; a repository plus dependencies and build output | When a Ticket ends: a linked worktree with no local-only work is removed and its local branch deleted; otherwise nothing |
+| Checkout directory | `<stateDir>/work/<name>`, or `executor.directory` | One per Ticket; a repository plus dependencies and build output | When a Ticket ends: a linked worktree with no local-only work is removed and its local branch deleted; its remote branch too when the Ticket's own pull requests all merged and its tip is the local HEAD; otherwise nothing |
 | Orchestration database | `<stateDir>/orchestrator.sqlite` | `trigger`, `disposition`, `thread`, `ticket`, `decision`, `effect`, `outbox` and `kv` rows | Nothing; only live working sets are indexed |
 | Workspace registry | `~/.dsh/storages/workspace.json` | One record and session-id list per workspace; rewritten whole on each change | Nothing |
 | Projection cache | `~/.dsh/storages/session_projcache/` | One derived file per Session | Replaced, not collected |
@@ -76,7 +76,7 @@ For each candidate the sweep re-reads the Ticket, applies the rule, moves the ch
 
 ### The checkout
 
-The checkout is the win: 188 MB against 13 MB of Sessions here. The implemented cleanup removes it as soon as its Ticket ends and the safe check passes, and a resumed Ticket rebuilds it with its prepare command. The proposed extension is a trash step and a 45-day fallback for a checkout whose commits are not yet fully remote, which the sweep would keep and report; that extension is not implemented.
+The checkout is the win: 188 MB against 13 MB of Sessions here. The implemented cleanup removes it as soon as its Ticket ends and the safe check passes, and a resumed Ticket rebuilds it with its prepare command. It also deletes the remote branch when the Ticket's own pull requests all merged and that branch still points at the local HEAD. The proposed extension is a trash step and a 45-day fallback for a checkout whose commits are not yet fully remote, which the sweep would keep and report; that extension is not implemented.
 
 ### The Session
 

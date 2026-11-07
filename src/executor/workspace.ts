@@ -4,8 +4,8 @@ import { join, resolve } from 'node:path'
 
 /** Runs one git command in `cwd` and resolves its standard output, or rejects with why it failed. */
 export type GitRun = (argv: string[], cwd: string) => Promise<string>
-/** What the workspace of a finished Ticket is reclaimed from: its short name, directory and id. */
-export interface ReclaimTarget { id: string; name: string; directory: string }
+/** What the workspace of a finished Ticket is reclaimed from: its short name, directory and id, and the remote to delete its merged branch from. */
+export interface ReclaimTarget { id: string; name: string; directory: string; remote?: { url: string } }
 /** The outcome of one reclaim attempt: the worktree and branch removed, a reason it was kept, or no directory at all. */
 export type ReclaimResult =
   | { status: 'reclaimed'; worktree: string; branch: string }
@@ -24,9 +24,9 @@ async function attempt(run: GitRun, argv: string[], cwd: string): Promise<string
 /**
  * Remove the linked worktree and local branch of a finished Ticket when the worktree is on the branch the prepare
  * command names, has no uncommitted, untracked or submodule changes, and every commit is reachable from a remote ref or
- * the Ticket's fetched ref. Any failure to establish one of those facts keeps the worktree. The remote branch, the pull
- * request and the main checkout are not touched; `stillEnded` is checked again immediately before removal, so a Ticket
- * that resumed meanwhile keeps its worktree.
+ * the Ticket's fetched ref. Any failure to establish one of those facts keeps the worktree. A supplied `remote` deletes
+ * the branch there only while its tip is exactly the local HEAD; the pull request and the main checkout are not touched.
+ * `stillEnded` is checked again immediately before removal, so a Ticket that resumed meanwhile keeps its worktree.
  * @throws when git cannot remove the worktree or the branch after the safety checks passed, so a later attempt can retry.
  */
 export async function reclaimWorkspace(run: GitRun, target: ReclaimTarget, stillEnded: () => boolean): Promise<ReclaimResult> {
@@ -56,6 +56,14 @@ export async function reclaimWorkspace(run: GitRun, target: ReclaimTarget, still
   if (local === undefined) return { status: 'skipped', reason: 'git could not compare the commits with their remotes' }
   if (local !== '0') return { status: 'skipped', reason: 'the checkout has commits that are not on a remote' }
   if (!stillEnded()) return { status: 'skipped', reason: 'the Ticket is running again' }
+  // A merged Ticket's own branch can go from the remote too, but only while the remote tip is exactly the local HEAD:
+  // a branch someone else moved on since has work this cleanup did not account for.
+  if (target.remote) {
+    const listed = await attempt(run, ['ls-remote', '--heads', target.remote.url, branch], worktree)
+    const remoteHead = listed?.split(/\s+/)[0]
+    const localHead = remoteHead ? await attempt(run, ['rev-parse', 'HEAD'], worktree) : undefined
+    if (remoteHead && localHead === remoteHead) await attempt(run, ['push', target.remote.url, '--delete', branch], worktree)
+  }
   // Remove the checkout first, then the branch it had checked out; `-D` is safe because every commit is on a remote or
   // the Ticket's fetched ref. `--force` covers a clean worktree that git still guards, such as one with submodules.
   await run(['worktree', 'remove', '--force', worktree], peer)
