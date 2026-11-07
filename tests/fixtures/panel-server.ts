@@ -297,6 +297,8 @@ const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown() })
 
 const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET state': { answer: stateView },
+  'GET watchdog': { query: ['stale_minutes'], answer: ({ query }) =>
+    ({ at: '2026-11-07T00:00:00.000Z', staleMinutes: Number(query.stale_minutes ?? 30), open: 0, tickets: [], state: stateView() }) },
   'GET overview': { answer: overviewView },
   'GET search': { query: ['q'], answer: async ({ query }) => {
     const q = query.q ?? ''
