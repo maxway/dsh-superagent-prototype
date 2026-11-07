@@ -130,5 +130,10 @@ describe('reclaiming a finished workspace', () => {
     expect(existsSync(path)).toBe(true)
     expect(await reclaimWorkspace(run, { id: 'ticket-1', name, directory: join(directory, 'gone') }, () => true))
       .toEqual({ status: 'absent' })
+    // A directory a prepare command created without a checkout stays.
+    const empty = join(directory, 'empty')
+    mkdirSync(empty)
+    expect(await reclaimWorkspace(run, { id: 'ticket-1', name, directory: empty }, () => true))
+      .toMatchObject({ status: 'skipped', reason: expect.stringContaining('not a git checkout') })
   })
 })

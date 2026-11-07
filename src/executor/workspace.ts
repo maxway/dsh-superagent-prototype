@@ -1,6 +1,6 @@
 /** Reclaims a Ticket's linked git worktree and local branch after the Ticket ended, when no local work would be lost. */
 import { stat } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 
 /** Runs one git command in `cwd` and resolves its standard output, or rejects with why it failed. */
 export type GitRun = (argv: string[], cwd: string) => Promise<string>
@@ -32,6 +32,8 @@ async function attempt(run: GitRun, argv: string[], cwd: string): Promise<string
 export async function reclaimWorkspace(run: GitRun, target: ReclaimTarget, stillEnded: () => boolean): Promise<ReclaimResult> {
   const worktree = resolve(target.directory)
   if (!await stat(worktree).then(() => true, () => false)) return { status: 'absent' }
+  // An empty directory from a prepare command that checks nothing out is not a git worktree.
+  if (!await stat(join(worktree, '.git')).then(() => true, () => false)) return { status: 'skipped', reason: 'the directory is not a git checkout' }
   const branch = ticketBranch(target.name)
   const head = await attempt(run, ['symbolic-ref', '--quiet', '--short', 'HEAD'], worktree)
   if (head === undefined) return { status: 'skipped', reason: 'the directory is not a git checkout with a checked-out branch' }
