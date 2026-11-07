@@ -265,6 +265,7 @@ describe('settings migration', () => {
       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
       executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [],
         offPeak: { enabled: false, start: '22:00', end: '08:00', timezone: 'Asia/Shanghai' } },
+      watchdog: { mode: 'observe', actions: ['retry'], staleMinutes: 30, cooldownMinutes: 15, perTicketPerHour: 2, perHour: 6 },
     })
     expect(migrateSettings(migrated)).toEqual(migrated)
   })

@@ -1,12 +1,17 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { z } from 'zod'
 import { registerHttp } from '../src/app/http.ts'
+import { Store } from '../src/app/store.ts'
 import { PromptConflict } from '../src/app/prompts.ts'
 import { SettingsConflict } from '../src/app/settings.ts'
 import type { HttpHost } from '../src/app/http.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { SetupError } from '../src/setup.ts'
+import type { Ticket } from '../src/core/index.ts'
 
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
@@ -114,7 +119,7 @@ it('answers a prompt save that lost a race with 409, and a settings body over 12
 it('serves the Watchdog a read-only snapshot of the service and its open Tickets', async () => {
   const settings = SettingsSchema.parse({})
   const call = serve({
-    store: { settings: () => settings, tickets: { open: () => [] } },
+    store: { settings: () => settings, tickets: { open: () => [] }, watchdog: { recent: () => [] } },
     sources: new SourceRegistry(() => settings),
     links: () => () => ({ url: '', label: { zh: '', en: '' } }),
     executor: { activeCount: () => 0 },
@@ -129,4 +134,28 @@ it('serves the Watchdog a read-only snapshot of the service and its open Tickets
   expect(response.body).toMatchObject({ staleMinutes: 15, open: 0, tickets: [],
     state: { masterId: 'master', paused: false, load: { running: 0, queued: 0 }, health: { runtime: { state: 'ready' } } } })
   expect(typeof response.body.at).toBe('string')
+})
+
+it('serves the Watchdog action API, re-reading the Ticket and recording the decision', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-http-watchdog-'))
+  const store = new Store(join(directory, 'orchestrator.sqlite'))
+  try {
+    const settings = SettingsSchema.parse({ watchdog: { mode: 'enforce', actions: ['retry'] } })
+    store.saveSettings(settings)
+    const old = new Date(Date.now() - 120 * 60_000).toISOString()
+    const ticket: Ticket = { id: 't1', title: 'Stuck build', decisionId: 'd1', channels: [], inputs: [], undelivered: [], createdAt: old,
+      updatedAt: old, assignments: [{ id: 'a1', state: 'running', createdAt: old, report: { state: 'failed', summary: 'The build failed', at: old } }],
+      mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' },
+      origin: { triggerId: 'e1', triggerIds: ['e1'] } }
+    store.tickets.save(ticket)
+    const call = serve({ store, sources: new SourceRegistry(() => settings), links: () => () => ({ url: '', label: { zh: '', en: '' } }),
+      engine: { retryTicket: () => {} }, configured: () => true })
+    const body = { reason: 'No report for two hours', snapshotAt: new Date().toISOString(), idempotencyKey: 'http-watchdog-key' }
+    expect(await call('POST', 'watchdog/tickets/t1/retry', body)).toMatchObject({ status: 200,
+      body: { result: 'executed', action: 'retry', ticketId: 't1', mode: 'enforce' } })
+    expect(store.watchdog.byIdempotency('http-watchdog-key')).toMatchObject({ result: 'executed' })
+    expect(await call('POST', 'watchdog/tickets/t1/sideways', body)).toMatchObject({ status: 400 })
+    expect(await call('POST', 'watchdog/tickets/missing/retry', { ...body, idempotencyKey: 'missing-key' })).toMatchObject({ status: 404 })
+    expect(await call('POST', 'watchdog/tickets/t1/retry', { reason: '' })).toMatchObject({ status: 400 })
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }) }
 })

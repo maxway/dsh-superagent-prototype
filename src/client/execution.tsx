@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 import { TICKET_FILTERS, type TicketFilter } from '../app/api.ts'
 import { LIMITS } from '../limits.ts'
 import { usePoll, type SettingsView, type SourceView, type StateView } from './api.ts'
-import { DisclosureRow, Icon, InfoTip, Input, Pill, Switch } from './controls.tsx'
+import { DisclosureRow, Icon, InfoTip, Input, Pill, SegmentedControl, Switch } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
@@ -73,6 +73,60 @@ function EnvironmentVariables({ groups, sources,
       </table>
     </div>
   </DisclosureRow>
+}
+function WatchdogSettings() {
+  const { t } = usePanel()
+  const { blocks } = useSettings().settings
+  const watchdog = blocks.watchdog.value
+  const saved = { ...watchdog, staleMinutes: String(watchdog.staleMinutes), cooldownMinutes: String(watchdog.cooldownMinutes),
+    perTicketPerHour: String(watchdog.perTicketPerHour), perHour: String(watchdog.perHour) }
+  const draft = useBlockDraft('watchdog', saved, blocks.watchdog.revision, value => ({ ...value,
+    staleMinutes: numberOf(value.staleMinutes), cooldownMinutes: numberOf(value.cooldownMinutes),
+    perTicketPerHour: numberOf(value.perTicketPerHour), perHour: numberOf(value.perHour) }))
+  const value = draft.value
+  const edit = (next: Partial<typeof value>) => draft.edit({ ...value, ...next })
+  const toggle = (action: 'retry' | 'stop') => edit({ actions: value.actions.includes(action)
+    ? value.actions.filter(item => item !== action) : [...value.actions, action] })
+  return <form className="dt-form dt-block" onSubmit={event => { void draft.submit(event) }}>
+    <h2 className="dt-block-title">{t('watchdog')}<InfoTip text={t('watchdogIntro')} /></h2>
+    <Fields disabled={draft.busy}>
+      <Section title={t('watchdogMode')} hint={t('watchdogModeHint')}>
+        <SegmentedControl label={t('watchdogMode')} value={value.mode} onChange={mode => edit({ mode })}
+          options={(['off', 'observe', 'report', 'enforce'] as const).map(mode => ({ value: mode, label: t(`watchdogMode.${mode}`) }))} />
+      </Section>
+      <Section title={t('watchdogActions')} hint={t('watchdogActionsHint')}>
+        <div className="dt-switch-row">
+          <div className="dt-field-head">{t('watchdogRetry')}<InfoTip text={t('watchdogRetryHint')} /></div>
+          <Switch checked={value.actions.includes('retry')} onChange={() => toggle('retry')} label={t('watchdogRetry')} />
+        </div>
+        <div className="dt-switch-row">
+          <div className="dt-field-head">{t('watchdogStop')}<InfoTip text={t('watchdogStopHint')} /></div>
+          <Switch checked={value.actions.includes('stop')} onChange={() => toggle('stop')} label={t('watchdogStop')} />
+        </div>
+      </Section>
+      <div>
+        <Field label={t('watchdogStale')} hint={t('watchdogStaleHint')}>
+          <Input type="number" min={1} max={1440} required value={value.staleMinutes}
+            onChange={event => edit({ staleMinutes: event.target.value })} />
+        </Field>
+        <Field label={t('watchdogCooldown')} hint={t('watchdogCooldownHint')}>
+          <Input type="number" min={0} max={1440} required value={value.cooldownMinutes}
+            onChange={event => edit({ cooldownMinutes: event.target.value })} />
+        </Field>
+      </div>
+      <div>
+        <Field label={t('watchdogPerTicketHour')} hint={t('watchdogPerTicketHourHint')}>
+          <Input type="number" min={1} max={1000} required value={value.perTicketPerHour}
+            onChange={event => edit({ perTicketPerHour: event.target.value })} />
+        </Field>
+        <Field label={t('watchdogPerHour')} hint={t('watchdogPerHourHint')}>
+          <Input type="number" min={1} max={1000} required value={value.perHour}
+            onChange={event => edit({ perHour: event.target.value })} />
+        </Field>
+      </div>
+    </Fields>
+    <SaveBar {...draft} onDiscard={draft.discard} />
+  </form>
 }
 export function ExecutionSettings() {
   const { t } = usePanel()
@@ -144,6 +198,7 @@ export function ExecutionSettings() {
       </Fields>
       <SaveBar {...draft} onDiscard={draft.discard} />
     </form>
-    <ConfigHistory blocks={['executor', 'pause']} />
+    <WatchdogSettings />
+    <ConfigHistory blocks={['executor', 'pause', 'watchdog']} />
   </div>
 }

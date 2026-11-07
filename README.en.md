@@ -38,9 +38,9 @@ Schedules Tickets into the model's off-peak billing window by source, lowering t
 
 Adds task-level supervision alongside the process check, so a Ticket that stalls or drifts is noticed.
 
-- A scheduled Session in an independent profile reads every open Ticket's stage, latest report and silence through the new read-only `GET /orchestrator/api/watchdog` route, and reports anomalies found from mechanical signals and model judgement.
-- Supports `observe`, `suggest` and `auto` modes, with `observe` as the default; `suggest` records recommendations only, while `auto` retries through the existing API within a per-Ticket cooldown and per-Ticket and global limits, and every decision is audited. Stop and configuration changes remain later phases.
-- `scripts/dsh-superagent watchdog` prints the machine-readable snapshot, and `watchdog retry` records or executes one retry when the mode and limits allow it, so the check can run on a schedule from another profile.
+- A scheduled Session in an independent profile reads every open Ticket's stage, latest report and silence through the read-only `GET /orchestrator/api/watchdog` route, and reports anomalies found from mechanical signals and model judgement.
+- The `watchdog` settings block offers `off`, `observe`, `report` and `enforce`, with `observe` as the default; only `enforce` may perform an allowed retry or stop through the dedicated API, after checking snapshot freshness, Ticket changes, a waited-for person, human follow-up, undelivered Inputs, off-peak queuing, pause or incomplete setup, the silence threshold, a per-Ticket cooldown and per-Ticket and global limits. Every decision is persisted in a SQLite audit and returned by `GET watchdog`.
+- `scripts/dsh-superagent watchdog` prints the machine-readable snapshot with the settings and recent audit, and `watchdog retry|stop <ticket> --reason` asks the server for one decision; stop is not an allowed action by default. Changing prompts or other settings from the Watchdog remains a later phase.
 
 ### Special note
 

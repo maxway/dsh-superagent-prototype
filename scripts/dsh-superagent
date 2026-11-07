@@ -11,9 +11,9 @@
  * exit codes, log names, the intentionally-stopped marker and the lock are the same on both.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { accessSync, appendFileSync, closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync,
+import { accessSync, closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync,
   unlinkSync, writeFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
@@ -29,9 +29,6 @@ const KEEP_LOGS = 20
 const LOCK_STALE_MS = 10 * 60_000
 const PART_ERROR = 2
 const SETUP_WAITS = 3
-const WATCHDOG_MODES = new Set(['observe', 'suggest', 'auto'])
-const WATCHDOG_LIMITS = { cooldownMinutes: 15, perTicketPerHour: 2, perTicketPerDay: 4, perHour: 6 }
-const WATCHDOG_DEFAULTS = { mode: 'observe', staleMinutes: 30, limits: WATCHDOG_LIMITS }
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -133,26 +130,28 @@ function processes(profile) {
   return Number.isInteger(recorded) && recorded > 0 && !found.includes(recorded) && running(recorded, profile) ? [...found, recorded] : found
 }
 
-function apiRequest(url, method, path, headers, timeout) {
+function apiRequest(url, method, path, headers, timeout, content) {
   return new Promise(resolve => {
     let settled = false
     const finish = value => { if (!settled) { settled = true; resolve(value) } }
     let target
     try { target = new URL(url.replace(/\/+$/, '') + path) } catch { finish(null); return }
+    const payload = content === undefined ? undefined : Buffer.from(content)
     let request
     try {
-      request = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, { method, headers, timeout }, response => {
-        let body = ''
-        response.setEncoding('utf8')
-        response.on('data', chunk => { body += chunk })
-        response.on('end', () => finish({ status: response.statusCode, body }))
-        response.on('error', () => finish(null))
-      })
+      request = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target,
+        { method, headers: payload ? { ...headers, 'content-type': 'application/json', 'content-length': String(payload.length) } : headers, timeout },
+        response => {
+          let body = ''
+          response.setEncoding('utf8')
+          response.on('data', chunk => { body += chunk })
+          response.on('end', () => finish({ status: response.statusCode, body }))
+          response.on('error', () => finish(null))
+        })
     } catch { finish(null); return }
     request.on('timeout', () => { request.destroy(); finish(null) })
     request.on('error', () => finish(null))
-    if (method === 'POST') request.end()
-    else request.end()
+    request.end(payload)
   })
 }
 
@@ -201,69 +200,6 @@ async function status(args) {
   return outcome(pids, current)
 }
 
-/** Return a profile's Watchdog config and audit paths; both live under `.artifacts/watchdog`. */
-export function watchdogPaths(profile, config) {
-  const directory = join(ARTIFACTS, 'watchdog')
-  return { directory, config: config ? resolve(config) : join(directory, `${profile}.json`),
-    audit: join(directory, `${profile}-audit.jsonl`) }
-}
-
-/** Read and validate a Watchdog config, or the safe defaults when the file does not exist. */
-export function watchdogConfig(path) {
-  if (!existsSync(path)) return { ...WATCHDOG_DEFAULTS, limits: { ...WATCHDOG_LIMITS }, source: 'defaults' }
-  let value
-  try { value = JSON.parse(readFileSync(path, 'utf8')) } catch (error) {
-    throw new Error(`Watchdog config ${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`)
-  }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Watchdog config ${path} must be a JSON object`)
-  const mode = value.mode ?? WATCHDOG_DEFAULTS.mode
-  if (!WATCHDOG_MODES.has(mode)) throw new Error(`Watchdog config ${path}: mode must be observe, suggest or auto`)
-  const staleMinutes = value.staleMinutes ?? WATCHDOG_DEFAULTS.staleMinutes
-  if (!Number.isInteger(staleMinutes) || staleMinutes < 1 || staleMinutes > 1440) {
-    throw new Error(`Watchdog config ${path}: staleMinutes must be an integer between 1 and 1440`)
-  }
-  const given = value.limits ?? {}
-  if (!given || typeof given !== 'object' || Array.isArray(given)) throw new Error(`Watchdog config ${path}: limits must be an object`)
-  const limits = { ...WATCHDOG_LIMITS, ...given }
-  for (const [name, minimum, maximum] of [['cooldownMinutes', 0, 1440], ['perTicketPerHour', 1, 1000],
-    ['perTicketPerDay', 1, 10000], ['perHour', 1, 1000]]) {
-    const current = limits[name]
-    if (!Number.isInteger(current) || current < minimum || current > maximum) {
-      throw new Error(`Watchdog config ${path}: limits.${name} must be an integer between ${minimum} and ${maximum}`)
-    }
-  }
-  return { mode, staleMinutes, limits, source: path }
-}
-
-/** Read a Watchdog audit log, skipping malformed lines a cut-off append may leave. */
-export function watchdogAudit(path) {
-  if (!existsSync(path)) return []
-  return readFileSync(path, 'utf8').split('\n').filter(Boolean).flatMap(line => {
-    try {
-      const value = JSON.parse(line)
-      return value && typeof value === 'object' && !Array.isArray(value) ? [value] : []
-    } catch { return [] }
-  })
-}
-
-/** Append one decision to the audit log, creating its private directory and file as needed. */
-function recordWatchdogAudit(path, entry) {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-  appendFileSync(path, JSON.stringify(entry) + '\n', { mode: 0o600 })
-}
-
-/** Count the retries an auto-mode Watchdog has executed, and whether a cooldown or a limit refuses another. */
-export function watchdogLimit(entries, profile, ticketId, limits, now = Date.now()) {
-  const consumed = entries.filter(entry => (entry.decision === 'executed' || entry.decision === 'uncertain') && entry.profile === profile
-    && typeof entry.at === 'string' && Number.isFinite(Date.parse(entry.at)) && Date.parse(entry.at) <= now)
-  const since = ms => consumed.filter(entry => Date.parse(entry.at) > now - ms)
-  const mine = consumed.filter(entry => entry.ticketId === ticketId).map(entry => Date.parse(entry.at)).sort((a, b) => b - a)
-  return { cooldown: mine.length > 0 && now - mine[0] < limits.cooldownMinutes * 60_000,
-    perTicketHour: since(3_600_000).filter(entry => entry.ticketId === ticketId).length,
-    perTicketDay: since(86_400_000).filter(entry => entry.ticketId === ticketId).length,
-    perHour: since(3_600_000).length }
-}
-
 /** Fetch the Watchdog snapshot, or an error message the caller can report. */
 async function watchdogSnapshot(url, staleMinutes) {
   const response = await apiRequest(url, 'GET', `/orchestrator/api/watchdog?stale_minutes=${staleMinutes}`,
@@ -279,110 +215,57 @@ async function watchdogSnapshot(url, staleMinutes) {
   } catch { return { error: 'The management API answer is not JSON.' } }
 }
 
-/** The config a Watchdog snapshot reports, or a safe observation view of a config that failed to load. */
-function watchdogSettings(path, staleMinutes) {
-  try { return watchdogConfig(path) } catch (error) {
-    return { mode: 'observe', staleMinutes, error: error instanceof Error ? error.message : String(error) }
-  }
-}
-
-/** The supervision facts an audit entry keeps from a snapshot row. */
+/** The supervision facts the server audits with an action request; the server re-reads the Ticket and decides itself. */
 function watchdogEvidence(ticket) {
   return { stage: ticket.stage, ...(ticket.action ? { action: ticket.action } : {}), silentMinutes: ticket.silentMinutes,
     signals: ticket.signals, ...(ticket.lastReport ? { lastReport: ticket.lastReport } : {}), attempts: ticket.attempts }
 }
-/** The Ticket state before an action, without the report text the evidence already carries. */
-function watchdogBefore(ticket) {
-  return { stage: ticket.stage, ...(ticket.action ? { action: ticket.action } : {}), silentMinutes: ticket.silentMinutes,
-    ...(ticket.lastReport ? { lastReport: { state: ticket.lastReport.state, at: ticket.lastReport.at } } : {}), attempts: ticket.attempts }
-}
-/** Why a snapshot row cannot be retried, or undefined when it can. */
-function watchdogRefusal(ticket, config) {
-  if (!ticket) return 'unknownTicket'
-  if (!ticket.actions?.retry) return 'notRetryable'
-  if (!(ticket.silentMinutes >= config.staleMinutes)) return 'notStale'
-  return undefined
-}
 
 /**
- * Request one retry for a Ticket. The configured mode decides whether it is only observed, recorded as a suggestion, or
- * executed: eligibility, cooldown and limits are checked here, every decision is audited, and only `auto` calls the
- * management API's retry route. It never changes settings, prompts or any other Ticket.
+ * Ask the management API to record or execute one retry or stop. The server owns the mode, safety checks, cooldown, limits
+ * and audit; the command only supplies the reason and the snapshot it was based on, with a fresh idempotency key.
  */
-async function watchdogRetry(args) {
-  if (!args.ticket) throw new Error('watchdog retry needs a ticket id')
+async function watchdogAction(args) {
+  const action = args.watchdog_action
+  if (!args.ticket) throw new Error(`watchdog ${action} needs a ticket id`)
   const reason = (args.reason ?? '').trim()
-  if (!reason) throw new Error('watchdog retry needs --reason')
+  if (!reason) throw new Error(`watchdog ${action} needs --reason`)
   if (reason.length > 1000) throw new Error('--reason must be at most 1000 characters')
-  const paths = watchdogPaths(args.profile, args.config)
-  const config = watchdogConfig(paths.config)
-  const at = new Date().toISOString()
-  const snapshot = await watchdogSnapshot(args.url, Math.max(args.stale_minutes, config.staleMinutes))
+  const snapshot = await watchdogSnapshot(args.url, args.stale_minutes)
   if (snapshot.error) { process.stderr.write(snapshot.error + '\n'); return 1 }
   const ticket = snapshot.value.tickets?.find(item => item.id === args.ticket)
-  const entry = { at, profile: args.profile, url: args.url, mode: config.mode, action: 'retry', ticketId: args.ticket,
-    ...(ticket?.title ? { ticketTitle: ticket.title } : {}), reason, config: config.source, audit: paths.audit }
-  if (ticket) { entry.evidence = watchdogEvidence(ticket); entry.before = watchdogBefore(ticket) }
-  let decision = 'refused'
-  let refusal = watchdogRefusal(ticket, config)
-  // A paused Executor would only queue the retry behind the pause, so leave the decision to the operator.
-  if (!refusal && snapshot.value.state?.paused) refusal = 'paused'
-  let result
-  let after
-  if (refusal) entry.refusal = refusal
-  else if (config.mode === 'observe') decision = 'observed'
-  else if (config.mode === 'suggest') decision = 'suggested'
-  else {
-    const limit = watchdogLimit(watchdogAudit(paths.audit), args.profile, args.ticket, config.limits, Date.parse(at))
-    entry.limits = { ...config.limits, ...limit }
-    if (limit.cooldown) refusal = 'cooldown'
-    else if (limit.perTicketHour >= config.limits.perTicketPerHour) refusal = 'perTicketHour'
-    else if (limit.perTicketDay >= config.limits.perTicketPerDay) refusal = 'perTicketDay'
-    else if (limit.perHour >= config.limits.perHour) refusal = 'perHour'
-    if (refusal) entry.refusal = refusal
-    else {
-      const response = await apiRequest(args.url, 'POST', `/orchestrator/api/tickets/${encodeURIComponent(args.ticket)}/retry`,
-        { 'x-orchestrator-request': '1', 'content-length': '0' }, 10_000)
-      if (response === null) { decision = 'uncertain'; result = { error: `No management API answer at ${args.url}` } }
-      else if (response.status >= 200 && response.status < 300) { decision = 'executed'; result = { retried: true } }
-      else { refusal = 'actionFailed'; result = { status: response.status, error: response.body.trim().slice(0, 300) } }
-    }
-  }
-  if (decision === 'executed') {
-    const current = await watchdogSnapshot(args.url, config.staleMinutes)
-    if (current.error) after = { error: current.error }
-    else {
-      const row = current.value.tickets?.find(item => item.id === args.ticket)
-      after = row ? { stage: row.stage, ...(row.action ? { action: row.action } : {}), silentMinutes: row.silentMinutes, attempts: row.attempts }
-        : { ended: true }
-    }
-  }
-  entry.decision = decision
-  if (refusal) entry.refusal = refusal
-  if (result) entry.result = result
-  if (after) entry.after = after
-  try { recordWatchdogAudit(paths.audit, entry) } catch (error) {
-    process.stderr.write(`The Watchdog decision was not audited: ${error instanceof Error ? error.message : String(error)}\n`)
-    process.stdout.write(JSON.stringify(entry, null, 2) + '\n')
+  if (!ticket) {
+    process.stderr.write(`Ticket ${args.ticket} is not open; read the snapshot before asking for an action.\n`)
     return 1
   }
-  process.stdout.write(JSON.stringify(entry, null, 2) + '\n')
+  const payload = JSON.stringify({ reason, evidence: watchdogEvidence(ticket), snapshotAt: snapshot.value.at, idempotencyKey: randomUUID() })
+  const response = await apiRequest(args.url, 'POST', `/orchestrator/api/watchdog/tickets/${encodeURIComponent(args.ticket)}/${action}`,
+    { 'x-orchestrator-request': '1' }, 10_000, payload)
+  if (response === null) {
+    process.stderr.write(`No management API answer at ${args.url}; the service may be down.\n`)
+    return 1
+  }
+  if (response.status < 200 || response.status >= 300) {
+    process.stderr.write(`The management API answered ${response.status}: ${response.body.trim().slice(0, 300)}\n`)
+    return 1
+  }
+  let value
+  try { value = JSON.parse(response.body) } catch {
+    process.stderr.write('The management API answer is not JSON.\n')
+    return 1
+  }
+  process.stdout.write(JSON.stringify(value, null, 2) + '\n')
   return 0
 }
 
 /**
- * Print the read-only snapshot an external Watchdog reads: service state plus every open Ticket's stage, latest report,
- * silence and signals, with the configured mode and limits. The command never sends anything but GET requests, so it
- * cannot change a Ticket or a setting.
+ * Print the read-only snapshot an external Watchdog reads: service state, every open Ticket's stage, latest report,
+ * silence and signals, the current Watchdog settings and the last decisions. The command only sends GET requests.
  */
 async function watchdog(args) {
-  const paths = watchdogPaths(args.profile, args.config)
-  const settings = watchdogSettings(paths.config, args.stale_minutes)
   const snapshot = await watchdogSnapshot(args.url, args.stale_minutes)
   if (snapshot.error) { process.stderr.write(snapshot.error + '\n'); return 1 }
-  const config = { mode: settings.mode, staleMinutes: settings.staleMinutes, ...(settings.limits ? { limits: settings.limits } : {}),
-    config: paths.config, audit: paths.audit, ...(settings.error ? { error: settings.error } : {}) }
-  process.stdout.write(JSON.stringify({ profile: args.profile, url: args.url, watchdog: config, ...snapshot.value }, null, 2) + '\n')
+  process.stdout.write(JSON.stringify({ profile: args.profile, url: args.url, ...snapshot.value }, null, 2) + '\n')
   return 0
 }
 
@@ -551,7 +434,7 @@ async function start(args) {
 
 /** Parse the command line the way the previous `argparse` interface did, including options before the action. */
 export function parseArgv(argv, env = process.env) {
-  const args = { action: undefined, watchdog_action: undefined, ticket: undefined, reason: undefined, config: undefined,
+  const args = { action: undefined, watchdog_action: undefined, ticket: undefined, reason: undefined,
     profile: env.DSH_SUPERAGENT_PROFILE || 'superagent', url: env.DSH_SUPERAGENT_URL || 'http://127.0.0.1:3082',
     timeout: 60, stop_timeout: 300, stale_minutes: 30, respect_stop: false }
   const positionals = []
@@ -578,8 +461,6 @@ export function parseArgv(argv, env = process.env) {
     else if (word.startsWith('--stale-minutes=')) args.stale_minutes = Number(word.slice('--stale-minutes='.length))
     else if (word === '--reason') { args.reason = text(index, '--reason'); index++ }
     else if (word.startsWith('--reason=')) args.reason = word.slice('--reason='.length)
-    else if (word === '--config') { args.config = value(index, '--config'); index++ }
-    else if (word.startsWith('--config=')) args.config = word.slice('--config='.length)
     else if (word === '--respect-stop') args.respect_stop = true
     else if (word === '-h' || word === '--help') args.help = true
     else if (word.startsWith('-')) throw new Error(`unrecognized option: ${word}`)
@@ -589,9 +470,13 @@ export function parseArgv(argv, env = process.env) {
   if (args.action === 'watchdog') {
     args.watchdog_action = positionals[1]
     args.ticket = positionals[2]
-    if (args.watchdog_action !== undefined && args.watchdog_action !== 'retry') throw new Error('watchdog action must be retry')
+    if (args.watchdog_action !== undefined && args.watchdog_action !== 'retry' && args.watchdog_action !== 'stop') {
+      throw new Error('watchdog action must be retry or stop')
+    }
     if (positionals.length > 3) throw new Error(`unexpected argument: ${positionals[3]}`)
-    if (args.watchdog_action === 'retry' && !args.ticket) throw new Error('watchdog retry needs a ticket id')
+    if ((args.watchdog_action === 'retry' || args.watchdog_action === 'stop') && !args.ticket) {
+      throw new Error(`watchdog ${args.watchdog_action} needs a ticket id`)
+    }
   } else if (positionals.length > 1) throw new Error(`unexpected argument: ${positionals[1]}`)
   if (args.help) return args
   if (!['start', 'stop', 'restart', 'status', 'watchdog'].includes(args.action)) throw new Error('action must be one of start, stop, restart, status, watchdog')
@@ -626,18 +511,17 @@ const USAGE = `Usage: dsh-superagent [--respect-stop] <start|stop|restart|status
 
 Manage a local dsh-superagent service (one DSH profile, default \`superagent\`).
 
-\`watchdog\` prints a read-only JSON snapshot of the service and its open Tickets for an external Watchdog session;
-\`watchdog retry <ticket> --reason <text>\` records or executes one retry under the Watchdog config. Its mode defaults
-to \`observe\`: \`suggest\` records a suggestion, \`auto\` may retry within the cooldown and limits. Every decision is audited.
+\`watchdog\` prints a read-only JSON snapshot of the service, its open Tickets, the Watchdog settings and recent decisions;
+\`watchdog retry|stop <ticket> --reason <text>\` asks the server to record or execute one action under those settings.
+The server owns the mode (off, observe, report or enforce), safety checks, cooldown, limits and audit.
 
 Options:
   --profile <name>       DSH profile that loads dsh-superagent (default: $DSH_SUPERAGENT_PROFILE or superagent).
   --url <url>            Health-check URL (default: $DSH_SUPERAGENT_URL or http://127.0.0.1:3082).
   --timeout <seconds>    Startup timeout (default: 60).
   --stop-timeout <s>     Graceful shutdown timeout (default: 300).
-  --stale-minutes <n>    Watchdog silence threshold in minutes (default: 30, at most 1440).
-  --reason <text>        Why \`watchdog retry\` asks for a retry (required, at most 1000 characters).
-  --config <path>        Watchdog config (default: .artifacts/watchdog/<profile>.json).
+  --stale-minutes <n>    Watchdog signal threshold in minutes (default: 30, at most 1440).
+  --reason <text>        Why \`watchdog retry|stop\` asks for an action (required, at most 1000 characters).
   --respect-stop         For monitoring: never start/restart after an intentional stop.`
 
 async function main(argv = process.argv.slice(2)) {
@@ -645,7 +529,9 @@ async function main(argv = process.argv.slice(2)) {
   if (args.help) { process.stdout.write(USAGE + '\n'); return 0 }
   process.umask(0o077)
   // A Watchdog only reads the management API, so a control operation in progress must not block it.
-  if (args.action === 'watchdog') return args.watchdog_action === 'retry' ? await watchdogRetry(args) : await watchdog(args)
+  if (args.action === 'watchdog') {
+    return args.watchdog_action === 'retry' || args.watchdog_action === 'stop' ? await watchdogAction(args) : await watchdog(args)
+  }
   const release = acquireLock(args.profile)
   try {
     if (args.respect_stop && (args.action === 'start' || args.action === 'restart') && stopped(args.profile)) {

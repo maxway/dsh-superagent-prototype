@@ -28,6 +28,7 @@ import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 import { watchdogView } from './views/watchdog.ts'
+import { watchdogAction, type WatchdogRequest } from './watchdog.ts'
 
 export interface HttpHost {
   readonly store: Store
@@ -120,7 +121,8 @@ export type StateView = ReturnType<typeof stateView>
 /** Build the read-only `/orchestrator/api/watchdog` response: service state plus every open Ticket's supervision facts. */
 function watchdogPage(runtime: HttpHost, staleMinutes: number) {
   const at = new Date().toISOString()
-  return { ...watchdogView(views(runtime), at, staleMinutes), state: stateView(runtime) }
+  return { ...watchdogView(views(runtime), at, staleMinutes), state: stateView(runtime),
+    watchdog: runtime.store.settings().watchdog, audit: runtime.store.watchdog.recent(20) }
 }
 export type WatchdogPageView = ReturnType<typeof watchdogPage>
 /** Builds a ticket's detail view; `environment` is empty while waiting for setup because it requires the resolved deployment. */
@@ -150,6 +152,12 @@ const offset = z.coerce.number().int().nonnegative().catch(0)
 const limit = (fallback: number, max: number) => z.coerce.number().int().positive().catch(fallback).transform(value => Math.min(max, value))
 const TicketsQuery = z.object({ state: z.enum(TICKET_FILTERS).catch('open'), offset, limit: limit(20, 1000) })
 const WatchdogQuery = z.object({ stale_minutes: limit(30, 1440) })
+const WatchdogBody = z.object({
+  reason: z.string().trim().min(1).max(1000),
+  evidence: z.record(z.string(), z.unknown()).optional(),
+  snapshotAt: z.string().refine(value => Number.isFinite(Date.parse(value)), 'A parseable snapshot timestamp'),
+  idempotencyKey: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/, 'A stable idempotency key'),
+})
 const ThreadsQuery = z.object({ filter: z.enum(THREAD_FILTERS).catch('subscribed'), offset, limit: limit(20, 1000) })
 const ThreadQuery = z.object({ limit: limit(50, 100), before: z.string().optional(), around: z.string().optional() })
 const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.literal('24h').optional().catch(undefined), offset,
@@ -157,7 +165,7 @@ const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.litera
 const count = z.coerce.number().int().nonnegative()
 const PromptsQuery = z.object({ revision: count.optional(), offset: count.default(0) })
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*$/)])
-const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
+const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor', 'watchdog']), SourceBlock])
 const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
 
 function routes(runtime: HttpHost): Routes {
@@ -167,6 +175,12 @@ function routes(runtime: HttpHost): Routes {
   return {
     'GET state': () => stateView(runtime),
     'GET watchdog': ({ query }) => watchdogPage(runtime, WatchdogQuery.parse(query).stale_minutes),
+    'POST watchdog/tickets/:id/:action': async ({ params, body }) => {
+      const action = z.enum(['retry', 'stop']).parse(params.action)
+      const request: WatchdogRequest = { ...WatchdogBody.parse(await body()), ticketId: params.id, action }
+      return watchdogAction({ store: runtime.store, engine: runtime.engine, view: views(runtime), configured: () => runtime.configured(),
+        setupProblem: runtime.setupProblem }, request)
+    },
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
