@@ -7,6 +7,13 @@ import type { SetupProblem } from '../setup.ts'
 
 /** Host rejection identified by a structured user error code and interpolation values. */
 export interface UserFailure { code: UserErrorCode; values: Record<string, string> }
+/** A refused Git host switch: the open Tickets of the old host, and the fingerprint a confirmed switch sends back. */
+export interface SourceSwitch { provider: 'github' | 'gitlab'; fingerprint: string; tickets: { id: string; title: string }[] }
+const isSourceSwitch = (value: unknown): value is SourceSwitch => {
+  const item = value as Partial<SourceSwitch> | null
+  return !!item && typeof item.fingerprint === 'string' && (item.provider === 'github' || item.provider === 'gitlab')
+    && Array.isArray(item.tickets) && item.tickets.every(ticket => ticket && typeof ticket.id === 'string' && typeof ticket.title === 'string')
+}
 /**
  * Represents a failed management API request with a localized message and structured diagnostic details.
  * Thrown by API callers and inspected by UI views and draft state to distinguish validation issues, missing records,
@@ -15,7 +22,8 @@ export interface UserFailure { code: UserErrorCode; values: Record<string, strin
  */
 export class ApiError extends Error {
   constructor(message: string, readonly status: number,
-    readonly details: { issues?: { path: string; message: string }[]; setup?: SetupProblem; user?: UserFailure; unreachable?: boolean } = {}) {
+    readonly details: { issues?: { path: string; message: string }[]; setup?: SetupProblem; user?: UserFailure; switch?: SourceSwitch;
+      unreachable?: boolean } = {}) {
     super(message)
   }
   get issues() { return this.details.issues ?? [] }
@@ -43,16 +51,17 @@ async function api<T>(messages: ApiMessages, path: string, method: string, body?
   try { value = text ? JSON.parse(text) : {} } catch { value = undefined }
   if (!response.ok) {
     const failure = (value ?? {}) as { error?: unknown; issues?: unknown; setup?: SetupProblem; code?: unknown
-      values?: Record<string, string> }
+      values?: Record<string, string>; switch?: unknown }
     const issues = Array.isArray(failure.issues) ? failure.issues as { path: string; message: string }[] : []
     const user = isUserError(failure.code) ? { code: failure.code, values: failure.values ?? {} } : undefined
+    const refusedSwitch = isSourceSwitch(failure.switch) ? failure.switch : undefined
     // dsh-superagent always responds with a body; an empty 404 comes from the DSH web server when dsh-superagent routes are unmounted during startup or restart.
     const { status } = response
     const message = failure.setup ? messages.setup(failure.setup) : user ? messages.user(user)
       : typeof failure.error === 'string' ? failure.error : !text && status === 404 ? messages.notRunning
       : status >= 500 ? messages.serverError(status) : messages.requestFailed(status)
     throw new ApiError(message, status, { issues, ...failure.setup ? { setup: failure.setup } : {}, ...user ? { user } : {},
-      ...text ? {} : { unreachable: true } })
+      ...refusedSwitch ? { switch: refusedSwitch } : {}, ...text ? {} : { unreachable: true } })
   }
   return value as T
 }

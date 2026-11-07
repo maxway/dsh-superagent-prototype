@@ -7,6 +7,7 @@ import { registerHttp } from '../src/app/http.ts'
 import { Store } from '../src/app/store.ts'
 import { PromptConflict } from '../src/app/prompts.ts'
 import { SettingsConflict } from '../src/app/settings.ts'
+import { SourceSwitchConfirm } from '../src/app/git-switch.ts'
 import type { HttpHost } from '../src/app/http.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
@@ -56,6 +57,19 @@ it('answers each kind of failure with its own status', async () => {
   expect(await call('POST', 'tickets/t9/retry')).toEqual({ status: 404, body: { error: 'Ticket not found' } })
   expect(await call('GET', 'nothing/here')).toEqual({ status: 404, body: { error: 'Unknown operation' } })
   expect(await call('POST', 'executor/pause', 'not json')).toEqual({ status: 400, body: { error: 'The request body is not JSON' } })
+})
+
+it('returns the old host\'s open Tickets, and their fingerprint, with a refused Git host switch', async () => {
+  const ticket = { id: 't1', title: 'Fix it' } as Ticket
+  const call = serve({ settings: { activateSource: async (_id: string, _revision: number, _origin: string, confirm?: string) => {
+    if (!confirm) throw new SourceSwitchConfirm('github', [ticket], 'after-check')
+    return { active: 'gitlab', restarting: true }
+  } } })
+  expect(await call('POST', 'sources/gitlab/activate', { revision: 0 })).toEqual({ status: 409, body: { error: expect.any(String),
+    switch: { provider: 'github', fingerprint: 'after-check', tickets: [{ id: 't1', title: 'Fix it' }] } } })
+  expect(await call('POST', 'sources/gitlab/activate', { revision: 0, confirm: 'after-check' }))
+    .toEqual({ status: 200, body: { active: 'gitlab', restarting: true } })
+  expect(await call('POST', 'sources/gitlab/activate', { revision: -1 })).toMatchObject({ status: 400 })
 })
 
 it('asks the host to shut down through the management API', async () => {

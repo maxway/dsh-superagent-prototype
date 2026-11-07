@@ -10,8 +10,8 @@ import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-
 import type { Api, ApiResponse, RouteParams } from '../../src/app/api.ts'
 import { SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInPart, builtInParts, composePrompt, composeSkill, defaultPrompts,
   environmentSection, policySection, promptParts } from '../../src/app/prompts.ts'
-import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, SourceStatusRow, SourceView, StateView, ThreadPageView,
-  ThreadRow, TicketPageView,
+import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, SourceStatusRow, SourceSwitch, SourceView, StateView,
+  ThreadPageView, ThreadRow, TicketPageView,
   TicketRow, TicketStage,
   TriggerRow } from '../../src/client/api.ts'
 import { SETUP_FIELDS } from '../../src/deployment.ts'
@@ -21,6 +21,7 @@ import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
 import { githubChannel } from '../../src/sources/github-trigger.ts'
 import { feishuKind } from '../../src/sources/feishu.ts'
 import { githubKind } from '../../src/sources/github.ts'
+import { gitlabKind } from '../../src/sources/gitlab.ts'
 import type { Health } from '../../src/sources/host.ts'
 import type { SourceKind } from '../../src/sources/kind.ts'
 import { testDeployment } from './deployment.ts'
@@ -81,7 +82,7 @@ export const droppedReply = (id: string, hoursAgo: number, source: 'feishu' | 'g
 const dayAgo = () => new Date(Date.now() - 86_400_000).toISOString()
 export const problemOf = (code: SetupCode, values: Record<string, string> = {}) => new SetupError(code, values).problem
 // The kinds' configurations differ, and the fake reads them only as the records the views carry.
-const KINDS = [feishuKind, githubKind] as unknown as SourceKind[]
+const KINDS = [feishuKind, githubKind, gitlabKind] as unknown as SourceKind[]
 export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000, admissionContextMaxPages: 10,
   admissionContextTimeoutMs: 15000 }
 
@@ -89,6 +90,8 @@ type Settings = ReturnType<typeof SettingsSchema.parse>
 export interface PanelServer {
   joined?: Record<string, string>; joining?: Record<string, string>
   joinError?: string
+  /** When set, the next switch to another Git Source is refused with this open-Ticket list. */
+  switchBlocked?: SourceSwitch
   settings: Settings; revisions: Record<string, number>
   prompts: PromptsView
   tickets: { open: TicketRow[]; ended: TicketRow[] }; ticketDetails: Record<string, TicketPageView>
@@ -155,7 +158,8 @@ function sourceStatuses(): SourceStatusRow[] {
     const state = !enabled ? 'off' : problem || health.some(item => item.state === 'error') ? 'error' : server.setup.problem ? 'setup'
       : health.some(item => item.state === 'starting') ? 'starting' : health.some(item => item.state === 'paused') ? 'paused' : 'ready'
     const feishu = kind.kind === 'feishu'
-    return { id: kind.kind, title: kind.title, installed: true, enabled, state, health, ...problem ? { problem } : {},
+    return { id: kind.kind, title: kind.title, installed: true, enabled, active: server.setup.accounts?.provider === kind.kind,
+      state, health, ...problem ? { problem } : {},
       stats: { received: feishu ? 12 : 0, filtered: feishu ? 2 : 0, lastAt: '2026-09-23T00:00:00Z' },
       filtered: feishu ? [] : [{ id: 'e9', at: '2026-09-23T00:02:00Z', actor: actor('github', 'someone'), preview: 'looks wrong',
         reason: { code: 'source_disabled' } }],
@@ -170,6 +174,7 @@ const stateView = (): StateView => ({
 })
 const settingsView = (): ApiResponse<'GET settings'> => ({
   policyVersion: 'abcdef1234567890',
+  git: { source: server.setup.accounts?.provider ?? null, repository: server.setup.accounts?.repository ?? '' },
   blocks: { policy: { value: server.settings.policy, revision: server.revisions.policy ?? 0 },
     eval: { value: server.settings.eval, revision: server.revisions.eval ?? 0 },
     executor: { value: server.settings.executor, revision: server.revisions.executor ?? 0 },
@@ -255,8 +260,8 @@ function initial(): PanelServer {
   return {
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
-      accounts: { provider: 'github', repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
-        name: 'Widgets Bot' } } },
+      accounts: { provider: 'github', host: 'github.com', repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot',
+        brand: 'feishu', botId: 'ou_bot', name: 'Widgets Bot' } } },
     settings, revisions: { policy: 3, eval: 1, executor: 0 },
     prompts: { masterId: 'master', sections: TEAM_SECTIONS, skillName: SKILL_NAME.source, builtin: ['feishu', 'github', 'gitlab'],
       skillPrefix: SKILL_PREFIX, revision: 0, current: { ...defaults, config: defaultPrompts() },
@@ -315,6 +320,23 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   } },
   'GET sources': { answer: sourceStatuses },
   'GET settings': { answer: settingsView },
+  'POST sources/:id/activate': { body: true, answer: ({ params, body }) => {
+    const kind = KINDS.find(item => item.kind === params.id)
+    if (!kind) return refuse(404, 'Source not found')
+    if (body.revision !== (server.revisions[`source:${kind.kind}`] ?? 0)) return refuse(409, 'Settings changed. Reload before saving.')
+    if (server.switchBlocked) return refuse(409, 'Open tickets still belong to the old host', { switch: server.switchBlocked })
+    const sources = Object.fromEntries(Object.entries(server.settings.sources).map(([id, source]) =>
+      [id, kind.kind === 'github' || kind.kind === 'gitlab'
+        ? { ...source, enabled: id === kind.kind } : source]))
+    server.settings = { ...server.settings, sources: { ...sources, [kind.kind]: { enabled: true,
+      config: server.settings.sources[kind.kind]?.config ?? kind.schema.parse({}) } } }
+    if (kind.kind === 'github' || kind.kind === 'gitlab') {
+      server.setup = { ...server.setup, accounts: server.setup.accounts
+        ? { ...server.setup.accounts, provider: kind.kind } : server.setup.accounts }
+    }
+    server.revisions[`source:${kind.kind}`] = (server.revisions[`source:${kind.kind}`] ?? 0) + 1
+    return { active: kind.kind as 'github' | 'gitlab', restarting: true }
+  } },
   'POST sources/:id/labels': { answer: () => {
     // Label refresh failures come from the bot CLI and are returned verbatim.
     if (server.joinError) return refuse(500, server.joinError)

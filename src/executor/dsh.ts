@@ -83,6 +83,8 @@ export interface ExecutorHost {
   paused(): boolean
   /** Execution environment variables for `ticket`, passed to its workspace prepare command. */
   environment(ticket: Ticket): Variable[]
+  /** The Git host the deployment uses now; undefined while setup waits or failed, when nothing launches. */
+  git(): { provider: string } | undefined
   sourceLink(trigger: Trigger): Promise<{ source_url?: string }>
   /** Stored Trigger of the message `trigger` replies to, when it replies to one. */
   repliedTo(trigger: Trigger): Trigger | undefined
@@ -141,6 +143,10 @@ const RESUMED = 'This ticket ended earlier and the message that follows, on its 
   + 'for another ticket, hand it back with orchestrator_trigger_handback and report dropped; if it needs nothing, such as thanks, '
   + 'report dropped without a message. Report ready when the follow-up is done. Do not repeat completed work.'
 const RETRIED = 'A person retried this ticket. Continue the assignment from the current worktree, git history and PR state.'
+/** Why a Ticket accepted on another Git host must not run, or undefined while it belongs to the active one. */
+const hostMoved = (from: string, to: string): string =>
+  `This ticket was accepted on the ${from} Git host, and the deployment now uses ${to}. It cannot resume here: switch the deployment back to `
+  + `${from}, or stop this ticket.`
 /** Formats a policy-change input for the worker; inputs recorded before `effect` existed fall back to a general notice. */
 function policyMessage(effect?: PolicyEffect): string {
   if (!effect) return 'Policy change: the access or admission rules changed. Check that the remaining work stays within the assignment.'
@@ -241,6 +247,12 @@ export class DshExecutor implements Executor {
     // Failed input deliveries are recorded on the ticket itself rather than reported through the `delivery` effect health entry (`quiet: true`).
     host.effects.handle('delivery', payload => this.deliverQueued(payload.ticketId), { limit: () => host.paused() ? 0 : 4, quiet: true })
   }
+  /** Why `ticket` must not run on the active Git host: it was accepted on another one, and its remote and change requests stay there. */
+  private hostProblem(ticket: Ticket): string | undefined {
+    const current = this.host.git()
+    const accepted = ticket.git?.provider
+    return current && accepted && accepted !== current.provider ? hostMoved(accepted, current.provider) : undefined
+  }
   /** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
   prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
     return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir) }
@@ -278,6 +290,9 @@ export class DshExecutor implements Executor {
     const ticket = this.host.store.tickets.get(ticketId)
     const assignment = ticket && latestAssignment(ticket)
     if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== 'pending') return
+    // A Ticket accepted on another Git host never runs here: its worktree, remote and change requests belong to the old host.
+    const moved = this.hostProblem(ticket)
+    if (moved) { this.launchFailed(ticketId, assignmentId, new Error(moved)); return }
     // An off-peak ticket starts no new Assignment while the window is closed: the launch keeps its place in the effect queue,
     // holds no worker slot, and is re-read periodically so a changed window applies without a restart.
     const wait = ticket.offPeak ? offPeakWait(this.host.store.settings().executor.offPeak, Date.now()) : 0
@@ -304,6 +319,9 @@ export class DshExecutor implements Executor {
     const first = this.host.store.tickets.get(ticketId)
     const target = first && liveTicket(first) ? runningAssignment(first) : undefined
     if (!first || !target || !first.undelivered.length) return
+    // A worker left waiting by a host restart must not be woken on the new host either.
+    const moved = this.hostProblem(first)
+    if (moved) { this.failed(ticketId, moved); return }
     let woken = false
     try {
       for (;;) {
@@ -536,6 +554,15 @@ export class DshExecutor implements Executor {
     // Launch pending tickets oldest first (in acceptance order).
     for (const ticket of this.host.store.tickets.open().sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
       const running = runningAssignment(ticket), latest = latestAssignment(ticket)
+      const moved = this.hostProblem(ticket)
+      if (moved) {
+        // Let the restart path end a running Assignment; the launch guard then reports the host move. A settled worker keeps
+        // its Assignment, so it is reported here and every later wake is refused by `deliverQueued`.
+        if (running) this.host.engine.assignmentInterrupted(ticket.id, running.id)
+        const after = this.host.store.tickets.get(ticket.id)
+        if (after && runningAssignment(after) && latestAssignment(after)?.report?.summary !== moved) this.failed(ticket.id, moved)
+        continue
+      }
       if (running) {
         // A restart within this process left DSH's Sessions, jobs and subagents running: they stop first. The inbox keeps an
         // Input that was handed over but not yet taken.

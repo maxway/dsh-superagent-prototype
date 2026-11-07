@@ -34,7 +34,7 @@ it('keeps a Policy draft across remounts, and merges another save into it sender
   await mount()
   await click(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
-  expect(all('.dt-subtab').map(tab => tab.textContent)).toEqual(['飞书', 'GitHub'])
+  expect(all('.dt-subtab').map(tab => tab.textContent)).toEqual(['飞书', 'GitHub', 'GitLab'])
   await addUser()
   expect(text()).toContain(zh.draftKept)
   await remount()
@@ -150,8 +150,8 @@ it('lists each Source\'s bots next to its people and saves them, and sets the Gi
   const github = all('.dt-card').find(card => card.querySelector('.dt-card-title')?.textContent === 'GitHub')!
   expect([...github.querySelectorAll('.dt-switch-row')].map(row => row.textContent)).toEqual(['接收仓库里的新 Issue', '接收仓库里的新 PR',
     '接收仓库里的评论', '接收默认分支的 CI'])
-  expect([...github.querySelectorAll('[role="switch"]')].slice(1).map(item => item.getAttribute('aria-checked'))).toEqual(['false', 'false',
-    'false', 'false'])
+  // The Git Sources have no on/off switch of their own: their switches are the receiving scopes below.
+  expect([...github.querySelectorAll('[role="switch"]')].map(item => item.getAttribute('aria-checked'))).toEqual(['false', 'false', 'false', 'false'])
   await click(find(zh['term.eval'], '.dt-settings-link'))
   const lists = () => all('.dt-part > .dt-field .dt-subhead .dt-field-head').map(head => head.firstChild?.textContent)
   const list = (label: string) => all('.dt-part > .dt-field').find(item => item.textContent?.startsWith(label))!

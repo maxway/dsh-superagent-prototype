@@ -2,15 +2,17 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { UserError, type EngineForSettings } from '../core/index.ts'
+import type { GitProvider } from '../deployment.ts'
 import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema, WatchdogConfigSchema, policyEffects, policyVersion } from '../policy.ts'
 import type { Settings as SettingsValue, SettingsBlock, SettingsOrigin, SettingsSave } from '../policy.ts'
 import type { SourceHost } from '../sources/host.ts'
 import type { HealthBoard, HealthEntry } from '../infra/health.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
+import { GIT_SOURCES, hostTickets, isGitSource, SourceSwitchConfirm, switchFingerprint, switchSettings } from './git-switch.ts'
 import { resolveRoleModel } from './role-models.ts'
 import { changedPaths, settingsNotice } from './notices.ts'
 import type { Sessions } from './sessions.ts'
-import { setupChanged, sourceSwitched, type Setup } from './setup.ts'
+import { gitProvider, setupChanged, sourceSwitched, type Setup } from './setup.ts'
 import type { Store } from './store.ts'
 import { KV } from '../kv.ts'
 
@@ -58,7 +60,7 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'watchdog' | 'source', Blo
 
 /** Host dependencies used by `Settings`. */
 export interface SettingsHost {
-  readonly store: Pick<Store, 'settings' | 'saveSettings' | 'blockRevision' | 'atomic' | 'tickets' | 'get'>
+  readonly store: Pick<Store, 'settings' | 'saveSettings' | 'blockRevision' | 'atomic' | 'tickets' | 'get' | 'set'>
   readonly sources: SourceRegistry
   /** Notified when a settings save changes the policy version. */
   readonly engine: EngineForSettings
@@ -72,7 +74,7 @@ export interface SettingsHost {
   /** Source host passed to source kinds' policy syncs and label refreshes. */
   readonly sourceHost: SourceHost
   /** Setup state, account/command checks, and restart trigger when setup-read fields change. */
-  readonly setup: Pick<Setup, 'configured' | 'checkAccounts' | 'blockCommands' | 'restart'>
+  readonly setup: Pick<Setup, 'configured' | 'deployment' | 'checkAccounts' | 'blockCommands' | 'restart'>
   /** Triggers an immediate pass so work newly allowed by a settings save runs right away. */
   requestPass(): void
 }
@@ -169,6 +171,7 @@ export class Settings {
       catch (error) { throw new UserError('modelUnavailable', { block, error: error instanceof Error ? error.message : String(error) }) }
     }
     rules.guard?.(current, candidate, origin)
+    this.refuseUnsafeSwitch(current, candidate, id)
     if (setupChanged(current, candidate) || sourceSwitched(current, candidate)) await this.host.setup.checkAccounts(block, candidate)
     if (stale()) throw new SettingsConflict('Settings changed during the checks. Reload before saving.')
     // Re-read current settings after async checks in case unrelated blocks were saved concurrently.
@@ -199,6 +202,73 @@ export class Settings {
     else this.host.requestPass()
     return { saved: true, revision: store.blockRevision(block), policy_changed: before !== after, restarting, context_delivery: delivery }
   }
+  /** The Git host setup resolved, while it has; undefined while setup waits or failed. */
+  private activeGit(): GitProvider | undefined {
+    return this.host.setup.configured() ? this.host.setup.deployment.git.provider : undefined
+  }
+  /**
+   * Refuse a Source save that would move the active Git host while open Tickets still belong to the old one, since those
+   * Tickets cannot resume there; the explicit switch action checks the same Tickets and restarts once.
+   */
+  private refuseUnsafeSwitch(current: SettingsValue, candidate: SettingsValue, id: string): void {
+    if (!isGitSource(id) || !sourceSwitched(current, candidate)) return
+    const old = this.activeGit()
+    if (!old) return
+    const blocking = hostTickets(this.host.store.tickets.open(), old)
+    if (!blocking.length) return
+    // An ambiguous or missing provider is a change too: a switch to no Source would strand the same Tickets.
+    let next: GitProvider | undefined
+    try { next = gitProvider(candidate, kind => !!this.host.sources.kind(kind)) } catch { next = undefined }
+    if (next === old) return
+    throw new UserError('useSourceSwitch', { count: String(blocking.length) })
+  }
+  /**
+   * Switch the deployment to the Git Source `id` in one action: disable every other Git Source, enable `id`, verify its
+   * account and repository, and restart setup. Open Tickets of the old host must be confirmed (`confirm` is the fingerprint
+   * of the list the person saw) or the switch is refused; they are stamped with the old host so none resumes on the new one.
+   * @throws UserError for a non-Git or uninstalled Source, `SettingsConflict` for a stale block revision, `SetupError` when the
+   * target account or repository does not work, or `SourceSwitchConfirm` until the old host's open Tickets are confirmed.
+   */
+  async activateSource(id: string, revision: number, origin: SettingsOrigin, confirm?: string) {
+    const { store, sessions } = this.host
+    if (origin !== 'panel') throw new UserError('panelOnlyAccounts')
+    if (!isGitSource(id)) throw new UserError('notGitSource', { source: id })
+    if (!this.host.sources.kind(id)) throw new UserError('sourceNotInstalled', { source: id })
+    const block = `source:${id}` as const
+    const stale = () => revision !== store.blockRevision(block)
+    if (stale()) throw new SettingsConflict('Settings changed. Reload before saving.')
+    await this.host.setup.checkAccounts(block, switchSettings(store.settings(), id))
+    if (stale()) throw new SettingsConflict('Settings changed during the checks. Reload before saving.')
+    // Re-read after the check so concurrent saves of unrelated blocks survive, and so a changed target config is the one saved.
+    const current = store.settings()
+    const candidate = switchSettings(current, id)
+    const old = this.activeGit()
+    const blocking = old ? hostTickets(store.tickets.open(), old) : []
+    const fingerprint = old ? switchFingerprint(old, blocking) : ''
+    if (old && blocking.length && confirm !== fingerprint) throw new SourceSwitchConfirm(old, blocking, fingerprint)
+    if (JSON.stringify(candidate) === JSON.stringify(current)) return { active: id, restarting: false }
+    store.atomic(() => {
+      // A Ticket accepted before host bindings existed belongs to the host that is still active; record it so the guard
+      // prevents it from resuming on the new one.
+      if (old) {
+        for (const ticket of store.tickets.open()) {
+          if (ticket.git) continue
+          store.tickets.save({ ...ticket, git: { provider: old } })
+        }
+      }
+      store.saveSettings(candidate, { source: origin, block, policyVersion: policyVersion(candidate), policyChanged: false, notified: [] })
+      // Every Git Source whose switch changed gets a new revision, so an open draft of the old host's card rebases too.
+      for (const other of GIT_SOURCES) {
+        if (other === id || !current.sources[other]) continue
+        const key = `source:${other}` as const
+        store.set(KV.settings.block(key), store.blockRevision(key) + 1)
+      }
+      sessions.notify(...settingsNotice(block, changedPaths(current, candidate)))
+    })
+    this.host.setup.restart()
+    return { active: id, restarting: true }
+  }
+
   /**
    * Pauses or resumes processing (new evaluations, worker dispatch, and channel delivery, while Sources continue recording
    * Triggers); saved in its own `'pause'` block so concurrent `executor` edits remain valid across it.

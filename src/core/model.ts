@@ -273,6 +273,11 @@ export type TicketEndBy = 'executor' | 'human'
 export type TicketOutcome = 'completed' | 'merged' | 'closed' | 'dropped' | 'stopped'
 /** A question for a person; `triggerId` is the human message that raised it, whose conversation it goes back to. */
 export interface Attention { id: string; question: string; triggerId?: string }
+/**
+ * The Git host a Ticket was accepted under. A deployment uses one host at a time; a Ticket whose host is no longer the
+ * active one must not resume, because its worktree, remote and change requests still belong to the old host.
+ */
+export interface TicketGit { provider: string }
 /** Ticket aggregate: an authorized work item with its assignments, channels, thread bindings, and inputs. */
 export interface Ticket {
   id: string
@@ -308,6 +313,8 @@ export interface Ticket {
   offPeak?: true
   /** What its Executor chose: its short name, directory and assignment text. */
   execution?: Execution
+  /** The Git host it was accepted under; a Ticket accepted before host bindings existed has none. */
+  git?: TicketGit
   /** The latest failed delivery of an Input to its worker, until a delivery succeeds. */
   delivery?: { error: string; at: string }
 }
