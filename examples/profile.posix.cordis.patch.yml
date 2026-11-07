@@ -1,0 +1,15 @@
+# POSIX / WSL profile example retained for non-Windows deployments.
+# Replace <placeholders> before first start; see docs/006-deployment.md.
+- id: webserver
+  config:
+    host: 127.0.0.1
+    port: 3082
+- id: dsh-superagent
+  config:
+    stateDir: /home/me/.dsh/state/superagent
+# - id: dsh-superagent-feishu
+#   disabled: false
+# - id: dsh-superagent-gitlab
+#   disabled: false
+# - id: dsh-superagent-github
+#   disabled: true

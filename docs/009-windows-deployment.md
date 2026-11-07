@@ -66,6 +66,12 @@ The table above is the assessment this plan started from. Stages 1-5 and WP6 hav
 - **WP6 (complete).** The Feishu Source runs on Windows. The host resolves an npm `.cmd` shim to the Node entry named by its `%dp0%` path and runs it with Node, so message text and JSON never pass through `cmd.exe`; a `.js` entry runs the same way, and a `.cmd` without a Node entry is refused. The event consumer closes stdin and allows five seconds before terminating, because Windows has no `SIGTERM`. The Feishu consumer suite runs on Windows against a Node fake reached through an npm-style `.cmd` shim. A live bot was not enabled on the scratch host, which must not receive Feishu credentials; connecting one is an operator step on the production host.
 - **Remaining.** No planned stage remains. WP6 is implemented and covered by Windows tests; a live bot was not connected on the scratch host because only production may enable Feishu. The end-to-end candidate profile needed its own model-provider configuration; a profile without one reports `MISSING_CREDENTIAL` and cannot assess requests. A Windows host supports the Git Sources and the Feishu Source.
 
+### Linked-bundle cutover incident (2026-11-07)
+
+A production candidate was installed in a Windows directory and then renamed. Its pnpm Junctions still targeted the old path, so bundle imports failed even though the base web server listened; `/orchestrator/api/state` returned 404. The rename was unnecessary: the profile dependency key can be `dsh-superagent` while its link points to a directory with a different name.
+
+The intended F: checkout also contained WSL-created dependency links, which Windows Node could not resolve. Repairing individual links exposed further missing transitive and peer dependencies, and pnpm's `Already up to date` did not establish that the existing installation was usable from Windows. Separately, Windows `pnpm install --frozen-lockfile`, `pnpm check`, and a bundle import passed in an isolated worktree on this host; that result does not validate the F: checkout itself or a live production Source. Use a complete platform-appropriate installation in the final path, keep platform dependency trees separate, and check the bundle import, management API and Source health. Preserve WSL history and worktree registrations rather than pruning them from Windows.
+
 ## Is it necessary?
 
 ### Scenarios

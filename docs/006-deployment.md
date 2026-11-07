@@ -2,6 +2,12 @@
 
 Use this guide to install, configure and operate dsh-superagent. It covers accounts, startup checks, upgrades and troubleshooting, building on [001 Domain model](001-domain.md) through [005 Panel](005-panel.md).
 
+## Production host for this checkout
+
+The intended production host is native Windows, using the stable checkout at `F:\code\dsh-superagent-prototype`, a separate `superagent` profile under the standard `%USERPROFILE%\.dsh`, and a Windows-native state directory. The profile links the bundle directly to that checkout; do not rename the checkout to match the package name. Use the Windows profile example in `examples/profile.cordis.patch.yml`; the POSIX / WSL example remains in `examples/profile.posix.cordis.patch.yml` for a separately managed deployment. Historical WSL state and worktrees are not Windows worker directories and must not be pruned or resumed on Windows.
+
+A Windows process cannot safely rely on WSL-created dependency links in a shared checkout. Prepare and verify a complete Windows dependency installation at the final path with the production service stopped and other users of that dependency tree quiesced. A pnpm `Already up to date` message is not proof: build and import the actual bundle with Windows Node, then require `GET /orchestrator/api/state` with `x-orchestrator-request: 1` to return 200 and check Source health. A listening web port alone is insufficient. Keep WSL and Windows dependency trees separate when both are needed.
+
 ## What runs
 
 - **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: the plugin changes process-wide `PATH` and git settings, and its process needs independent restarts and upgrades.

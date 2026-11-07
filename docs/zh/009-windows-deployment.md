@@ -68,6 +68,12 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 - **WP6（已完成）。** 飞书来源可在 Windows 上运行。宿主会把 npm `.cmd` shim 解析到它 `%dp0%` 路径所指的 Node 入口，并用 Node 运行，因此消息文本和 JSON 从不经过 `cmd.exe`；`.js` 入口也按同样方式运行，没有 Node 入口的 `.cmd` 会被拒绝。事件消费者通过关闭 stdin 请求结束，并等待五秒后终止，因为 Windows 没有 `SIGTERM`。飞书消费者测试套件会在 Windows 上通过 npm 风格的 `.cmd` shim 运行一个 Node 假实现。临时主机没有启用真实机器人，因为它不能持有飞书凭据；接上机器人是生产主机上的运营者步骤。
 - **剩余工作。** 计划内没有剩余阶段。WP6 已实现并有 Windows 测试覆盖；临时主机没有接入真实机器人，因为只有生产可以启用飞书。端到端候选 profile 需要自己的模型提供方配置；没有该配置的 profile 会报 `MISSING_CREDENTIAL`，无法研判请求。Windows 主机支持 Git 来源和飞书来源。
 
+### 链接 bundle 切换故障（2026-11-07）
+
+一次生产候选在 Windows 目录中安装依赖后被重命名，pnpm Junction 仍指向旧路径，导致 bundle 导入失败；基础 Web 服务器仍监听端口，但 `/orchestrator/api/state` 返回 404。改名并非必要：profile 的依赖键可以是 `dsh-superagent`，链接目录名不必与包名一致。
+
+目标 F: 检出还含有 Windows Node 无法解析的 WSL 依赖链接。逐个修复链接后又暴露出更多传递依赖和 peer 依赖缺失；pnpm 报 `Already up to date` 不能证明现有安装能在 Windows 上使用。同一主机上的隔离工作树已通过 Windows `pnpm install --frozen-lockfile`、`pnpm check` 和 bundle 导入；这不能证明 F: 检出本身或生产来源已经可用。应在最终路径使用完整的对应平台依赖安装，分离各平台依赖树，并检查 bundle 导入、管理 API 和来源健康。保留 WSL 历史和工作树注册记录，不要在 Windows 上清理它们。
+
 ## 有没有必要？
 
 ### 场景
