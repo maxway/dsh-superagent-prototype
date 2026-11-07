@@ -173,3 +173,36 @@ it('serves the Watchdog action API, re-reading the Ticket and recording the deci
     expect(await call('POST', 'watchdog/tickets/t1/retry', { reason: '' })).toMatchObject({ status: 400 })
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }) }
 })
+
+it('sends the Watchdog observation summary to a Feishu chat, and refuses without a working Feishu Source', async () => {
+  const settings = SettingsSchema.parse({})
+  const sent: unknown[] = []
+  const runtime = {
+    store: { settings: () => settings, tickets: { open: () => [] }, watchdog: { recent: () => [] } },
+    sources: { instance: (id: string) => id === 'feishu' ? { enabled: true, config: {} } : undefined,
+      sendChat: async (...args: unknown[]) => { sent.push(args) } },
+    links: () => () => ({ url: '', label: { zh: '', en: '' } }),
+    executor: { activeCount: () => 0 },
+    machine: { stateDir: '/tmp/state', promptMaxChars: { get: () => 100_000 }, admissionContextMaxPages: { get: () => 1 },
+      admissionContextTimeoutMs: { get: () => 1_000 } },
+    health: { runtime: { state: 'ready', detail: '' } },
+    masterId: 'master',
+    configured: () => true,
+    commands: { lark: async () => ({}) },
+  }
+  const call = serve(runtime)
+  const report = await call('POST', 'watchdog/report', { chatId: 'oc_test', idempotencyKey: 'report-key', note: 'Looks stuck' })
+  expect(report).toMatchObject({ status: 200, body: { sent: true, chatId: 'oc_test' } })
+  expect(report.body.text).toContain('**Watchdog 观察汇总**')
+  expect(report.body.text).toContain('没有进行中的工单。')
+  expect(report.body.text).toContain('**Watchdog 判断**：Looks stuck')
+  expect(sent).toEqual([['feishu', 'oc_test', expect.stringContaining('Watchdog 观察汇总'), 'report-key', runtime.commands]])
+  expect(await call('POST', 'watchdog/report', { chatId: 'not-a-chat', idempotencyKey: 'report-key' })).toMatchObject({ status: 400 })
+  expect(await call('POST', 'watchdog/report', { chatId: 'oc_test' })).toMatchObject({ status: 400 })
+  const refused = serve({ ...runtime, sources: { instance: () => undefined } })
+  expect(await refused('POST', 'watchdog/report', { chatId: 'oc_test', idempotencyKey: 'report-key' }))
+    .toEqual({ status: 400, body: { error: 'The Feishu Source is not installed' } })
+  const off = serve({ ...runtime, sources: { instance: () => ({ enabled: false, config: {} }) } })
+  expect(await off('POST', 'watchdog/report', { chatId: 'oc_test', idempotencyKey: 'report-key' }))
+    .toEqual({ status: 400, body: { error: 'The Feishu Source is off' } })
+})

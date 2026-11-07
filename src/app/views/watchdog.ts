@@ -1,6 +1,8 @@
-/** Read-only supervision facts for an external Watchdog: every open Ticket, its latest report and how long it has been silent. */
+/** Read-only supervision facts for an external Watchdog and the observation summary it can send to a person. */
 import { canRetry, latestAssignment, latestReport, ticketStage, type Assignment, type Ticket } from '../../core/index.ts'
 import { workerSessionId } from '../../executor/dsh.ts'
+import type { WatchdogConfig } from '../../policy.ts'
+import type { WatchdogAudit } from '../store.ts'
 import { threadFacts, snapshot, type Snapshot, type ViewHost } from './records.ts'
 import { markdown } from './text.ts'
 
@@ -81,3 +83,77 @@ export function watchdogView(host: ViewHost, at: string, staleMinutes: number) {
   return { at, staleMinutes, open: tickets.length, tickets }
 }
 export type WatchdogView = ReturnType<typeof watchdogView>
+/** State facts a Feishu Watchdog report carries besides the Ticket rows; `health` is the service's part health. */
+export interface WatchdogSummaryInput {
+  view: WatchdogView
+  paused: boolean
+  load: { running: number; maxWorkers: number }
+  health: Record<string, { state: string; detail?: string }>
+  config: WatchdogConfig
+  audit: readonly WatchdogAudit[]
+  /** The Watchdog's own one-sentence judgement, appended when it reports a finding. */
+  note?: string
+}
+/** A person stage's action label; the Watchdog view stores the action separately from the coarse `person` stage. */
+const ACTION_LABEL: Record<string, string> = {
+  answer: '待回答', review: '待验收', blocked: '受阻', failed: '失败', delivery: '投递失败',
+}
+const STAGE_LABEL: Record<string, string> = { ...ACTION_LABEL, working: '执行中', idle: '等待新触发' }
+/** A Ticket's human-readable stage: a working Ticket is executing or queued, and a person Ticket shows what a person must do. */
+function stageLabel(ticket: WatchdogView['tickets'][number]): string {
+  if (ticket.stage === 'working') return ticket.action === 'queued' ? '排队中' : '执行中'
+  return ticket.stage === 'person' && ticket.action ? ACTION_LABEL[ticket.action] ?? '待处理' : STAGE_LABEL[ticket.stage] ?? ticket.stage
+}
+/** One line of at most `max` characters, with whitespace collapsed so a report summary cannot break the Markdown list. */
+function oneLine(text: string, max: number): string {
+  const line = text.replace(/\s+/g, ' ').trim()
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line
+}
+/** The report header's local time, `YYYY-MM-DD HH:mm`, from the snapshot's ISO timestamp; an unreadable timestamp is kept verbatim. */
+function localTime(at: string): string {
+  const value = new Date(at)
+  if (!Number.isFinite(value.getTime())) return at
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())} ${pad(value.getHours())}:${pad(value.getMinutes())}`
+}
+/** At most this many flagged Tickets are listed; the rest become one count so a busy deployment stays within one message. */
+const REPORT_TICKETS = 10
+/**
+ * Renders the Watchdog's observation as Feishu Markdown for the Feishu report route: service state, the open Tickets that
+ * carry mechanical signals with their silence and latest report, the Watchdog settings and the recent decisions. It reads
+ * the same facts as the snapshot, so the person receiving it sees the current observation; `note` adds the Watchdog's
+ * judgement. The message is plain operator text, not a worker reply, so the 100-word IM limit does not apply.
+ */
+export function watchdogSummary(input: WatchdogSummaryInput): string {
+  const { view, paused, load, health, config, audit, note } = input
+  const runtime = health.runtime
+  const service = runtime ? runtime.state === 'ready' ? '服务 ready'
+    : `服务 ${runtime.state}${runtime.detail ? `（${oneLine(runtime.detail, 80)}）` : ''}` : '服务状态未知'
+  const problems = Object.entries(health).filter(([name, item]) => name !== 'runtime' && item.state !== 'ready')
+    .map(([name, item]) => `${name} ${item.state}${item.detail ? `（${oneLine(item.detail, 60)}）` : ''}`)
+  const facts = [service, `执行器 ${load.running}/${load.maxWorkers}`, ...paused ? ['已暂停'] : []]
+  if (problems.length) facts.push(`其他异常 ${problems.join('；')}`)
+  const lines = [`**Watchdog 观察汇总** · ${localTime(view.at)}`, facts.join(' · ')]
+  const flagged = view.tickets.filter(ticket => ticket.signals.length)
+  if (!view.open) lines.push('没有进行中的工单。')
+  else if (!flagged.length) lines.push(`进行中 ${view.open} 个工单，没有需要关注的机械信号。`)
+  else {
+    lines.push(`进行中 ${view.open} 个工单，${flagged.length} 个需要关注：`)
+    for (const ticket of flagged.slice(0, REPORT_TICKETS)) {
+      const last = ticket.lastReport ? `；最近报告 ${ticket.lastReport.state}：${oneLine(ticket.lastReport.summary, 120)}` : ''
+      lines.push(`- \`${ticket.id.slice(0, 8)}\` ${oneLine(ticket.title, 80)} — ${stageLabel(ticket)}，静默 ${ticket.silentMinutes}`
+        + ` 分钟，信号 ${ticket.signals.join('、')}${last}`)
+    }
+    if (flagged.length > REPORT_TICKETS) lines.push(`- 另有 ${flagged.length - REPORT_TICKETS} 个工单需要关注。`)
+    const quiet = view.open - flagged.length
+    if (quiet) lines.push(`其余 ${quiet} 个工单没有机械信号。`)
+  }
+  lines.push(`Watchdog ${config.mode}，允许动作 ${config.actions.length ? config.actions.join('、') : '无'}，静默阈值 ${config.staleMinutes} 分钟。`)
+  if (audit.length) {
+    const recent = audit.slice(0, 3).map(entry => `${entry.action} \`${entry.ticketId.slice(0, 8)}\` ${entry.result}`
+      + `${entry.reason ? `（${oneLine(entry.reason, 40)}）` : ''}`)
+    lines.push(`最近决定：${recent.join('；')}。`)
+  }
+  if (note?.trim()) lines.push('', `**Watchdog 判断**：${oneLine(note, 500)}`)
+  return lines.join('\n')
+}

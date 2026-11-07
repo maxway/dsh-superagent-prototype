@@ -28,6 +28,14 @@ export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message:
   }
   return 'sent'
 }
+/**
+ * Sends a new Markdown message to a chat, such as a Watchdog report, as the bot; Feishu keeps at most one message per
+ * idempotency key. Unlike a reply, this is not capped by the 100-word conversational limit, because a report summarises a
+ * whole observation; callers still keep it short.
+ */
+export async function sendFeishuChat(host: Pick<SourceContext, 'commands'>, chatId: string, text: string, idempotencyKey: string): Promise<void> {
+  await host.commands.lark(['im', '+messages-send', '--chat-id', chatId, '--markdown', text, '--idempotency-key', idempotencyKey])
+}
 /** Fallback chat link on the bot's brand; the message's own deep link on its Trigger is preferred when available. */
 export const feishuLink = (address: Record<string, string>, links: ChannelLinks): ChannelLink => ({
   url: feishuChatLink(links.feishu?.brand ?? 'feishu', address.chatId ?? ''), label: { zh: '飞书消息', en: 'Feishu message' },

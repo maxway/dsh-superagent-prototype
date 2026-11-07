@@ -259,6 +259,32 @@ async function watchdogAction(args) {
 }
 
 /**
+ * Ask the management API to render the current Watchdog observation and post it to a Feishu chat as the bot. The server
+ * owns the bot, the summary and the chat delivery; the command only names the chat, an optional one-sentence judgement
+ * and a fresh idempotency key, so a retried call does not duplicate the message.
+ */
+async function watchdogReport(args) {
+  const payload = JSON.stringify({ chatId: args.chat, ...(args.note ? { note: args.note } : {}), idempotencyKey: randomUUID() })
+  const response = await apiRequest(args.url, 'POST', '/orchestrator/api/watchdog/report',
+    { 'x-orchestrator-request': '1' }, 20_000, payload)
+  if (response === null) {
+    process.stderr.write(`No management API answer at ${args.url}; the service may be down.\n`)
+    return 1
+  }
+  if (response.status < 200 || response.status >= 300) {
+    process.stderr.write(`The management API answered ${response.status}: ${response.body.trim().slice(0, 300)}\n`)
+    return 1
+  }
+  let value
+  try { value = JSON.parse(response.body) } catch {
+    process.stderr.write('The management API answer is not JSON.\n')
+    return 1
+  }
+  process.stdout.write(JSON.stringify(value, null, 2) + '\n')
+  return 0
+}
+
+/**
  * Print the read-only snapshot an external Watchdog reads: service state, every open Ticket's stage, latest report,
  * silence and signals, the current Watchdog settings and the last decisions. The command only sends GET requests.
  */
@@ -455,7 +481,7 @@ async function start(args) {
 
 /** Parse the command line the way the previous `argparse` interface did, including options before the action. */
 export function parseArgv(argv, env = process.env) {
-  const args = { action: undefined, watchdog_action: undefined, ticket: undefined, reason: undefined,
+  const args = { action: undefined, watchdog_action: undefined, ticket: undefined, reason: undefined, chat: undefined, note: undefined,
     profile: env.DSH_SUPERAGENT_PROFILE || 'superagent', url: env.DSH_SUPERAGENT_URL || 'http://127.0.0.1:3082',
     timeout: 60, stop_timeout: 300, stale_minutes: 30, respect_stop: false }
   const positionals = []
@@ -482,6 +508,10 @@ export function parseArgv(argv, env = process.env) {
     else if (word.startsWith('--stale-minutes=')) args.stale_minutes = Number(word.slice('--stale-minutes='.length))
     else if (word === '--reason') { args.reason = text(index, '--reason'); index++ }
     else if (word.startsWith('--reason=')) args.reason = word.slice('--reason='.length)
+    else if (word === '--chat') { args.chat = value(index, '--chat'); index++ }
+    else if (word.startsWith('--chat=')) args.chat = word.slice('--chat='.length)
+    else if (word === '--note') { args.note = text(index, '--note'); index++ }
+    else if (word.startsWith('--note=')) args.note = word.slice('--note='.length)
     else if (word === '--respect-stop') args.respect_stop = true
     else if (word === '-h' || word === '--help') args.help = true
     else if (word.startsWith('-')) throw new Error(`unrecognized option: ${word}`)
@@ -491,12 +521,19 @@ export function parseArgv(argv, env = process.env) {
   if (args.action === 'watchdog') {
     args.watchdog_action = positionals[1]
     args.ticket = positionals[2]
-    if (args.watchdog_action !== undefined && args.watchdog_action !== 'retry' && args.watchdog_action !== 'stop') {
-      throw new Error('watchdog action must be retry or stop')
+    if (args.watchdog_action !== undefined && args.watchdog_action !== 'retry' && args.watchdog_action !== 'stop'
+      && args.watchdog_action !== 'report') {
+      throw new Error('watchdog action must be retry, stop or report')
     }
     if (positionals.length > 3) throw new Error(`unexpected argument: ${positionals[3]}`)
+    if (args.watchdog_action === 'report' && args.ticket) throw new Error('watchdog report takes no ticket id')
     if ((args.watchdog_action === 'retry' || args.watchdog_action === 'stop') && !args.ticket) {
       throw new Error(`watchdog ${args.watchdog_action} needs a ticket id`)
+    }
+    if (args.watchdog_action === 'report') {
+      if (!args.chat) throw new Error('watchdog report needs --chat')
+      if (!/^oc_[a-zA-Z0-9]+$/.test(args.chat)) throw new Error('--chat must be a Feishu chat id (oc_...)')
+      if (args.note !== undefined && args.note.length > 500) throw new Error('--note must be at most 500 characters')
     }
   } else if (positionals.length > 1) throw new Error(`unexpected argument: ${positionals[1]}`)
   if (args.help) return args
@@ -533,7 +570,9 @@ const USAGE = `Usage: dsh-superagent [--respect-stop] <start|stop|restart|status
 Manage a local dsh-superagent service (one DSH profile, default \`superagent\`).
 
 \`watchdog\` prints a read-only JSON snapshot of the service, its open Tickets, the Watchdog settings and recent decisions;
-\`watchdog retry|stop <ticket> --reason <text>\` asks the server to record or execute one action under those settings.
+\`watchdog retry|stop <ticket> --reason <text>\` asks the server to record or execute one action under those settings;
+\`watchdog report --chat <chat id> [--note <text>]\` asks the server to send the current observation summary to that
+Feishu chat through the Feishu Source's bot.
 The server owns the mode (off, observe, report or enforce), safety checks, cooldown, limits and audit.
 
 Options:
@@ -543,6 +582,8 @@ Options:
   --stop-timeout <s>     Graceful shutdown timeout (default: 300).
   --stale-minutes <n>    Watchdog signal threshold in minutes (default: 30, at most 1440).
   --reason <text>        Why \`watchdog retry|stop\` asks for an action (required, at most 1000 characters).
+  --chat <chat id>       Feishu chat that \`watchdog report\` posts to (required, an \`oc_\` id the bot is in).
+  --note <text>          The Watchdog's one-sentence judgement for \`watchdog report\` (at most 500 characters).
   --respect-stop         For monitoring: never start/restart after an intentional stop.`
 
 async function main(argv = process.argv.slice(2)) {
@@ -551,7 +592,8 @@ async function main(argv = process.argv.slice(2)) {
   process.umask(0o077)
   // A Watchdog only reads the management API, so a control operation in progress must not block it.
   if (args.action === 'watchdog') {
-    return args.watchdog_action === 'retry' || args.watchdog_action === 'stop' ? await watchdogAction(args) : await watchdog(args)
+    if (args.watchdog_action === 'retry' || args.watchdog_action === 'stop') return await watchdogAction(args)
+    return args.watchdog_action === 'report' ? await watchdogReport(args) : await watchdog(args)
   }
   const release = acquireLock(args.profile)
   try {

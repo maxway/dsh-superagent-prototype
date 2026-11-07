@@ -14,6 +14,7 @@ import { SetupError, type SetupProblem } from '../setup.ts'
 import { UserError, type EngineForPeople, type Ticket } from '../core/index.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import type { DshExecutor } from '../executor/dsh.ts'
+import type { Commands } from '../infra/commands.ts'
 import type { Health } from '../sources/host.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import type { Sessions } from './sessions.ts'
@@ -28,7 +29,7 @@ import { settingsView } from './views/settings.ts'
 import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
-import { watchdogView } from './views/watchdog.ts'
+import { watchdogView, watchdogSummary } from './views/watchdog.ts'
 import { watchdogAction, type WatchdogRequest } from './watchdog.ts'
 
 export interface HttpHost {
@@ -36,6 +37,8 @@ export interface HttpHost {
   /** Feishu message links resolved since startup, used by search to match AppLink URLs. */
   readonly sourceLinks: Pick<TextCache, 'entries'>
   readonly sources: SourceRegistry
+  /** The deployment's command transport; a Source channel uses it to post a Watchdog report. */
+  readonly commands: Commands
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
   readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels' | 'activateSource'>
@@ -128,6 +131,8 @@ function watchdogPage(runtime: HttpHost, staleMinutes: number) {
     watchdog: runtime.store.settings().watchdog, audit: runtime.store.watchdog.recent(20) }
 }
 export type WatchdogPageView = ReturnType<typeof watchdogPage>
+/** A delivered Watchdog report: the Feishu chat, the rendered observation and when the server sent it. */
+export interface WatchdogReportView { sent: true; at: string; chatId: string; text: string }
 /** Builds a ticket's detail view; `environment` is empty while waiting for setup because it requires the resolved deployment. */
 function ticketPage(runtime: HttpHost, id: string) {
   const detail = ticketDetail(views(runtime), id), ticket = runtime.store.tickets.get(id)
@@ -161,6 +166,11 @@ const WatchdogBody = z.object({
   snapshotAt: z.string().refine(value => Number.isFinite(Date.parse(value)), 'A parseable snapshot timestamp'),
   idempotencyKey: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/, 'A stable idempotency key'),
 })
+const WatchdogReportBody = z.object({
+  chatId: z.string().trim().regex(/^oc_[a-zA-Z0-9]+$/, 'A Feishu chat id (oc_...)'),
+  idempotencyKey: z.string().trim().min(1).max(50).regex(/^[A-Za-z0-9._:-]+$/, 'A stable idempotency key'),
+  note: z.string().trim().max(500).optional(),
+})
 const ThreadsQuery = z.object({ filter: z.enum(THREAD_FILTERS).catch('subscribed'), offset, limit: limit(20, 1000) })
 const ThreadQuery = z.object({ limit: limit(50, 100), before: z.string().optional(), around: z.string().optional() })
 const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.literal('24h').optional().catch(undefined), offset,
@@ -184,6 +194,19 @@ function routes(runtime: HttpHost): Routes {
       const request: WatchdogRequest = { ...WatchdogBody.parse(await body()), ticketId: params.id, action }
       return watchdogAction({ store: runtime.store, engine: runtime.engine, view: views(runtime), configured: () => runtime.configured(),
         setupProblem: runtime.setupProblem }, request)
+    },
+    'POST watchdog/report': async ({ body }) => {
+      const request = WatchdogReportBody.parse(await body())
+      const source = runtime.sources.instance('feishu')
+      if (!source) throw new RouteError(400, 'The Feishu Source is not installed')
+      if (!source.enabled) throw new RouteError(400, 'The Feishu Source is off')
+      if (runtime.feishuProblem) throw new RouteError(400, runtime.feishuProblem.detail)
+      if (!runtime.configured()) throw new RouteError(400, 'dsh-superagent is waiting for setup')
+      const page = watchdogPage(runtime, runtime.store.settings().watchdog.staleMinutes)
+      const text = watchdogSummary({ view: page, paused: page.state.paused, load: page.state.load, health: page.state.health,
+        config: page.watchdog, audit: page.audit, ...request.note ? { note: request.note } : {} })
+      await runtime.sources.sendChat('feishu', request.chatId, text, request.idempotencyKey, runtime.commands)
+      return { sent: true as const, at: new Date().toISOString(), chatId: request.chatId, text }
     },
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),

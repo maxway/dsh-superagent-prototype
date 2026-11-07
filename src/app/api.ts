@@ -1,7 +1,7 @@
 /** Type-only management API contract between the web panel and host routes, imported by the panel without bundling host code. */
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { PromptConfig, Prompts } from './prompts.ts'
-import type { PromptsView, StateView, TicketPageView, WatchdogPageView } from './http.ts'
+import type { PromptsView, StateView, TicketPageView, WatchdogPageView, WatchdogReportView } from './http.ts'
 import type { WatchdogAudit } from './store.ts'
 import type { HistoryView } from './settings-history.ts'
 import type { OverviewView } from './views/overview.ts'
@@ -23,6 +23,7 @@ export interface Api {
   'GET watchdog': { query?: { stale_minutes?: number }; response: WatchdogPageView }
   'POST watchdog/tickets/:id/:action': { body: { reason: string; evidence?: Record<string, unknown>; snapshotAt: string;
     idempotencyKey: string }; response: WatchdogAudit }
+  'POST watchdog/report': { body: { chatId: string; idempotencyKey: string; note?: string }; response: WatchdogReportView }
   'GET overview': { response: OverviewView }
   'GET search': { query: { q: string }; response: SearchView }
   'GET sources': { response: SourceStatusView[] }

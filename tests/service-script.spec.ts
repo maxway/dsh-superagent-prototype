@@ -258,6 +258,7 @@ it('exposes the platform-specific process, start and argument forms', async () =
     command: m.tmuxCommand('/opt/dsh', 'superagent', '/tmp/log file.log', { DSH_HOME: '/tmp/home', PATH: '/usr/bin', HOME: undefined, TMUX: '/tmp/x,1,0' }),
     argv: m.parseArgv(['--respect-stop', 'start', '--profile', 'one', '--timeout', '5']),
     watchdog: m.parseArgv(['watchdog', '--stale-minutes', '7', '--url', 'http://127.0.0.1:1']),
+    report: m.parseArgv(['watchdog', 'report', '--chat', 'oc_team', '--note', 'Stalled']),
     serves: [
       m.serves(['node', '/x/scripts/dsh-superagent', '--profile', 'one', 'start'], 'one'),
       m.serves(['node', '/x/scripts/dsh-superagent', '--profile', 'one', 'restart'], 'one'),
@@ -268,7 +269,7 @@ it('exposes the platform-specific process, start and argument forms', async () =
   })))`
   const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
     (error, stdout) => error ? reject(error) : resolve(stdout)))
-  const value = JSON.parse(out) as { ps: unknown[]; windows: unknown[]; start: unknown; socket: string; command: string; argv: Record<string, unknown>; watchdog: Record<string, unknown>; serves: boolean[] }
+  const value = JSON.parse(out) as { ps: unknown[]; windows: unknown[]; start: unknown; socket: string; command: string; argv: Record<string, unknown>; watchdog: Record<string, unknown>; report: Record<string, unknown>; serves: boolean[] }
   expect(value.ps).toEqual([{ pid: 123, name: 'node', args: ['node', '/opt/my', 'tools/dsh', '--profile', 'superagent', '--no-open'] }])
   expect(value.windows).toEqual([{ pid: 7, name: 'node', args: ['node', '/opt/dsh', '--profile', 'superagent', '--no-open'] },
     { pid: 9, name: 'deepseek harness', args: ['D:\\app\\DeepSeek', 'Harness.exe', '--expose-internals', 'D:\\app\\cli.js', '--profile', 'superagent', '--no-open'] }])
@@ -277,6 +278,7 @@ it('exposes the platform-specific process, start and argument forms', async () =
   expect(value.command).toBe("umask 077; export DSH_HOME=/tmp/home; unset HOME; export PATH=/usr/bin; unset TMUX TMUX_PANE; exec /opt/dsh --profile superagent --no-open >> '/tmp/log file.log' 2>&1")
   expect(value.argv).toMatchObject({ action: 'start', profile: 'one', timeout: 5, respect_stop: true })
   expect(value.watchdog).toMatchObject({ action: 'watchdog', stale_minutes: 7, url: 'http://127.0.0.1:1' })
+  expect(value.report).toMatchObject({ action: 'watchdog', watchdog_action: 'report', chat: 'oc_team', note: 'Stalled' })
   // A control invocation of this script carries --profile too, but only the DSH launcher is the service.
   expect(value.serves).toEqual([false, false, false, true, false])
 })
@@ -409,7 +411,7 @@ it('refuses an action for a Ticket that is not open, and a missing ticket or rea
   expect(await run('watchdog', 'stop', 't1', '--url', url)).toMatchObject({ code: 1,
     stderr: expect.stringContaining('needs --reason') })
   expect(await run('watchdog', 'restart', 't1', '--url', url)).toMatchObject({ code: 1,
-    stderr: expect.stringContaining('watchdog action must be retry or stop') })
+    stderr: expect.stringContaining('watchdog action must be retry, stop or report') })
   expect(calls.some(call => call.method === 'POST')).toBe(false)
 })
 it('reports a management API refusal from the action route', async () => {
@@ -426,6 +428,46 @@ it('reports a management API refusal from the action route', async () => {
   const url = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
   expect(await run('watchdog', 'retry', 't1', '--reason', 'Bad request', '--url', url)).toMatchObject({ code: 1,
     stderr: expect.stringContaining('Invalid settings: reason') })
+})
+
+it('asks the server to send the Watchdog observation summary to a Feishu chat', async () => {
+  const calls: { method?: string; url?: string; body?: string; header?: string }[] = []
+  server = createServer((request, response) => {
+    let body = ''
+    request.on('data', chunk => { body += chunk })
+    request.on('end', () => {
+      calls.push({ method: request.method, url: request.url, body, header: String(request.headers['x-orchestrator-request']) })
+      response.writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ sent: true, at: '2026-11-07T00:00:00.000Z', chatId: 'oc_team', text: '**Watchdog 观察汇总**' }))
+    })
+  })
+  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
+  const report = await run('watchdog', 'report', '--chat', 'oc_team', '--note', 'No report for 90 minutes', '--url', url)
+  expect(report.code).toBe(0)
+  expect(JSON.parse(report.stdout)).toMatchObject({ sent: true, chatId: 'oc_team' })
+  expect(calls).toHaveLength(1)
+  expect(calls[0]).toMatchObject({ method: 'POST', url: '/orchestrator/api/watchdog/report', header: '1' })
+  const body = JSON.parse(calls[0]!.body!) as { chatId: string; note: string; idempotencyKey: string }
+  expect(body).toMatchObject({ chatId: 'oc_team', note: 'No report for 90 minutes' })
+  expect(body.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
+  // A report takes no ticket, needs a chat id and sends nothing when either check fails.
+  expect(await run('watchdog', 'report', '--url', url)).toMatchObject({ code: 1, stderr: expect.stringContaining('needs --chat') })
+  expect(await run('watchdog', 'report', '--chat', 'team', '--url', url)).toMatchObject({ code: 1,
+    stderr: expect.stringContaining('--chat must be a Feishu chat id') })
+  expect(await run('watchdog', 'report', 't1', '--chat', 'oc_team', '--url', url)).toMatchObject({ code: 1,
+    stderr: expect.stringContaining('takes no ticket id') })
+  expect(calls).toHaveLength(1)
+})
+
+it('reports a management API refusal from the report route', async () => {
+  server = createServer((_request, response) => {
+    response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'The Feishu Source is off' }))
+  })
+  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
+  expect(await run('watchdog', 'report', '--chat', 'oc_team', '--url', url)).toMatchObject({ code: 1,
+    stderr: expect.stringContaining('The Feishu Source is off') })
 })
 // The remaining cases also drive the POSIX control path with stubbed shell binaries.
 describe.skipIf(process.platform === 'win32')('POSIX service lifecycle (continued)', () => {
