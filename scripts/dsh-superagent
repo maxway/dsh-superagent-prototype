@@ -372,6 +372,14 @@ export function windowsStart(dsh, profile, node = findExecutable('node')) {
   return { file: /\s/.test(dsh) ? `"${dsh}"` : dsh, args: ['--profile', profile, '--no-open'], shell: true }
 }
 
+export function restrictWindowsLog(path) {
+  const identity = spawnSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
+  const sid = /S-1-(?:\d+-)+\d+/i.exec(identity.stdout ?? '')?.[0]
+  if (identity.error || identity.status !== 0 || !sid) throw new Error('Could not identify the current Windows user for log access.')
+  const permissions = spawnSync('icacls.exe', [path, '/inheritance:r', '/grant:r', `*${sid}:(F)`, '*S-1-5-18:(F)', '*S-1-5-32-544:(F)'], { encoding: 'utf8' })
+  if (permissions.error || permissions.status !== 0) throw new Error(`Could not restrict access to the service log: ${(permissions.stderr ?? '').trim()}`)
+}
+
 async function start(args) {
   const session = 'dsh-' + args.profile
   let pids = processes(args.profile)
@@ -390,6 +398,7 @@ async function start(args) {
     const log = join(ARTIFACTS, `dsh-superagent-${args.profile}-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}`
       + `-${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}-${process.pid}.log`)
     writeFileSync(log, '', { mode: 0o600 })
+    if (WINDOWS) restrictWindowsLog(log)
     pruneLogs(args.profile)
     if (WINDOWS) {
       const invocation = windowsStart(dsh, args.profile)

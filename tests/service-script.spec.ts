@@ -293,6 +293,16 @@ it('launches a Windows npm shim through its Node entry', async () => {
     (error, stdout) => error ? reject(error) : resolve(stdout)))
   expect(JSON.parse(out)).toEqual({ file: process.execPath, args: [entry, '--profile', 'superagent', '--no-open'], shell: false })
 })
+it.skipIf(process.platform !== 'win32')('restricts Windows service log access before launch', async () => {
+  const log = join(root, 'protected.log')
+  writeFileSync(log, '')
+  const module = pathToFileURL(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')).href
+  const script = `import(${JSON.stringify(module)}).then(m => m.restrictWindowsLog(${JSON.stringify(log)}))`
+  await new Promise<void>((resolve, reject) => execFile(process.execPath, ['-e', script], error => error ? reject(error) : resolve()))
+  const query = `(Get-Acl -LiteralPath '${log.replaceAll("'", "''")}').AreAccessRulesProtected`
+  const protectedAcl = execFileSync('pwsh', ['-NoProfile', '-Command', query], { encoding: 'utf8' }).trim()
+  expect(protectedAcl).toBe('True')
+})
 it.skipIf(process.platform !== 'win32')('keeps a detached Node shim hidden and writes its output to the log', async () => {
   const entry = join(root, 'bin', 'entry.js')
   const shim = join(root, 'bin', 'dsh.cmd')
