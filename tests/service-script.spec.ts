@@ -1,6 +1,6 @@
 /** Tests for scripts/dsh-superagent using a temporary checkout path with spaces and stubbed ps, tmux, and dsh binaries. */
 import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync }
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync }
   from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -280,6 +280,43 @@ it('exposes the platform-specific process, start and argument forms', async () =
   // A control invocation of this script carries --profile too, but only the DSH launcher is the service.
   expect(value.serves).toEqual([false, false, false, true, false])
 })
+it('launches a Windows npm shim through its Node entry', async () => {
+  const shim = join(root, 'bin', 'dsh.cmd')
+  const entryDir = join(root, 'bin', 'node_modules', '@deepseek-ai', 'dsh', 'lib')
+  mkdirSync(entryDir, { recursive: true })
+  const entry = join(entryDir, 'bin.js')
+  writeFileSync(entry, '')
+  writeFileSync(shim, '"%_prog%" "%dp0%\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" %*\r\n')
+  const module = pathToFileURL(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')).href
+  const script = `import(${JSON.stringify(module)}).then(m => console.log(JSON.stringify(m.windowsStart(${JSON.stringify(shim)}, 'superagent', ${JSON.stringify(process.execPath)}))))`
+  const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
+    (error, stdout) => error ? reject(error) : resolve(stdout)))
+  expect(JSON.parse(out)).toEqual({ file: process.execPath, args: [entry, '--profile', 'superagent', '--no-open'], shell: false })
+})
+it.skipIf(process.platform !== 'win32')('keeps a detached Node shim hidden and writes its output to the log', async () => {
+  const entry = join(root, 'bin', 'entry.js')
+  const shim = join(root, 'bin', 'dsh.cmd')
+  const log = join(root, 'service.log')
+  writeFileSync(entry, "console.log('started'); setTimeout(() => console.log('still running'), 300); setInterval(() => {}, 1000)\n")
+  writeFileSync(shim, '"%_prog%" "%dp0%\\entry.js" %*\r\n')
+  const module = pathToFileURL(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')).href
+  const script = `import(${JSON.stringify(module)}).then(m => console.log(JSON.stringify(m.windowsStart(${JSON.stringify(shim)}, 'superagent', ${JSON.stringify(process.execPath)}))))`
+  const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
+    (error, stdout) => error ? reject(error) : resolve(stdout)))
+  const invocation = JSON.parse(out) as { file: string; args: string[]; shell: boolean }
+  const output = openSync(log, 'w')
+  const child = spawn(invocation.file, invocation.args, { detached: true, shell: invocation.shell, windowsHide: true, stdio: ['ignore', output, output] })
+  closeSync(output)
+  try {
+    await new Promise(resolve => setTimeout(resolve, 1200))
+    expect(readFileSync(log, 'utf8')).toContain('still running')
+    const window = execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${child.pid}).MainWindowHandle`], { encoding: 'utf8' }).trim()
+    expect(window).toBe('0')
+  } finally {
+    child.kill()
+    await new Promise(resolve => child.once('exit', resolve))
+  }
+}, 10_000)
 it('prints the Watchdog snapshot over GET and refuses an unreachable service', async () => {
   const requests: { method?: string; url?: string; header?: string }[] = []
   server = createServer((request, response) => {

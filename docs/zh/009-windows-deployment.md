@@ -74,7 +74,9 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 
 目标 F: 检出还含有 Windows Node 无法解析的 WSL 依赖链接。逐个修复链接后又暴露出更多传递依赖和 peer 依赖缺失；pnpm 报 `Already up to date` 不能证明现有安装能在 Windows 上使用。同一主机上的隔离工作树已通过 Windows `pnpm install --frozen-lockfile`、`pnpm check` 和 bundle 导入；这本身不能证明 F: 检出或生产来源可用。随后用 Windows pnpm 重建了最终 F: 依赖树，并通过构建和 bundle 导入。应在最终路径使用完整的对应平台依赖安装，分离各平台依赖树，并检查 bundle 导入、管理 API 和来源健康。保留 WSL 历史和工作树注册记录，不要在 Windows 上清理它们。
 
-智能体专用的 Windows `glab` 配置最初默认指向 `gitlab.com`。尽管在仓库内执行 `glab api user` 成功，安装检查却从状态目录运行，查询了错误的主机，收到未授权 JSON 并报告 `gitlabCliNoAccount`。在智能体专用的 `GLAB_CONFIG_DIR` 中把自建主机设为默认值，并从状态目录重新探测后问题消失。另一个独立问题是：复制后的飞书 CLI 配置显示本地机器人就绪，但服务端验证返回 `invalid_client`；本地就绪不能证明 Windows 凭据有效。
+智能体专用的 Windows `glab` 配置最初默认指向 `gitlab.com`。尽管在仓库内执行 `glab api user` 成功，安装检查却从状态目录运行，查询了错误的主机，收到未授权 JSON 并报告 `gitlabCliNoAccount`。在智能体专用的 `GLAB_CONFIG_DIR` 中把自建主机设为默认值，并从状态目录重新探测后问题消失。另一个独立问题是：复制后的飞书 CLI 配置显示本地机器人就绪，但服务端验证返回 `invalid_client`；本地就绪不能证明 Windows 凭据有效。运营者在 Windows 重新配置已有应用，并验证机器人远程认证成功；重新初始化后严格模式变成 `off`，经运营者批准设为 `bot`。保存 Windows 来源设置并重启后，GitLab 和飞书均报告 ready。Windows 同一用户中，同一 App ID 的凭据由 CLI 配置共享；更新前应考虑对其他配置的影响。
+
+两次通过服务脚本启动 Windows 服务后，日志文件为空，尽管进程已监听且管理 API 返回 200；未认证的浏览器根地址返回 401，日志中没有带令牌的 URL。后来运营者的截图显示该地址出现在弹出的控制台窗口中；后台运行及日志输出的问题仍待定位，不能仅凭管理 API 或来源健康声称浏览器访问已验证。上述观察期间执行器始终处于暂停状态。
 
 ## 有没有必要？
 

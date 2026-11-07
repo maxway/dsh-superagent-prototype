@@ -355,8 +355,20 @@ export function tmuxSocket(profile) {
 }
 
 /** The invocation that starts the service detached on Windows; `dsh` is normally the npm `.cmd` shim. */
-export function windowsStart(dsh, profile) {
-  // cmd runs the npm shim; quote the executable when its path holds spaces.
+export function windowsStart(dsh, profile, node = findExecutable('node')) {
+  if (/\.(cmd|bat)$/i.test(dsh)) {
+    let text = ''
+    try { text = readFileSync(dsh, 'utf8') } catch {}
+    const entry = /(?:%~?dp0%?)[\\/]([^"'\r\n]+?\.(?:js|cjs|mjs))/i.exec(text)?.[1]
+    if (entry) {
+      const script = join(dirname(dsh), ...entry.split(/[\\/]+/))
+      const adjacentNode = join(dirname(dsh), 'node.exe')
+      const executable = existsSync(adjacentNode) ? adjacentNode : node
+      if (!executable) throw new Error('node must be on PATH to start the npm dsh shim.')
+      if (!existsSync(script)) throw new Error(`The dsh shim's Node entry does not exist: ${script}`)
+      return { file: executable, args: [script, '--profile', profile, '--no-open'], shell: false }
+    }
+  }
   return { file: /\s/.test(dsh) ? `"${dsh}"` : dsh, args: ['--profile', profile, '--no-open'], shell: true }
 }
 
