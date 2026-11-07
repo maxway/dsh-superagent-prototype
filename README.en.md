@@ -39,8 +39,8 @@ Schedules Tickets into the model's off-peak billing window by source, lowering t
 Adds task-level supervision alongside the process check, so a Ticket that stalls or drifts is noticed.
 
 - A scheduled Session in an independent profile reads every open Ticket's stage, latest report and silence through the new read-only `GET /orchestrator/api/watchdog` route, and reports anomalies found from mechanical signals and model judgement.
-- The first version is observation only: the check sends GET requests and never calls retry/stop or changes settings or prompts. Retry, stop and later interventions are a separate phase that needs an audit trail, per-Ticket rate limits and an explicit observation mode.
-- `scripts/dsh-superagent watchdog` prints the machine-readable snapshot, so the check can run on a schedule from another profile.
+- Supports `observe`, `suggest` and `auto` modes, with `observe` as the default; `suggest` records recommendations only, while `auto` retries through the existing API within a per-Ticket cooldown and per-Ticket and global limits, and every decision is audited. Stop and configuration changes remain later phases.
+- `scripts/dsh-superagent watchdog` prints the machine-readable snapshot, and `watchdog retry` records or executes one retry when the mode and limits allow it, so the check can run on a schedule from another profile.
 
 ### Special note
 

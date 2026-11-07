@@ -223,19 +223,36 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 每小时检查只看进程。任务级巡检还看工作：在你日常使用的 DeepSeek Harness profile 中定时运行一个智能体，读取进行中的工单和最近的报告，在某个工单长时间没有实质进展或看起来偏离目标时告诉你。它和每小时检查放在同一个 profile 里，而不是 `superagent`，这样服务停止时它仍然工作。
 
-当前版本只观察。巡检只读管理 API，不会调用任何修改工单、设置或提示词的路由；它不直接打开 SQLite 数据库或 Session 日志，也不重启服务——进程恢复由每小时检查负责。
+巡检还可以处理一类失败：已阻塞、失败或投递失败，且长时间没有变化的工单。它在行动前读取本地配置；默认模式是 `observe`，只记录它本来会做什么，不改变任何东西。先用 `suggest` 观察一段，再切到 `auto`：
+
+```json
+{
+  "mode": "observe",
+  "staleMinutes": 30,
+  "limits": { "cooldownMinutes": 15, "perTicketPerHour": 2, "perTicketPerDay": 4, "perHour": 6 }
+}
+```
+
+配置位于 `.artifacts/watchdog/<profile>.json`（profile 默认是 `superagent`）；`--config` 可以指向其他路径。
+
+- `observe` 追加 `observed` 决定，不改变任何东西。
+- `suggest` 追加 `suggested` 决定，不改变任何东西，便于对照它的判断与你的判断。
+- `auto` 仅在工单可重试、静默至少 `staleMinutes`、且冷却与限流都允许时，调用管理 API 现有的 retry 路由。retry 会结束卡住的派工，在同一 Session 和目录中启动新派工；它不会停止工单。报告在等待人决策的 blocked 工单不应重试：只有当报告显示偶发失败，或 worker 无需新输入也能继续时，巡检才请求重试。
+- 每个决定都追加到 `.artifacts/watchdog/<profile>-audit.jsonl`，包含模式、原因、证据、动作前后的工单状态，以及结果或拒绝原因。审计文件仅操作者用户可读。
+
+这些是这条命令的运维护栏，不是安全边界：面板和管理 API 仍然允许人直接重试或停止工单。
 
 让该 profile 中的智能体用下面这段提示词创建定时任务，每 15 到 30 分钟运行一次，并填入检出路径和面板 URL：
 
 ```text
-检查 dsh-superagent 的工作：在 <checkout> 中运行 `scripts/dsh-superagent --profile superagent --url <panel URL> watchdog`。退出 0 会打印含 `state` 与 `tickets` 的 JSON；退出 1 表示管理 API 没有响应，只报告一次，恢复交给进程检查。对每个工单看它的阶段、最近报告、`silentMinutes` 和 `signals`。只报告需要人处理的事：`delivery-error` 或 `undelivered-inputs`；无法用 `offPeak`、`state.paused`、`state.setup` 或执行器满载解释的 `no-progress` 或 `queued`；等待远超过 30 分钟的 person 阶段，或超过一天仍未评审的 ready 结果；反复失败；或最近报告与工单标题明显不符。只读：绝不调用 retry、stop、settings 或 prompts，也绝不修改数据库或 Session 文件。没有问题就保持安静。报告时给出工单 id、阶段、静默时长和一句证据；同一发现没有变化时不要在后续运行中重复。
+检查 dsh-superagent 的工作：在 <checkout> 中运行 `scripts/dsh-superagent --profile superagent --url <panel URL> watchdog`。退出 0 会打印含 `state`、`tickets` 与 `watchdog` 的 JSON；退出 1 表示管理 API 没有响应，只报告一次，恢复交给进程检查。对每个工单看它的阶段、最近报告、`silentMinutes` 和 `signals`。只报告需要人处理的事：`delivery-error` 或 `undelivered-inputs`；无法用 `offPeak`、`state.paused`、`state.setup` 或执行器满载解释的 `no-progress` 或 `queued`；等待远超过 30 分钟的 person 阶段，或超过一天仍未评审的 ready 结果；反复失败；或最近报告与工单标题明显不符。对 `actions.retry` 为真且静默超过 `watchdog.staleMinutes` 的工单，在 `watchdog.mode` 为 `suggest` 或 `auto` 时，运行 `scripts/dsh-superagent --profile superagent --url <panel URL> watchdog retry <ticket id> --reason "<一句话>"`；它会记录建议，或在 auto 模式下按冷却与限流重试。`state.paused` 为真时不要重试；也不要重试在等待人决策的 blocked 工单，只在报告显示偶发失败，或工作无需新输入也能继续时重试。报告它的 `decision`，被拒绝时报告 `refusal`。绝不调用原始 retry/stop API，绝不修改设置或提示词，也绝不修改数据库或 Session 文件。没有问题就保持安静。报告时给出工单 id、阶段、静默时长和一句证据；同一发现没有变化、决定也没有变化时不要重复。
 ```
 
 Windows 上使用 `node scripts\dsh-superagent ...`。用 `--stale-minutes` 修改 30 分钟的信号阈值。
 
-管理 API 的 `GET /orchestrator/api/watchdog` 路由是这个巡检的稳定只读数据源。它返回与面板相同的 `state`，以及每个进行中工单的阶段、最近派工与报告、静默时长和机械计算的 `signals`；命令只发送 GET 请求。
+管理 API 的 `GET /orchestrator/api/watchdog` 路由仍是这个巡检的稳定只读数据源。它返回与面板相同的 `state`，以及每个进行中工单的阶段、最近派工与报告、静默时长和机械计算的 `signals`。巡检通过管理 API 读取，不直接读 SQLite 或 Session 日志。快照命令只发送 GET 请求；`watchdog retry` 是唯一会写入的 Watchdog 命令，且只在 `auto` 模式下写入。
 
-介入是后续阶段。允许 Watchdog 重试或停止工单、再之后修改设置或提示词，需要审计、按工单限流和显式的观察模式。在这些具备之前，Watchdog 只报告，由人来操作。
+停止工单、修改设置或提示词是后续阶段。本巡检不会停止工单、暂停执行器、编辑提示词或修改设置；这些需要各自的阈值、确认与审计。
 
 ## 设置
 
