@@ -72,7 +72,9 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 
 一次生产候选在 Windows 目录中安装依赖后被重命名，pnpm Junction 仍指向旧路径，导致 bundle 导入失败；基础 Web 服务器仍监听端口，但 `/orchestrator/api/state` 返回 404。改名并非必要：profile 的依赖键可以是 `dsh-superagent`，链接目录名不必与包名一致。
 
-目标 F: 检出还含有 Windows Node 无法解析的 WSL 依赖链接。逐个修复链接后又暴露出更多传递依赖和 peer 依赖缺失；pnpm 报 `Already up to date` 不能证明现有安装能在 Windows 上使用。同一主机上的隔离工作树已通过 Windows `pnpm install --frozen-lockfile`、`pnpm check` 和 bundle 导入；这不能证明 F: 检出本身或生产来源已经可用。应在最终路径使用完整的对应平台依赖安装，分离各平台依赖树，并检查 bundle 导入、管理 API 和来源健康。保留 WSL 历史和工作树注册记录，不要在 Windows 上清理它们。
+目标 F: 检出还含有 Windows Node 无法解析的 WSL 依赖链接。逐个修复链接后又暴露出更多传递依赖和 peer 依赖缺失；pnpm 报 `Already up to date` 不能证明现有安装能在 Windows 上使用。同一主机上的隔离工作树已通过 Windows `pnpm install --frozen-lockfile`、`pnpm check` 和 bundle 导入；这本身不能证明 F: 检出或生产来源可用。随后用 Windows pnpm 重建了最终 F: 依赖树，并通过构建和 bundle 导入。应在最终路径使用完整的对应平台依赖安装，分离各平台依赖树，并检查 bundle 导入、管理 API 和来源健康。保留 WSL 历史和工作树注册记录，不要在 Windows 上清理它们。
+
+智能体专用的 Windows `glab` 配置最初默认指向 `gitlab.com`。尽管在仓库内执行 `glab api user` 成功，安装检查却从状态目录运行，查询了错误的主机，收到未授权 JSON 并报告 `gitlabCliNoAccount`。在智能体专用的 `GLAB_CONFIG_DIR` 中把自建主机设为默认值，并从状态目录重新探测后问题消失。另一个独立问题是：复制后的飞书 CLI 配置显示本地机器人就绪，但服务端验证返回 `invalid_client`；本地就绪不能证明 Windows 凭据有效。
 
 ## 有没有必要？
 
