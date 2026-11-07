@@ -38,9 +38,9 @@
 
 在进程巡检之外增加任务级监督，让卡住或偏离目标的工单能被发现。
 
-- 独立 profile 中的定时会话通过新增的只读路由 `GET /orchestrator/api/watchdog` 读取全部进行中工单的阶段、最近报告与静默时长，结合机械信号和模型判断，把异常报告给运营者。
-- 支持 `observe`/`suggest`/`auto` 三档，默认 `observe`；`suggest` 只记录建议，`auto` 在冷却与按工单/全局限流内通过现有 retry API 介入，所有决定写入审计日志。stop 与配置修改仍留待后续阶段。
-- `scripts/dsh-superagent watchdog` 输出机器可读快照，`watchdog retry` 在模式与限流允许时记录或执行一次重试，便于在另一个 profile 中定时运行。
+- 独立 profile 中的定时会话通过只读路由 `GET /orchestrator/api/watchdog` 读取全部进行中工单的阶段、最近报告与静默时长，结合机械信号和模型判断，把异常报告给运营者。
+- `watchdog` 设置块提供 `off`/`observe`/`report`/`enforce` 四档，默认 `observe`；只有 `enforce` 能通过专用 API 执行允许的 retry/stop，且要经过快照新鲜度、工单变化、等待人工、人类跟进、未送达输入、谷价排队、暂停/未配置、静默阈值、冷却与按工单/全局限流检查。所有决定持久化到 SQLite 审计，`GET watchdog` 返回最近记录。
+- `scripts/dsh-superagent watchdog` 输出机器可读快照（含设置与最近审计），`watchdog retry|stop <ticket> --reason` 向服务端请求一次决定；stop 默认不在允许动作里。从 Watchdog 修改提示词或其他设置仍留待后续阶段。
 
 ### 特别注意
 

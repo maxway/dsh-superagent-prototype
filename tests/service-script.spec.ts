@@ -5,7 +5,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdir
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -286,14 +286,14 @@ it('prints the Watchdog snapshot over GET and refuses an unreachable service', a
     requests.push({ method: request.method, url: request.url, header: String(request.headers['x-orchestrator-request']) })
     response.writeHead(200, { 'content-type': 'application/json' })
       .end(JSON.stringify({ at: '2026-11-07T01:00:00.000Z', staleMinutes: 15, open: 1, tickets: [{ id: 't1', signals: ['no-progress'] }],
-        state: { paused: false } }))
+        state: { paused: false }, watchdog: { mode: 'enforce', staleMinutes: 30 }, audit: [] }))
   })
   await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
   const url = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
   const watched = await run('watchdog', '--url', url, '--stale-minutes', '15')
   expect(watched.code).toBe(0)
   expect(JSON.parse(watched.stdout)).toMatchObject({ profile: 'superagent', url, staleMinutes: 15, open: 1, tickets: [{ id: 't1' }],
-    watchdog: { mode: 'observe', staleMinutes: 30 } })
+    watchdog: { mode: 'enforce', staleMinutes: 30 }, audit: [] })
   // The command is read-only: one GET, no retry, stop, settings or prompt call.
   expect(requests).toEqual([{ method: 'GET', url: '/orchestrator/api/watchdog?stale_minutes=15', header: '1' }])
   expect(await run('watchdog', '--url', 'http://127.0.0.1:9')).toMatchObject({ code: 1,
@@ -301,124 +301,84 @@ it('prints the Watchdog snapshot over GET and refuses an unreachable service', a
   expect(await run('watchdog', '--stale-minutes', '0')).toMatchObject({ code: 1,
     stderr: expect.stringContaining('--stale-minutes must be an integer between 1 and 1440') })
 })
-/** A snapshot row that an auto-mode Watchdog may retry. */
+/** A snapshot row the CLI can ask the server to act on. */
 function watchdogTicket(fields: Record<string, unknown> = {}) {
   return { id: 't1', title: 'Fix the build', stage: 'person', action: 'failed', silentMinutes: 90, signals: ['waiting-person'],
     lastReport: { state: 'failed', summary: 'The build broke', at: '2026-11-07T00:00:00.000Z', ageMinutes: 90 },
     attempts: ['failed'], actions: { retry: true, stop: true }, ...fields }
 }
-/** Answer the Watchdog snapshot from `ticket` and accept one retry, recording the requests. */
-async function watchdogApi(ticket: () => Record<string, unknown>, state: Record<string, unknown> = { paused: false, health: {} }) {
-  const requests: { method?: string; url?: string }[] = []
+/** Answer the Watchdog snapshot and record each action request, including its JSON body. */
+async function watchdogApi(ticket: () => Record<string, unknown> = () => watchdogTicket()) {
+  const calls: { method?: string; url?: string; body?: string; header?: string }[] = []
   server = createServer((request, response) => {
-    requests.push({ method: request.method, url: request.url })
-    if (request.method === 'POST') {
-      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ retried: true }))
-      return
-    }
-    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ at: '2026-11-07T01:30:00.000Z', staleMinutes: 30,
-      open: 1, tickets: [ticket()], state }))
+    let body = ''
+    request.on('data', chunk => { body += chunk })
+    request.on('end', () => {
+      calls.push({ method: request.method, url: request.url, body, header: String(request.headers['x-orchestrator-request']) })
+      if (request.method === 'POST') {
+        const value = JSON.parse(body) as { idempotencyKey: string; snapshotAt: string; reason: string }
+        const id = /tickets\/([^/]+)\//.exec(request.url ?? '')?.[1] ?? 't1'
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ id: 'watchdog-audit-1',
+          idempotency: value.idempotencyKey, at: '2026-11-07T00:01:00.000Z', snapshotAt: value.snapshotAt, ticketId: id,
+          action: request.url?.endsWith('/stop') ? 'stop' : 'retry', mode: 'enforce', initiator: 'watchdog', reason: value.reason,
+          result: 'executed', before: { stage: 'person', action: 'failed' }, after: { stage: 'working' } }))
+        return
+      }
+      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ at: '2026-11-07T00:00:00.000Z', staleMinutes: 30,
+        open: 1, tickets: [ticket()], state: { paused: false, health: {} },
+        watchdog: { mode: 'enforce', actions: ['retry', 'stop'], staleMinutes: 30, cooldownMinutes: 15, perTicketPerHour: 2, perHour: 6 },
+        audit: [] }))
+    })
   })
   await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
-  return { requests, url: `http://127.0.0.1:${(server!.address() as AddressInfo).port}` }
+  return { calls, url: `http://127.0.0.1:${(server!.address() as AddressInfo).port}` }
 }
-const watchdogConfigFile = () => join(root, '.artifacts', 'watchdog', 'superagent.json')
-const saveWatchdogConfig = (value: unknown) => {
-  mkdirSync(dirname(watchdogConfigFile()), { recursive: true })
-  writeFileSync(watchdogConfigFile(), JSON.stringify(value))
-}
-const watchdogAudit = () => readFileSync(join(root, '.artifacts', 'watchdog', 'superagent-audit.jsonl'), 'utf8').trim().split('\n')
-  .map(line => JSON.parse(line) as Record<string, unknown>)
-it('observes a Watchdog retry by default and audits the decision', async () => {
-  const { requests, url } = await watchdogApi(() => watchdogTicket())
-  const result = await run('watchdog', 'retry', 't1', '--reason', 'No report for 90 minutes', '--url', url)
-  expect(result.code).toBe(0)
-  expect(JSON.parse(result.stdout)).toMatchObject({ mode: 'observe', decision: 'observed', ticketId: 't1',
-    reason: 'No report for 90 minutes', before: { stage: 'person', action: 'failed', silentMinutes: 90 },
-    audit: join(root, '.artifacts', 'watchdog', 'superagent-audit.jsonl') })
-  // Observe mode makes no action call, and the audit still records what was considered.
-  expect(requests.map(request => request.method)).toEqual(['GET'])
-  expect(watchdogAudit()).toMatchObject([{ decision: 'observed', ticketId: 't1', profile: 'superagent',
-    evidence: { signals: ['waiting-person'] } }])
+it('asks the server for one retry or stop with the snapshot and a fresh idempotency key', async () => {
+  const { calls, url } = await watchdogApi()
+  const retry = await run('watchdog', 'retry', 't1', '--reason', 'No report for 90 minutes', '--url', url)
+  expect(retry.code).toBe(0)
+  expect(JSON.parse(retry.stdout)).toMatchObject({ result: 'executed', ticketId: 't1', action: 'retry' })
+  const stop = await run('watchdog', 'stop', 't1', '--reason', 'Stuck and drifting', '--url', url)
+  expect(stop.code).toBe(0)
+  expect(JSON.parse(stop.stdout)).toMatchObject({ result: 'executed', ticketId: 't1', action: 'stop' })
+  const posts = calls.filter(call => call.method === 'POST')
+  expect(posts.map(call => call.url)).toEqual(['/orchestrator/api/watchdog/tickets/t1/retry',
+    '/orchestrator/api/watchdog/tickets/t1/stop'])
+  expect(calls[0]).toMatchObject({ method: 'GET', url: '/orchestrator/api/watchdog?stale_minutes=30' })
+  const first = JSON.parse(posts[0]!.body!) as { reason: string; snapshotAt: string; idempotencyKey: string; evidence: Record<string, unknown> }
+  expect(first).toMatchObject({ reason: 'No report for 90 minutes', snapshotAt: '2026-11-07T00:00:00.000Z',
+    evidence: { stage: 'person', action: 'failed', silentMinutes: 90 } })
+  const second = JSON.parse(posts[1]!.body!) as { idempotencyKey: string }
+  expect(first.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
+  expect(second.idempotencyKey).not.toBe(first.idempotencyKey)
+  expect(posts.every(call => call.header === '1')).toBe(true)
 })
-it('records suggestions and executes only in auto mode, within the cooldown', async () => {
-  const { requests, url } = await watchdogApi(() => watchdogTicket())
-  saveWatchdogConfig({ mode: 'suggest' })
-  const suggested = await run('watchdog', 'retry', 't1', '--reason', 'Stuck for 90 minutes', '--url', url)
-  expect(JSON.parse(suggested.stdout)).toMatchObject({ mode: 'suggest', decision: 'suggested' })
-  expect(requests.some(request => request.method === 'POST')).toBe(false)
-  saveWatchdogConfig({ mode: 'auto' })
-  const executed = await run('watchdog', 'retry', 't1', '--reason', 'Stuck for 90 minutes', '--url', url)
-  expect(JSON.parse(executed.stdout)).toMatchObject({ mode: 'auto', decision: 'executed', result: { retried: true },
-    after: { stage: 'person', action: 'failed' } })
-  const posts = requests.filter(request => request.method === 'POST')
-  expect(posts).toEqual([{ method: 'POST', url: '/orchestrator/api/tickets/t1/retry' }])
-  // A second attempt for the same Ticket is refused by the cooldown, so it calls no retry.
-  const again = await run('watchdog', 'retry', 't1', '--reason', 'Still stuck', '--url', url)
-  expect(JSON.parse(again.stdout)).toMatchObject({ decision: 'refused', refusal: 'cooldown' })
-  expect(requests.filter(request => request.method === 'POST')).toHaveLength(1)
-  expect(watchdogAudit().map(entry => entry.decision)).toEqual(['suggested', 'executed', 'refused'])
-})
-it('refuses a Ticket that is not retryable or too recent, and an invalid Watchdog config', async () => {
-  let ticket = watchdogTicket()
-  const { requests, url } = await watchdogApi(() => ticket)
-  saveWatchdogConfig({ mode: 'auto', staleMinutes: 120 })
-  const recent = await run('watchdog', 'retry', 't1', '--reason', 'Recently failed', '--url', url)
-  expect(JSON.parse(recent.stdout)).toMatchObject({ decision: 'refused', refusal: 'notStale' })
-  ticket = watchdogTicket({ actions: { retry: false, stop: true } })
-  const ineligible = await run('watchdog', 'retry', 't1', '--reason', 'Not retryable', '--url', url)
-  expect(JSON.parse(ineligible.stdout)).toMatchObject({ decision: 'refused', refusal: 'notRetryable' })
-  saveWatchdogConfig({ mode: 'always' })
-  const invalid = await run('watchdog', 'retry', 't1', '--reason', 'Invalid config', '--url', url)
-  expect(invalid.code).toBe(1)
-  expect(invalid.stderr).toContain('mode must be observe, suggest or auto')
+it('refuses an action for a Ticket that is not open, and a missing ticket or reason', async () => {
+  const { calls, url } = await watchdogApi(() => watchdogTicket())
+  expect(await run('watchdog', 'retry', 'unknown', '--reason', 'Gone', '--url', url)).toMatchObject({ code: 1,
+    stderr: expect.stringContaining('is not open') })
   expect(await run('watchdog', 'retry', '--reason', 'No ticket', '--url', url)).toMatchObject({ code: 1,
     stderr: expect.stringContaining('needs a ticket id') })
-  expect(await run('watchdog', 'retry', 't1', '--url', url)).toMatchObject({ code: 1,
+  expect(await run('watchdog', 'stop', 't1', '--url', url)).toMatchObject({ code: 1,
     stderr: expect.stringContaining('needs --reason') })
-  expect(requests.some(request => request.method === 'POST')).toBe(false)
+  expect(await run('watchdog', 'restart', 't1', '--url', url)).toMatchObject({ code: 1,
+    stderr: expect.stringContaining('watchdog action must be retry or stop') })
+  expect(calls.some(call => call.method === 'POST')).toBe(false)
 })
-it('refuses to retry while the Executor is paused', async () => {
-  const { requests, url } = await watchdogApi(() => watchdogTicket(), { paused: true, health: {} })
-  saveWatchdogConfig({ mode: 'auto' })
-  const paused = await run('watchdog', 'retry', 't1', '--reason', 'Stuck for 90 minutes', '--url', url)
-  expect(JSON.parse(paused.stdout)).toMatchObject({ decision: 'refused', refusal: 'paused' })
-  expect(requests.some(request => request.method === 'POST')).toBe(false)
-})
-it('counts Watchdog retries per Ticket and globally for the cooldown and limits', async () => {
-  const module = pathToFileURL(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')).href
-  const script = `import(${JSON.stringify(module)}).then(m => {
-    const entry = (ticketId, at) => ({ decision: 'executed', profile: 'superagent', ticketId, at })
-    const now = Date.parse('2026-11-07T02:00:00.000Z')
-    console.log(JSON.stringify(m.watchdogLimit([
-      entry('t1', '2026-11-07T01:50:00.000Z'), entry('t1', '2026-11-07T00:59:00.000Z'),
-      entry('t2', '2026-11-07T01:55:00.000Z'), entry('t2', '2026-11-07T00:55:00.000Z'),
-      { decision: 'refused', profile: 'superagent', ticketId: 't1', at: '2026-11-07T01:59:00.000Z' }
-    ], 'superagent', 't1', { cooldownMinutes: 15, perTicketPerHour: 2, perTicketPerDay: 4, perHour: 6 }, now)))
-  })`
-  const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
-    (error, stdout) => error ? reject(error) : resolve(stdout)))
-  expect(JSON.parse(out)).toEqual({ cooldown: true, perTicketHour: 1, perTicketDay: 2, perHour: 2 })
-})
-it('enforces the per-Ticket and global retry limits', async () => {
-  const { requests, url } = await watchdogApi(() => watchdogTicket())
-  const audit = join(root, '.artifacts', 'watchdog', 'superagent-audit.jsonl')
-  mkdirSync(dirname(audit), { recursive: true })
-  const line = (ticketId: string, minutesAgo: number) => JSON.stringify({ at: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
-    profile: 'superagent', ticketId, decision: 'executed' }) + '\n'
-  saveWatchdogConfig({ mode: 'auto', limits: { cooldownMinutes: 0, perTicketPerHour: 1, perTicketPerDay: 4, perHour: 6 } })
-  writeFileSync(audit, line('t1', 10))
-  expect(JSON.parse((await run('watchdog', 'retry', 't1', '--reason', 'Hourly limit', '--url', url)).stdout))
-    .toMatchObject({ decision: 'refused', refusal: 'perTicketHour' })
-  saveWatchdogConfig({ mode: 'auto', limits: { cooldownMinutes: 0, perTicketPerHour: 1, perTicketPerDay: 4, perHour: 1 } })
-  writeFileSync(audit, line('t2', 10))
-  expect(JSON.parse((await run('watchdog', 'retry', 't1', '--reason', 'Global limit', '--url', url)).stdout))
-    .toMatchObject({ decision: 'refused', refusal: 'perHour' })
-  saveWatchdogConfig({ mode: 'auto', limits: { cooldownMinutes: 0, perTicketPerHour: 1, perTicketPerDay: 1, perHour: 6 } })
-  writeFileSync(audit, line('t1', 120))
-  expect(JSON.parse((await run('watchdog', 'retry', 't1', '--reason', 'Daily limit', '--url', url)).stdout))
-    .toMatchObject({ decision: 'refused', refusal: 'perTicketDay' })
-  expect(requests.some(request => request.method === 'POST')).toBe(false)
+it('reports a management API refusal from the action route', async () => {
+  server = createServer((request, response) => {
+    if (request.method === 'POST') {
+      response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid settings: reason' }))
+      return
+    }
+    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ at: '2026-11-07T00:00:00.000Z', staleMinutes: 30,
+      open: 1, tickets: [watchdogTicket()], state: { paused: false, health: {} },
+      watchdog: { mode: 'enforce' }, audit: [] }))
+  })
+  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
+  expect(await run('watchdog', 'retry', 't1', '--reason', 'Bad request', '--url', url)).toMatchObject({ code: 1,
+    stderr: expect.stringContaining('Invalid settings: reason') })
 })
 // The remaining cases also drive the POSIX control path with stubbed shell binaries.
 describe.skipIf(process.platform === 'win32')('POSIX service lifecycle (continued)', () => {

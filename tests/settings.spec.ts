@@ -51,3 +51,15 @@ it('records nothing for a pause that changes nothing, and names an unknown block
   expect([store.blockRevision('pause'), inject.mock.calls.length, h.runtime.effects.pending('notice')]).toEqual([revision, 0, false])
   expect(() => settings.block('source:x')).toThrow(new UserError('unknownBlock', { block: 'source:x' }))
 })
+
+it('validates and saves the Watchdog intervention block', async () => {
+  h = await startRuntime()
+  const { settings, store } = h.runtime
+  const revision = store.blockRevision('watchdog')
+  expect(settings.block('watchdog').value).toMatchObject({ mode: 'observe', actions: ['retry'] })
+  await settings.save('watchdog', { mode: 'enforce', actions: ['retry', 'stop'], staleMinutes: 45, cooldownMinutes: 5,
+    perTicketPerHour: 2, perHour: 6 }, revision, 'panel')
+  expect(store.settings().watchdog).toMatchObject({ mode: 'enforce', actions: ['retry', 'stop'], staleMinutes: 45, cooldownMinutes: 5 })
+  await expect(settings.save('watchdog', { mode: 'sometimes' }, store.blockRevision('watchdog'), 'panel')).rejects.toThrow()
+  expect(store.settings().watchdog.mode).toBe('enforce')
+})

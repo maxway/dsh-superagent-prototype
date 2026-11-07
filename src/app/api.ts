@@ -2,6 +2,7 @@
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { PromptConfig, Prompts } from './prompts.ts'
 import type { PromptsView, StateView, TicketPageView, WatchdogPageView } from './http.ts'
+import type { WatchdogAudit } from './store.ts'
 import type { HistoryView } from './settings-history.ts'
 import type { OverviewView } from './views/overview.ts'
 import type { SettingsView } from './views/settings.ts'
@@ -20,6 +21,8 @@ type Delivery = 'injected' | 'pending'
 export interface Api {
   'GET state': { response: StateView }
   'GET watchdog': { query?: { stale_minutes?: number }; response: WatchdogPageView }
+  'POST watchdog/tickets/:id/:action': { body: { reason: string; evidence?: Record<string, unknown>; snapshotAt: string;
+    idempotencyKey: string }; response: WatchdogAudit }
   'GET overview': { response: OverviewView }
   'GET search': { query: { q: string }; response: SearchView }
   'GET sources': { response: SourceStatusView[] }

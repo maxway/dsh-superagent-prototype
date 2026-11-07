@@ -269,6 +269,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
   | 副作用行 | Effects |
   | Outbox 回执 | Outbox：Engine 的消息和来源的 `notify` 都走它的 `send`，其 `reply` 副作用标记它们 |
   | 一条健康条目 | 在 `HealthBoard`（`src/infra/health.ts`）上认领它的部件，该看板拒绝第二次认领：`runtime` 由 Runtime 认领，Passes 通过它报告；`evals` 由每轮之后的 Runtime 认领；`models` 由 Sessions 认领；每种副作用由 Effects 认领；`worker` 由 DshExecutor 认领；某个来源种类的条目由 SourceRegistry 为该种类的来源认领；`sync:<id>` 由 Settings 认领 |
+  | Watchdog 决定 | `src/app/watchdog.ts`，经由 `Store.watchdog` |
 
   来源只通过 `SourceContext.tickets.bindThread` 和 `threadClosed` 修改工单，这两个方法会调用 Engine。
 - **请求与事实。** 请求某事的方法用祈使动词加其宾语命名，例如 `stopTicket` 或 `bindThread`，并且可能被拒绝；记录适配器所做之事的方法用过去式命名，例如 `assignmentStarted` 或 `deliveryFailed`。每个宿主都以自己需要的角色类型接收 Engine。
@@ -351,6 +352,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/views/records.ts` | 视图共用的行：触发、工单、线程、决定和渠道链接，以及 `ownersOf`（按一次请求读取到的跟进的拥有者） |
 | `src/app/views/tickets.ts` | 按阶段划分的工单列表、工单页面、授权依据事实和执行器负载 |
 | `src/app/views/watchdog.ts` | 只读的 Watchdog 视图：每个进行中工单的阶段、最近派工与报告、静默时长和机械信号 |
+| `src/app/watchdog.ts` | Watchdog 介入服务：模式与动作校验、快照新鲜度、安全前置条件、冷却与每小时限流，以及带审计的 retry/stop 调用 |
 | `src/app/views/threads.ts` | 线程列表、线程时间线、搜索和决定列表 |
 | `src/app/views/sources.ts` | 来源状态：每个来源实例的状态、它最后一天的计数，以及它在那一天过滤和丢弃的内容 |
 | `src/app/views/settings.ts` | 设置页面的视图：每个块及其修订版本、每个来源的设置及其种类的表单，以及执行环境 |
@@ -444,6 +446,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/settings.spec.ts` | 与模型检查或账号检查竞争的设置保存、被保存抢先的策略同步，以及暂停、同步和某个块的拒绝 |
 | `tests/views.spec.ts` | 管理视图从 Store 推导出的内容，例如被丢弃的消息属于哪个线程 |
 | `tests/watchdog.spec.ts` | Watchdog 视图：阶段、最近报告、静默时长、故障、谷价与评审等待，以及来自输入的活跃度 |
+| `tests/watchdog-action.spec.ts` | Watchdog 介入：off/observe/report/enforce、安全前置、retry 与 stop、幂等、冷却与限流 |
 | `tests/timeline.spec.ts` | 线程的页面，以及触发按时间再按 id 排序的邻近项，每个已接收触发的时间都采用同一种形式 |
 | `tests/migration.spec.ts` | schema 11 迁移：每条已存储记录都处于当前形状，以及拒绝更旧的 schema |
 | `tests/store.spec.ts` | 仓储及其工作集（SQLite 中与内存中一致）、kv 区域，其中 `KV` 的每个键只在 `src/kv.ts` 和迁移中拼写，以及设置历史与查询 |
@@ -477,6 +480,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `decision` | 决定，按线程 | Engine |
 | `effect` | 副作用队列：按种类和键，保存负载、顺序、失败尝试及最后一次错误，以及何时到期 | Effects；schema 11 迁移会把较早版本为主 Session 保留的内容入队 |
 | `outbox` | 每条发往渠道的消息的回执，按 id 保存，带上它所指向的工单及其 `status`（`pending`、`sent` 或 `dropped`），保存它以便同一个 id 永远不会入队两次；对于被丢弃的消息，何时、为何，以生成列 `dropped`、其时间和原因代码表示。等待中的消息有一个 `reply` 副作用，保存它的尝试 | Outbox |
+| `watchdog_audit` | 每个 Watchdog 决定，按其 id 和唯一幂等键保存：快照、工单、动作、模式、原因、证据、前后状态、结果或拒绝、限流与错误；动作执行前先写 `executing` 预留，因此并发请求会被拒绝 | `src/app/watchdog.ts` |
 | `kv` | 其他所有记录，按键 | 为它命名的部件 |
 
 生成列由其所在行的 JSON 计算得出，在其集合之外为空，每个生成列都在其集合上有索引，因此一轮只需读取处于活动状态的工作。早于某个列的数据库会在 Store 打开它时获得该列。
@@ -497,7 +501,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 
 读取缓存使用有界的 `TextCache` 内存实例，重启后丢失。翻页读取来源原始记录或提示词预览的 Session，在重启之后必须从偏移 0 重新读取。随触发一起送达的飞书 AppLink 在构建其卡片时以同样方式缓存；基于链接的搜索在当前进程生命周期内可以找到它们。
 
-目前没有任何东西删除旧记录，因此下列内容会无限增长：`trigger`、`disposition` 和 `decision` 行；已结束的工单及其线程；outbox 的回执；以及 `kv` 中每个已保存的设置修订版本和提示词版本、每个 Session 工作过的提示词修订版本，还有来源按线程和按 Issue 或 pull request 保存的记录。
+目前没有任何东西删除旧记录，因此下列内容会无限增长：`trigger`、`disposition`、`decision` 和 `watchdog_audit` 行；已结束的工单及其线程；outbox 的回执；以及 `kv` 中每个已保存的设置修订版本和提示词版本、每个 Session 工作过的提示词修订版本，还有来源按线程和按 Issue 或 pull request 保存的记录。
 
 `SCHEMA_VERSION` 只增不减。版本更新的数据库会拒绝启动；`src/app/migration.ts` 在启动时把预发布 schema 10 的数据库升级一次，并拒绝更旧的数据库。
 
