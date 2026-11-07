@@ -39,8 +39,8 @@
 在进程巡检之外增加任务级监督，让卡住或偏离目标的工单能被发现。
 
 - 独立 profile 中的定时会话通过新增的只读路由 `GET /orchestrator/api/watchdog` 读取全部进行中工单的阶段、最近报告与静默时长，结合机械信号和模型判断，把异常报告给运营者。
-- 首个版本只观察、不介入：巡检命令只发送 GET 请求，不调用 retry/stop，也不改设置或提示词；retry/stop 等介入留待后续阶段，需要审计、按工单限流和显式的观察模式。
-- `scripts/dsh-superagent watchdog` 输出机器可读快照，便于在另一个 profile 中定时运行。
+- 支持 `observe`/`suggest`/`auto` 三档，默认 `observe`；`suggest` 只记录建议，`auto` 在冷却与按工单/全局限流内通过现有 retry API 介入，所有决定写入审计日志。stop 与配置修改仍留待后续阶段。
+- `scripts/dsh-superagent watchdog` 输出机器可读快照，`watchdog retry` 在模式与限流允许时记录或执行一次重试，便于在另一个 profile 中定时运行。
 
 ### 特别注意
 

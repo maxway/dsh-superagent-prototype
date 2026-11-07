@@ -221,19 +221,36 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 The hourly check watches the process. A task-level check also watches the work: a scheduled agent in your own DeepSeek Harness profile reads the open Tickets and their latest reports, and tells you when one has stopped making progress or seems to be going in the wrong direction. Run it in the same profile as the hourly check, not in `superagent`, so it keeps working when the service is down.
 
-This version is observation only. The check reads the management API and never calls a route that changes a Ticket, a setting or a prompt. It does not open the SQLite database or Session logs, and it does not restart the service; the hourly check owns process recovery.
+The check can also act on one failure: a blocked, failed or failed-delivery Ticket that has not moved for a while. It reads a local config before it acts; the default mode is `observe`, which records what it would do and changes nothing. Use `suggest` for a review period, then `auto`:
+
+```json
+{
+  "mode": "observe",
+  "staleMinutes": 30,
+  "limits": { "cooldownMinutes": 15, "perTicketPerHour": 2, "perTicketPerDay": 4, "perHour": 6 }
+}
+```
+
+The config is `.artifacts/watchdog/<profile>.json` (the profile defaults to `superagent`); `--config` points the command elsewhere.
+
+- `observe` appends an `observed` decision and changes nothing.
+- `suggest` appends a `suggested` decision and changes nothing, so you can compare its judgement with what you would do.
+- `auto` calls the management API's existing retry route only when the Ticket is retryable, has been silent for at least `staleMinutes`, and the cooldown and limits allow it. A retry ends the stalled Assignment and starts a new one in the same Session and directory; it does not stop the Ticket. A blocked Ticket whose report waits for a person's decision should not be retried: the check asks for a retry only when the report shows a transient failure or work the worker can continue without new input.
+- Every decision goes to `.artifacts/watchdog/<profile>-audit.jsonl` with the mode, reason, evidence, the Ticket state before and after, and the result or refusal. The audit is private to the operating user.
+
+These are operational guardrails for this command, not a security boundary: the panel and the management API still let a person retry or stop a Ticket directly.
 
 Ask an agent in that profile to create a schedule with this prompt, every 15 to 30 minutes, with the checkout path and panel URL filled in:
 
 ```text
-Check dsh-superagent work: run `scripts/dsh-superagent --profile superagent --url <panel URL> watchdog` in <checkout>. Exit 0 prints JSON with `state` and `tickets`; exit 1 means the management API did not answer, so report that once and leave recovery to the process check. For each Ticket, look at its stage, its last report, `silentMinutes` and `signals`. Report only what a person should act on: `delivery-error` or `undelivered-inputs`; `no-progress` or `queued` that is not explained by `offPeak`, `state.paused`, `state.setup` or a full worker load; a person stage that has waited far longer than 30 minutes, or a ready result awaiting review for more than a day; repeated failed attempts; or a last report that no longer matches the Ticket title. Read-only: never call retry, stop, settings or prompts, and never edit the database or Session files. Say nothing when nothing is wrong. When you report, give the Ticket id, its stage, how long it has been silent and one sentence of evidence; do not repeat a finding on later runs unless it changed.
+Check dsh-superagent work: run `scripts/dsh-superagent --profile superagent --url <panel URL> watchdog` in <checkout>. Exit 0 prints JSON with `state`, `tickets` and `watchdog`; exit 1 means the management API did not answer, so report that once and leave recovery to the process check. For each Ticket, look at its stage, its last report, `silentMinutes` and `signals`. Report only what a person should act on: `delivery-error` or `undelivered-inputs`; `no-progress` or `queued` that is not explained by `offPeak`, `state.paused`, `state.setup` or a full worker load; a person stage that has waited far longer than 30 minutes, or a ready result awaiting review for more than a day; repeated failed attempts; or a last report that no longer matches the Ticket title. For a Ticket with `actions.retry` that has been silent past `watchdog.staleMinutes`, and when `watchdog.mode` is `suggest` or `auto`, run `scripts/dsh-superagent --profile superagent --url <panel URL> watchdog retry <ticket id> --reason "<one sentence>"`; it records a suggestion or, in auto, retries within the cooldown and limits. Do not retry while `state.paused` is true, and do not retry a blocked Ticket that waits for a person's decision; retry only when the report shows a transient failure or work that can continue without new input. Report its `decision`, or its `refusal` when refused. Never call the raw retry or stop APIs, never change settings or prompts, and never edit the database or Session files. Say nothing when nothing is wrong. When you report, give the Ticket id, its stage, how long it has been silent and one sentence of evidence; do not repeat a finding unless it changed or its decision changed.
 ```
 
 On Windows use `node scripts\dsh-superagent ...`. Add `--stale-minutes` to change the 30-minute signal threshold.
 
-The management API's `GET /orchestrator/api/watchdog` route is the stable read-only source for this check. It returns the same `state` as the panel plus every open Ticket's stage, latest Assignment and report, silence and mechanical `signals`; the command sends only GET requests.
+The management API's `GET /orchestrator/api/watchdog` route remains the stable read-only source for this check. It returns the same `state` as the panel plus every open Ticket's stage, latest Assignment and report, silence and mechanical `signals`. The check reads the management API rather than SQLite or Session logs. The snapshot command sends only GET requests; `watchdog retry` is the only Watchdog command that writes, and only in `auto`.
 
-Intervention is a later phase. Allowing the Watchdog to retry or stop Tickets, and later to change settings or prompts, needs an audit trail, per-Ticket rate limits and an explicit observation mode. Until those exist, the Watchdog reports and a person acts.
+Stopping a Ticket and changing settings or prompts are later phases. This check does not stop Tickets, pause the Executor, edit prompts or change settings; those need their own thresholds, confirmation and audit.
 
 ## Settings
 

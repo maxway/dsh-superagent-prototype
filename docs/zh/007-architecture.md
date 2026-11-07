@@ -451,7 +451,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/cards.spec.ts` | 内置文本必须陈述的规则，逐文件验证 |
 | `tests/model-surface.spec.ts` | 模型读到的一切：工具、提示词、技能和输入，对照工具 schema、执行环境和术语表检查，每种角色有大小预算 |
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | 插件配置和安装配置、智能体的进程环境、插件入口 |
-| `tests/service-script.spec.ts` | `scripts/dsh-superagent` 对照伪造的 `ps`、`tmux` 和 `dsh` |
+| `tests/service-script.spec.ts` | `scripts/dsh-superagent` 对照伪造的 `ps`、`tmux` 和 `dsh`，以及它的 Watchdog 快照与重试决定 |
 | `tests/launch.spec.ts` | Windows 启动器：`.cmd` shim 解析、`.js` 入口，以及拒绝只能走 shell 的包装 |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | 客户端插件的注册和轮询、Session 导航和路由记忆、本地控件，以及面板的导入（没有循环） |
 | `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | 面板的每个页面，对照按路由作答的伪造管理 API |
