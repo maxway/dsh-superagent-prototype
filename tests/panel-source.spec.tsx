@@ -11,7 +11,7 @@ it('shows each Source\'s state on the Source status and opens its settings from 
   await mount()
   await click(zh['tab.source'])
   expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.statusTitle)
-  expect(all('.dt-form > .dt-list > .dt-row .dt-row-name').map(title => title.textContent)).toEqual(['飞书', 'GitHub'])
+  expect(all('.dt-form > .dt-list > .dt-row .dt-row-name').map(title => title.textContent)).toEqual(['飞书', 'GitHub', 'GitLab'])
   expect(all('.dt-form > .dt-list > .dt-row')[0]!.querySelector('.dt-row-meta')?.textContent).toBe('24 小时到达 12被过滤 2最近 ' + document.querySelector('.dt-row-meta time, .dt-row-meta .dt-lv:last-child .dt-lv-value')?.textContent)
   expect(text()).toContain(zh['sourceState.error'])
   expect(text()).toContain('socket closed')
@@ -23,6 +23,27 @@ it('shows each Source\'s state on the Source status and opens its settings from 
   expect(tab(zh['tab.settings']).getAttribute('aria-selected')).toBe('true')
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['term.source'])
   expect(all('.dt-card')[1]!.textContent).toContain('部署检查未通过：没有设置智能体的 GitHub CLI。')
+})
+
+it('shows the active Git host, and switches it only after the old host\'s open Tickets are confirmed', async () => {
+  await mount()
+  await click(tab(zh['tab.settings']))
+  expect(text()).toContain(zh.sourceActiveGit.replace('{source}', 'GitHub').replace('{repository}', 'acme/widgets'))
+  expect(all('.dt-card')[1]!.textContent).toContain(zh.sourceActive)
+  expect(all('.dt-card')[2]!.textContent).not.toContain(zh.sourceActive)
+  // The old host's open Tickets are listed first; nothing switches until the confirmation repeats the checked fingerprint.
+  server.switchBlocked = { provider: 'github', fingerprint: 'checked', tickets: [{ id: 't1', title: '修复回归' }] }
+  await click(zh.sourceSwitch)
+  expect(text()).toContain(zh.sourceSwitchBlocked.replace('{count}', '1'))
+  expect(text()).toContain('修复回归')
+  expect(server.setup.accounts?.provider).toBe('github')
+  server.switchBlocked = undefined
+  await click(zh.sourceSwitchKeep)
+  expect(server.requests.filter(request => request.path === 'sources/gitlab/activate')).toMatchObject([
+    { method: 'POST', body: { revision: 0 } },
+    { method: 'POST', body: { revision: 0, confirm: 'checked' } },
+  ])
+  expect(server.setup.accounts?.provider).toBe('gitlab')
 })
 
 it('folds more than six chats into a line of their names', async () => {
@@ -40,7 +61,7 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
   await click(zh['tab.source'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
   const cards = all('.dt-card')
-  expect(cards.map(card => card.querySelector('.dt-row-title')?.firstChild?.textContent)).toEqual(['飞书', 'GitHub'])
+  expect(cards.map(card => card.querySelector('.dt-row-title')?.firstChild?.textContent)).toEqual(['飞书', 'GitHub', 'GitLab'])
   const feishu = cards[0]!
   expect(feishu.textContent).toContain('接收的群')
   await click([...feishu.querySelectorAll('button')].find(button => button.textContent === '添加')!)
@@ -56,15 +77,15 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
     value: { enabled: true, config: { chats: [{ chatId: 'oc_team', listen: 'mentions' }, { chatId: 'oc_other', listen: 'all' }],
       directMessages: false } } } })
   expect(server.settings.sources.feishu!.config).toMatchObject({ directMessages: false })
-  const github = all('.dt-card')[1]!
-  await click('运行来源：GitHub')
-  server.revisions['source:github'] = 5
-  await act(async () => { github.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
+  const feishuCard = all('.dt-card')[0]!
+  await click('运行来源：飞书')
+  server.revisions['source:feishu'] = 5
+  await act(async () => { feishuCard.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
   // Another save changed nothing this draft changed, so the draft moves onto the newer revision and saves from there.
-  expect(github.querySelector('.dt-savebar')?.textContent).toContain('设置已在别处修改，你的修改已合并到最新版本')
-  await act(async () => { github.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
-  expect(server.settings.sources.github).toMatchObject({ enabled: false })
-  expect(server.revisions['source:github']).toBe(6)
+  expect(feishuCard.querySelector('.dt-savebar')?.textContent).toContain('设置已在别处修改，你的修改已合并到最新版本')
+  await act(async () => { feishuCard.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
+  expect(server.settings.sources.feishu).toMatchObject({ enabled: false })
+  expect(server.revisions['source:feishu']).toBe(6)
 })
 
 it('shows the account each CLI signs in as, and keeps a saved CLI on screen while dsh-superagent restarts', async () => {
@@ -161,8 +182,8 @@ it('shows the Sources waiting for the deployment check, and the problem on the S
   await mount()
   await click(zh['tab.source'])
   const rows = all('.dt-form > .dt-list > .dt-row')
-  // The GitHub Source is where the problem is fixed, so it shows the error; Feishu waits.
-  expect(rows.map(row => row.querySelector('.dt-status-text')?.textContent)).toEqual(['等待部署检查', '出错'])
+  // The GitHub Source is where the problem is fixed, so it shows the error; Feishu and GitLab wait.
+  expect(rows.map(row => row.querySelector('.dt-status-text')?.textContent)).toEqual(['等待部署检查', '出错', '等待部署检查'])
   expect(text()).not.toContain('Waiting for setup')
   expect(rows[1]!.textContent).toContain('部署检查未通过：GitHub 来源没有设置监听的仓库。')
   await click(find(zh.sourceOpenSettings, '.dt-row button'))

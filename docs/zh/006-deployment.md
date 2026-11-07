@@ -69,9 +69,9 @@ bundle 为执行器定义了 `dsh-superagent-worker`，为主 Session 定义了 
 
    这里要写自建实例的 host，不是 `gitlab.com`；来源里的 GitLab 地址必须使用同一 host 和协议：HTTPS 写 `https://gitlab.example.com`，HTTP 写 `http://gitlab.example.com`，worker 的 git credential helper 会按这个协议配置。`glab auth git-credential` 需要 glab 1.36 或更新版本；可用 `glab-agent auth git-credential --help` 检查，命令不存在就升级 glab。实例使用私有 CA 时，让 glab 和 worker 的 git 都信任它（git 可在服务环境里设置 `GIT_SSL_CAINFO`，或把 CA 装进操作系统信任库）。Windows 上请改用原生 CLI 和它的配置目录，见下面的 Windows 凭据。
 
-3. 一个部署只有一个生效的 Git 来源。在 profile 的 `cordis.patch.yml` 中启用 `dsh-superagent-gitlab` 并禁用 `dsh-superagent-github`；两者只能启用一个。在 **来源** 中设置 GitLab 地址、项目（`group/project`）和包装脚本路径。
+3. 一个部署只有一个生效的 Git 来源。在 profile 的 `cordis.patch.yml` 中安装两个 Git 来源插件（`dsh-superagent-github` 和 `dsh-superagent-gitlab`），这样二者都能在面板里配置并设为生效；只安装一个也能继续工作。在 **来源** 中配置当前使用的 Git 来源。来源页会显示当前生效的宿主和仓库；要换到另一个宿主，配置它的卡片，然后点 **切换到此来源**。
 
-从一个 Git 宿主切换到另一个时，旧宿主上已有的工单会保留：请先完成或停止它们。状态目录会保留两个宿主的记录，切回时可以继续使用。
+切换是一个动作：dsh-superagent 先检查目标账号和仓库，然后只重启一次。旧宿主上还有未结束工单时，切换会列出它们，并要求明确确认或先停止。工单会记录接受时使用的 Git 宿主，因此不能换到另一个宿主上恢复：在另一个宿主上恢复会被报告为失败；切回原宿主后可以继续。状态目录会保留两个宿主的记录，切回时可以继续使用。
 
 ### Windows 凭据
 
@@ -257,7 +257,7 @@ Windows 上用 `node scripts\dsh-superagent ...`。`--stale-minutes` 只改变�
 
 安装配置必须成功，轮询或工作才会开始。概览会列出缺失的要求，并链接到对应的设置。更改设置会再次运行安装配置。如果你在应用之外修复了某些东西，例如 CLI 登录，请选择 **重新检查**。
 
-1. **来源。** 只启用一个 Git 来源。GitHub 部署设置仓库（`owner/name`）和智能体 CLI，例如 `/home/me/.local/bin/gh-agent`；请求通常通过智能体账号的通知到达，提到该账号的新 Issue 或评论会在下一次轮询时到达，通过编辑已有 Issue 正文来添加提及则不会，请改为发表新评论。GitLab 部署启用 GitLab 来源、禁用 GitHub 来源，并设置 GitLab 地址、项目和智能体 CLI（例如 `/home/me/.local/bin/glab-agent`）；它从启用时开始扫描项目里的 Issue、合并请求、note 和流水线变化。可选地设置 **Webhook 地址** 让 GitLab 事件立即触发同步（见上面的 GitLab webhook 一节），留空则退化为 `pollSeconds` 轮询。使用飞书时，设置机器人 CLI、群、每个群的接收全部消息或仅提及模式，以及是否接收私信。Windows 上把 CLI 设为原生 `gh` 或 `glab`，并设置高级的配置目录字段而不是包装脚本路径；见上面的 Windows 凭据。
+1. **来源。** 只启用一个 Git 来源。GitHub 部署设置仓库（`owner/name`）和智能体 CLI，例如 `/home/me/.local/bin/gh-agent`；请求通常通过智能体账号的通知到达，提到该账号的新 Issue 或评论会在下一次轮询时到达，通过编辑已有 Issue 正文来添加提及则不会，请改为发表新评论。GitLab 部署在 profile 中加入 GitLab 插件，在 GitLab 来源卡片里配置地址、项目和智能体 CLI（例如 `/home/me/.local/bin/glab-agent`），然后在来源页切换到它；它从启用时开始扫描项目里的 Issue、合并请求、note 和流水线变化。可选地设置 **Webhook 地址** 让 GitLab 事件立即触发同步（见上面的 GitLab webhook 一节），留空则退化为 `pollSeconds` 轮询。使用飞书时，设置机器人 CLI、群、每个群的接收全部消息或仅提及模式，以及是否接收私信。Windows 上把 CLI 设为原生 `gh` 或 `glab`，并设置高级的配置目录字段而不是包装脚本路径；见上面的 Windows 凭据。
 2. **策略。** 两条示例规则可以编辑或删除。在 **在各来源上** 下，添加可以请求工作的 GitHub 或 GitLab 账号以及飞书用户；在名单里有人之前，任何请求都不能成为工单。使用飞书时，可以选择一个群来同步名单，在启动时和 **立即同步** 时进行。
 3. **执行。** 目录根路径和一个准备命令。要让每个工单都有一份仓库检出，GitHub 部署使用：
 

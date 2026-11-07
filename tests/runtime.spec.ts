@@ -22,6 +22,8 @@ import { SettingsSchema, policyVersion, type SettingsOrigin } from '../src/polic
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind, pollRound } from '../src/sources/github.ts'
+import { gitlabKind } from '../src/sources/gitlab.ts'
+import { SourceSwitchConfirm } from '../src/app/git-switch.ts'
 import { CliError, Commands } from '../src/infra/commands.ts'
 import { UserError, key, runningAssignment, said, threadKey, waitsForPerson, type Trigger } from '../src/core/index.ts'
 import { feishuTrigger } from '../src/sources/feishu.ts'
@@ -857,6 +859,41 @@ it('reports a failure to write the agent environment as environmentFailed and le
   expect(next.setupProblem).toMatchObject({ place: 'deployment', code: 'environmentFailed',
     values: { output: expect.stringContaining('EEXIST') } })
   expect(process.env).toEqual(environment)
+})
+
+it('switches the active Git host in one action after confirming the old host\'s open Tickets, and refuses to resume them there', async () => {
+  const { ticket } = await acceptedTicket()
+  runtime.sources.register(gitlabKind)
+  const glab = join(directory, 'agent-glab')
+  writeFileSync(glab, '#!/bin/sh\n', { mode: 0o755 })
+  answers[`${glab} api user`] = '{"id":9,"username":"agent-bot","email":"bot@example.com"}'
+  answers[`${glab} api projects/acme%2Fwidgets`] = JSON.stringify({ id: 42, path_with_namespace: 'acme/widgets', default_branch: 'main',
+    permissions: { project_access: { access_level: 30 } } })
+  const settings = runtime.store.settings()
+  runtime.store.saveSettings({ ...settings, sources: { ...settings.sources, gitlab: { enabled: false, config: {
+    host: 'https://gitlab.example.com', repository: 'acme/widgets', cli: glab } } } })
+  // A Ticket accepted before host bindings existed belongs to the host that is active now; the switch stamps it.
+  const { git: _git, ...legacy } = runtime.store.tickets.get(ticket.id)!
+  runtime.store.tickets.save(legacy)
+  const revision = runtime.store.blockRevision('source:gitlab')
+  // A Source switch cannot move the host directly while an open Ticket still belongs to it.
+  const github = runtime.settings.block('source:github').value as { enabled: boolean; config: Record<string, unknown> }
+  await expect(runtime.settings.save('source:github', { ...github, enabled: false },
+    runtime.store.blockRevision('source:github'), 'panel')).rejects.toMatchObject({ code: 'useSourceSwitch', values: { count: '1' } })
+  const refused = await runtime.settings.activateSource('gitlab', revision, 'panel').then(() => undefined, error => error)
+  expect(refused).toBeInstanceOf(SourceSwitchConfirm)
+  const blocked = refused as SourceSwitchConfirm
+  expect(blocked.tickets.map(item => item.id)).toEqual([ticket.id])
+  expect(await runtime.settings.activateSource('gitlab', revision, 'panel', blocked.fingerprint))
+    .toEqual({ active: 'gitlab', restarting: true })
+  await vi.waitFor(() => expect(restarts).toHaveBeenCalledTimes(1))
+  expect(runtime.store.settings().sources).toMatchObject({ github: { enabled: false }, gitlab: { enabled: true } })
+  expect(runtime.store.tickets.get(ticket.id)!.git).toEqual({ provider: 'github' })
+  // With the deployment now resolved as GitLab, a resume of the GitHub Ticket fails with a report a person can act on.
+  ;(runtime.setup as unknown as { resolved: { git: { provider: string } } }).resolved.git.provider = 'gitlab'
+  runtime.executor.resume()
+  await vi.waitFor(() => expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report).toMatchObject({
+    state: 'failed', summary: expect.stringContaining('accepted on the github Git host') }), { timeout: 5000 })
 })
 
 it('checks only the account a Source save changes, so a problem setup has elsewhere does not refuse it', async () => {

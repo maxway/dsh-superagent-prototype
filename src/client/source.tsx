@@ -1,24 +1,83 @@
 /** Source status view (health, filtered Triggers, dropped replies) and Source settings cards. */
 import { useEffect, useState } from 'react'
 import type { FieldSpec } from '../sources/kind.ts'
-import { usePoll, type DroppedReply, type SourceStatusRow, type SourceView } from './api.ts'
-import { DisclosureRow, Dot, Icon, InfoTip, Switch, Tag } from './controls.tsx'
+import { ApiError, usePoll, type DroppedReply, type SourceStatusRow, type SourceSwitch, type SourceView } from './api.ts'
+import { Button, DisclosureRow, Dot, Icon, InfoTip, Modal, Switch, Tag } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { sourceMark } from './marks.ts'
 import { usePanel, usePanelData } from './provider.tsx'
 import { setupPage, settingsRoute, type Route } from './route.ts'
 import { ConfigHistory, Fields, SourceField, useBlockDraft, useSettings } from './settings-kit.tsx'
-import { actorName, healthText, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
+import { actorName, errorText, healthText, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
 import { CheckSetupButton, Hint, LabelValue, LoadState, SetupMessage, StatusHead, When } from './widgets.tsx'
+
+/** The two Sources that can be the deployment's active Git host. */
+const isGitSource = (id: string): boolean => id === 'github' || id === 'gitlab'
+
+/** Checks and switches the active Git host to `source`, confirming the old host's open Tickets first. */
+function SourceSwitchButton({ source, disabled }: { source: SourceView; disabled: boolean }) {
+  const { t, call, navigate, notify, restart } = usePanel()
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [refusal, setRefusal] = useState<SourceSwitch>()
+  const [error, setError] = useState<string>()
+  const run = async (confirm?: string) => {
+    setBusy(true); setError(undefined); setRefusal(undefined)
+    try {
+      const result = await call('POST sources/:id/activate', { id: source.id, body: { revision: source.revision,
+        ...confirm ? { confirm } : {} } })
+      notify(t(result.restarting ? 'savedRestarting' : 'saved'))
+      setOpen(false); setRefusal(undefined)
+      if (result.restarting) restart()
+    } catch (failure) {
+      const refused = failure instanceof ApiError ? failure.details.switch : undefined
+      if (refused) setRefusal(refused)
+      else setError(errorText(failure))
+    } finally { setBusy(false) }
+  }
+  const start = () => { setOpen(true); setRefusal(undefined); setError(undefined); void run() }
+  return <>
+    <Button variant="outline" size="sm" icon={<Icon name="refresh" size={14} />} onClick={start} disabled={disabled}
+      title={disabled ? t('sourceSwitchSaveFirst') : undefined}>
+      {t('sourceSwitch')}
+    </Button>
+    <Modal open={open} onClose={() => setOpen(false)} title={t('sourceSwitchTitle')} closeLabel={t('close')}
+      description={t('sourceSwitchHint', { source: localized(t, source.title) })}
+      footer={<>
+        <Button variant="ghost" onClick={() => setOpen(false)}>{t('cancel')}</Button>
+        {refusal && <Button variant="primary" disabled={busy} onClick={() => { void run(refusal.fingerprint) }}>
+          {t('sourceSwitchKeep')}
+        </Button>}
+      </>}>
+      {busy && !refusal && !error && <Hint>{t('sourceSwitchChecking')}</Hint>}
+      {error && <p className="dt-error" role="alert">{error}</p>}
+      {refusal && <>
+        <p className="dt-error">{t('sourceSwitchBlocked', { count: refusal.tickets.length })}</p>
+        <ul className="dt-list">{refusal.tickets.map(ticket => <li key={ticket.id} className="dt-row">
+          <Dot state="warning" /><div className="dt-row-main"><div className="dt-row-title">
+            <button type="button" className="dt-textlink" onClick={() => { setOpen(false); navigate({ page: 'execution', id: ticket.id }) }}>
+              {ticket.title}
+            </button>
+          </div></div>
+        </li>)}</ul>
+        <Hint>{t('sourceSwitchBlockedHint')}</Hint>
+      </>}
+    </Modal>
+  </>
+}
 
 function SourceCard({ source }: { source: SourceView }) {
   const { t, call } = usePanel()
   const { running } = usePanelData()
-  const { reload } = useSettings()
+  const { settings, reload } = useSettings()
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const refreshLabels = async () => { const { added } = await call('POST sources/:id/labels',
     { id: source.id }); await reload(); return added }
-  const draft = useBlockDraft(`source:${source.id}`, source.value, source.revision)
+  const git = isGitSource(source.id)
+  const active = git && settings.git.source === source.id
+  // The Git Sources switch through `SourceSwitchButton`, so saving one keeps exactly the active host enabled.
+  const draft = useBlockDraft(`source:${source.id}`, source.value, source.revision,
+    value => git ? { ...value, enabled: active } : value)
   const value = draft.value
   const { problem, value: saved } = source
   const changed = (key: string) => String(value.config[key] ?? '') !== String(saved.config[key] ?? '')
@@ -40,8 +99,10 @@ function SourceCard({ source }: { source: SourceView }) {
             {!source.installed && <Tag tone="warning">{t('sourceNotInstalled')}</Tag>}
           </div>
         </div>
-        {source.installed && <Switch checked={value.enabled} onChange={enabled => draft.edit({ ...value, enabled })}
-          label={t('sourceEnable', { name: localized(t, source.title) })} />}
+        {source.installed && (git
+          ? active ? <Tag tone="success">{t('sourceActive')}</Tag> : <SourceSwitchButton source={source} disabled={draft.dirty} />
+          : <Switch checked={value.enabled} onChange={enabled => draft.edit({ ...value, enabled })}
+            label={t('sourceEnable', { name: localized(t, source.title) })} />)}
       </div>
       {problem && <div className="dt-row-buttons">
         <p className="dt-error" role="status"><SetupMessage problem={problem} lead /></p><CheckSetupButton />
@@ -59,9 +120,13 @@ function SourceCard({ source }: { source: SourceView }) {
 }
 
 export function SourceSettings({ focus }: { focus?: string }) {
-  const { sources } = useSettings().settings
+  const { t } = usePanel()
+  const { sources, git } = useSettings().settings
   useEffect(() => { if (focus) document.getElementById(`dt-source-${focus}`)?.scrollIntoView?.({ block: 'start' }) }, [focus])
   return <div className="dt-form">
+    <p className="dt-hint" role="status">{git.source
+      ? t('sourceActiveGit', { source: valueLabel(t, 'source', git.source), repository: git.repository || t('unsetValue') })
+      : t('sourceActiveGitNone')}</p>
     {sources.map(source => <SourceCard key={source.id} source={source} />)}
     <ConfigHistory blocks={['source:']} />
   </div>
@@ -105,7 +170,8 @@ function SourceRow({ source }: { source: SourceStatusRow }) {
   return <li className="dt-row">
     <Dot state={dot} label={state} />
     <div className="dt-row-main">
-      <div className="dt-row-title"><span className="dt-row-name">{localized(t, source.title)}</span><span className="dt-status-text"
+      <div className="dt-row-title"><span className="dt-row-name">{localized(t, source.title)}</span>
+        {source.active && <Tag tone="success">{t('sourceActive')}</Tag>}<span className="dt-status-text"
         data-state={dot}>{state}</span></div>
       <div className="dt-row-meta">
         {received > 0 && <LabelValue label={t('sourceReceivedLabel')}

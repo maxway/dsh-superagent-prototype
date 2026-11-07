@@ -1,9 +1,10 @@
 /** Settings view combining versioned configuration blocks, per-source forms and policy metadata, and execution environment details. */
 import { SETUP_FIELDS } from '../../deployment.ts'
 import { KV } from '../../kv.ts'
-import { policyVersion } from '../../policy.ts'
+import { policyVersion, type Settings } from '../../policy.ts'
 import type { SourceRegistry } from '../../sources/registry.ts'
 import { declaredVariables, executionRoot } from '../execution-environment.ts'
+import { gitProvider } from '../setup.ts'
 import type { Store } from '../store.ts'
 import { problemOf, sourceHealth, type HealthMap, type SetupState } from './sources.ts'
 
@@ -20,11 +21,21 @@ function policyOf(sources: SourceRegistry, id: string, health: HealthMap) {
  * Builds the settings view by block (`{ value, revision }`), per-Source configuration and restart-sensitive fields,
  * and execution environment details (`stateDir` provides the default ticket working directory root).
  */
+/** The active Git host and repository, as the Sources page shows them; `source` is null while settings resolve none. */
+function gitOf(settings: Settings, sources: SourceRegistry, setup: SetupState) {
+  try {
+    const source = gitProvider(settings, kind => !!sources.kind(kind))
+    const repository = setup.deployment?.git.provider === source ? setup.deployment.repository
+      : typeof settings.sources[source]?.config.repository === 'string' ? settings.sources[source]!.config.repository as string : ''
+    return { source, repository }
+  } catch { return { source: null, repository: '' } }
+}
 export function settingsView(store: Store, sources: SourceRegistry, health: HealthMap, setup: SetupState, stateDir: string) {
   const settings = store.settings()
   const block = <V>(name: 'policy' | 'eval' | 'executor' | 'watchdog', value: V) => ({ value, revision: store.blockRevision(name) })
   return {
     policyVersion: policyVersion(settings),
+    git: gitOf(settings, sources, setup),
     blocks: { policy: block('policy', settings.policy), eval: block('eval', settings.eval), executor: block('executor',
       settings.executor), watchdog: block('watchdog', settings.watchdog) },
     sources: sources.instances(settings).map(instance => {

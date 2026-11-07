@@ -1,6 +1,6 @@
 # 011 Multiple Git Sources
 
-An assessment of whether one dsh-superagent deployment can work with several Git sources, either concurrently or by switching, and of the confusion that multiple projects would introduce. This document records the current behavior, the layers that assume exactly one source, feasible options and a staged recommendation. It does not implement any of them.
+An assessment of whether one dsh-superagent deployment can work with several Git sources, either concurrently or by switching, and of the confusion that multiple projects would introduce. This document records the current behavior, the layers that assume exactly one source, feasible options and a staged recommendation. Phase A is implemented (see Status); phases B to D remain assessments.
 
 ## Summary
 
@@ -9,6 +9,10 @@ An assessment of whether one dsh-superagent deployment can work with several Git
 - **Concurrent multi-source is technically feasible, but it is a coordinated redesign of source identity, not a configuration change.** The core domain already stores a `source` on Triggers, Threads and Channels; the problem is that this identifier is also the Source *kind*, and many application layers read one global `Deployment`.
 - **Multiple projects will be confusing if they are added without an explicit project scope.** The confusion is manageable, and worth removing before concurrency: every Ticket, Thread, policy entry, execution environment, repository read and reply must carry the source instance. Each group chat binds one project, and each private chat also binds one project, which the person may rebind themselves; both give Feishu traffic a project. Without such scoping, Feishu routing, `#12` lookups, branch-to-Ticket binding, permissions and checkouts become guesses.
 - **Recommendation.** First harden switching while keeping exactly one active Git Source. If concurrent work is required, add same-host multi-project instances before cross-host concurrency. Do not configure two Git Sources in one deployment before the instance work; do not make one Ticket span projects in the first version.
+
+## Status
+
+Phase A is implemented and keeps one active Git Source: the Sources page shows the active host and repository, a switch is one action that verifies the target and lists the old host's open Tickets for an explicit stop-or-confirm decision, and each Ticket records the host it was accepted under so it cannot resume on another one. Installing both Git plugins is still a profile prerequisite for configuring and switching to either host from the panel. B to D are not implemented.
 
 ## What the deployment does today
 

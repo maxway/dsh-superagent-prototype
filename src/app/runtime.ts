@@ -128,6 +128,7 @@ export class Runtime extends Service implements SourceHost {
         sourceHost: this, setup, requestPass: () => { this.passes.request() } })
       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
         lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
+        git: () => setup.configured() ? { provider: setup.deployment.git.provider } : undefined,
         repliedTo: trigger => repliedTo({ store, sources }, trigger) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
@@ -136,7 +137,11 @@ export class Runtime extends Service implements SourceHost {
       const { assessor, executor } = this
       const policy = () => settingsPolicy(store.settings(), sources)
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
-        outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), emit: event => {
+        outbox, prepareTicket: (ticket, outcome) => {
+          const prepared = executor.prepare(ticket, outcome)
+          // Bind the Ticket to the host it is accepted under, so a later switch cannot resume it there.
+          return setup.configured() ? { ...prepared, git: { provider: setup.deployment.git.provider } } : prepared
+        }, emit: event => {
           // Notify the main Session only about domain events it did not initiate itself.
           const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
           if (notice) sessions.notify(...notice)

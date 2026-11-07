@@ -21,6 +21,7 @@ import type { Store } from './store.ts'
 import type { TextCache } from './cache.ts'
 import type { LinkTarget, ViewHost } from './views/records.ts'
 import type { Variable } from './execution-environment.ts'
+import { SourceSwitchConfirm } from './git-switch.ts'
 import { policyHistory } from './settings-history.ts'
 import { overview } from './views/overview.ts'
 import { settingsView } from './views/settings.ts'
@@ -37,7 +38,7 @@ export interface HttpHost {
   readonly sources: SourceRegistry
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
-  readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels'>
+  readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels' | 'activateSource'>
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
   readonly health: Record<string, Health>
@@ -90,6 +91,8 @@ function failure(error: unknown): [number, Record<string, unknown>] {
     return [400, { error: `Invalid settings: ${issues.map(issue => issue.path).join(', ')}`, issues }]
   }
   if (error instanceof SetupError) return [400, { error: error.message, setup: error.problem }]
+  if (error instanceof SourceSwitchConfirm) return [409, { error: error.message, switch: {
+    provider: error.provider, fingerprint: error.fingerprint, tickets: error.tickets.map(ticket => ({ id: ticket.id, title: ticket.title })) } }]
   if (error instanceof RouteError) return [error.status, { error: error.message }]
   if (error instanceof UserError) return [error.missing ? 404 : 400, { error: error.message, code: error.code, values: error.values }]
   if (error instanceof SettingsConflict || error instanceof PromptConflict) return [409, { error: error.message }]
@@ -104,7 +107,7 @@ function setupView(runtime: HttpHost) {
   const resolved = runtime.configured() ? runtime.deployment : undefined
   return {
     machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null, feishuProblem: runtime.feishuProblem ?? null,
-    accounts: resolved ? { provider: resolved.git.provider, repository: resolved.repository, agent: resolved.git.login, feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
+    accounts: resolved ? { provider: resolved.git.provider, host: resolved.git.host, repository: resolved.repository, agent: resolved.git.login, feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
   }
 }
 /** Build the `/orchestrator/api/state` response consumed by the management panel and `scripts/dsh-superagent status` (`docs/006-deployment.md`). */
@@ -167,6 +170,7 @@ const PromptsQuery = z.object({ revision: count.optional(), offset: count.defaul
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*$/)])
 const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor', 'watchdog']), SourceBlock])
 const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
+const ActivateBody = z.object({ revision: z.number().int().nonnegative(), confirm: z.string().trim().min(1).optional() })
 
 function routes(runtime: HttpHost): Routes {
   const { store } = runtime
@@ -187,6 +191,10 @@ function routes(runtime: HttpHost): Routes {
     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),
+    'POST sources/:id/activate': async ({ params, body }) => {
+      const request = ActivateBody.parse(await body())
+      return runtime.settings.activateSource(params.id, request.revision, 'panel', request.confirm)
+    },
     'GET threads': ({ query }) => {
       const { filter, offset, limit } = ThreadsQuery.parse(query)
       return threadList(views(runtime), filter, offset, limit)

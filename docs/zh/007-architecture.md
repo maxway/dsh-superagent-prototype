@@ -329,6 +329,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/versions.ts` | `Versions`：以带编号的快照和指向当前快照的指针保存的记录，用于设置和提示词 |
 | `src/app/cache.ts` | `TextCache`：保存在内存中、有大小上限的文本，最久未使用的先被丢弃 |
 | `src/app/settings.ts` | Settings |
+| `src/app/git-switch.ts` | 显式的 Git 宿主切换：旧宿主留下的未结束工单、它们的确认指纹，以及恰好启用一个 Git 来源的设置 |
 | `src/app/settings-history.ts` | `policyHistory`：每个已保存的设置修订版本及其相对前一版的变化 |
 | `src/app/prompts.ts` | Prompts、`builtInParts`（团队可以覆盖的内置段落），以及 `promptParts`（角色提示词各段落的顺序） |
 | `src/app/context.ts` | 内置提示词文本，从 `prompts/` 读取，以及 Session 读取的转录条目 |

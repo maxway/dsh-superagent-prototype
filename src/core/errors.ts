@@ -42,6 +42,8 @@ export const USER_ERRORS = {
   promptPlaceholders: ['refused', 'The “{part}” template must keep {placeholders}, which the system fills in'],
   promptPartEmpty: ['refused', 'The “{part}” part cannot be empty; reset it to follow its built-in text'],
   sourceNotInstalled: ['refused', 'The {source} Source kind is not installed'],
+  notGitSource: ['refused', 'Only the GitHub and GitLab Sources are Git hosts this deployment can switch to'],
+  useSourceSwitch: ['refused', 'The active Git host can only be changed with the switch action on the Sources page, which checks the old host\'s open tickets and restarts once; {count} open ticket(s) still belong to the old host'],
   noLabels: ['refused', 'This Source has no names to refresh'],
   nothingToSync: ['refused', 'The {source} Source\'s part of the Policy has nothing to sync from, or the Source is off or waiting for setup'],
 } as const satisfies Record<string, readonly ['missing' | 'refused', string]>
