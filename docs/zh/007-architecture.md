@@ -424,6 +424,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/gitlab.spec.ts` | `SourceContext` 上的 GitLab 来源：转换、项目轮询和游标、渠道、合并请求规则和结束通知 |
 | `tests/gitlab-webhook.spec.ts` | GitLab webhook：监听器校验、唤醒合并和项目 hook 的创建、更新与删除 |
 | `tests/commands.spec.ts` | 以部署账号执行的 CLI 调用、渠道的回答，以及限定在仓库范围内的 GitHub 调用 |
+| `tests/commands-window.spec.ts` | 后台 CLI 命令运行时隐藏窗口 |
 | `tests/github-read.spec.ts` | GitHub 读取 |
 | `tests/admission-context.spec.ts` | 研判的线程窗口 |
 | `tests/assessment.spec.ts` | MasterAssessor 为每个评估保留什么，以及何时放手 |

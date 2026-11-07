@@ -422,6 +422,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/gitlab.spec.ts` | The GitLab Source on a `SourceContext`: translation, project polling and cursors, the Channel, merge request rules and terminal notices |
 | `tests/gitlab-webhook.spec.ts` | The GitLab webhook: listener verification, wake coalescing, and creation, update and removal of the project hook |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
+| `tests/commands-window.spec.ts` | The hidden window of a background CLI command |
 | `tests/github-read.spec.ts` | GitHub reads |
 | `tests/admission-context.spec.ts` | The Thread window of assessments |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
