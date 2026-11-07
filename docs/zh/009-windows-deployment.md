@@ -273,7 +273,7 @@ Windows 测试套件会在 Windows 上通过 `.cmd` shim 运行飞书消费者�
 
 ### 剩余问题
 
-- 是否把 Windows CI runner 从运营者工作站迁移到专用 CI 主机，并使用专用 Windows 账号。目前它是 `D:\dsh-ci` 下的用户级 shell runner，随登录启动，因此以运营者凭据运行 job，且无人登录时会停止。
+- 是否把 Windows CI runner 从运营者工作站迁移到专用 CI 主机，并使用专用 Windows 账号。目前它是 `D:\dsh-ci` 下的用户级 shell runner，随登录启动，因此以运营者凭据运行 job，且无人登录时会停止。登录状态下，计划任务 `dsh-gitlab-runner-watchdog` 通过隐藏启动器每 15 分钟检查一次，进程缺失时重启 runner，并把每次重启写入 `D:\dsh-ci\watchdog.log`；它检测不到仍在运行但已不再轮询的 runner。
 - 把真实飞书机器人接到 Windows 主机；这需要生产应用凭据，因此属于切换期间的运营者步骤。启动器和事件消费者路径已实现并在无凭据条件下测试。
 
 ## 不在范围内

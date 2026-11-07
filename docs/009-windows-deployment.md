@@ -271,7 +271,7 @@ The usable internal build is about 2-2.5 weeks of focused work; the full parity 
 
 ### Remaining questions
 
-- Whether to move the Windows CI runner from the operator's workstation to a dedicated CI host with a dedicated Windows account. Today it is a user-level shell runner under `D:\dsh-ci` that starts at logon, so it runs jobs with the operator's credentials and stops when nobody is logged in.
+- Whether to move the Windows CI runner from the operator's workstation to a dedicated CI host with a dedicated Windows account. Today it is a user-level shell runner under `D:\dsh-ci` that starts at logon, so it runs jobs with the operator's credentials and stops when nobody is logged in. While the operator is logged on, the scheduled task `dsh-gitlab-runner-watchdog` checks every fifteen minutes from a hidden launcher and restarts the runner when its process is missing, appending each restart to `D:\dsh-ci\watchdog.log`; it does not detect a runner that is still running but no longer polling.
 - Connecting a live Feishu bot to the Windows host, which needs the production app credentials and is therefore an operator step during cutover. The launcher and event-consumer paths are implemented and tested without credentials.
 
 ## Out of scope
