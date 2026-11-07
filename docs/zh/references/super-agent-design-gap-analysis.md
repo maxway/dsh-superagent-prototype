@@ -64,7 +64,7 @@
 - `orchestrator_ticket_request_status` 允许主 Session 向等待中的 worker 询问状态，但它是被动触发的，不是周期巡检。
 - [006 部署](../006-deployment.md) 的“每小时检查”是文档化的外部巡检提示词：在另一个 DSH profile 中定时运行 `status`，进程退出码为 1 时执行 `restart`。它是进程级的，需要人工按文档配置，不判断 worker 是否在无效循环或偏离目标。
 - **已落地的只读任务级巡检（MR !28）**：`GET /orchestrator/api/watchdog` 返回每个进行中工单的阶段、最近派工与报告、静默时长、机械信号（投递失败、未送达输入、排队过久、无进展、等待人工过久）和线程信息；`scripts/dsh-superagent watchdog` 输出 JSON 快照；部署文档给出独立 profile 的定时任务提示词。
-- **已落地的介入（阶段 2，MR !30、!32）**：`watchdog` 设置块（默认 `observe`，只有 `enforce` 执行动作）、专用 `POST /orchestrator/api/watchdog/tickets/<id>/retry|stop`、SQLite 持久化审计、按工单冷却与每小时限流，以及等待人工、人类跟进、未送达输入、谷价等待、暂停或未配置时的拒绝规则；面板提供同样的设置与快照。`scripts/dsh-superagent watchdog retry|stop` 只向该 API 请求决定；重试与停止都由服务端重新读取工单后执行，失败不回滚、只记录并报告。实现入口见上表的核查列，行为由 `tests/watchdog.spec.ts` 与 `tests/watchdog-action.spec.ts` 覆盖。
+- **已落地的介入（阶段 2，MR !30、!32）**：`watchdog` 设置块（默认 `observe`，只有 `enforce` 执行动作）、专用 `POST /orchestrator/api/watchdog/tickets/<id>/retry|stop`、SQLite 持久化审计、按工单冷却与每小时限流，以及等待人工、人类跟进、未送达输入、谷价等待、暂停或未配置时的拒绝规则；面板提供同样的设置项，快照由该 API 与 CLI 读取。`scripts/dsh-superagent watchdog retry|stop` 只向该 API 请求决定；重试与停止都由服务端重新读取工单后执行，失败不回滚、只记录并报告。实现入口见上表的核查列，行为由 `tests/watchdog.spec.ts` 与 `tests/watchdog-action.spec.ts` 覆盖。
 
 **影响。** 巡检能在设置的边界内发现并重试或停止卡住的工单，每一次决定都有审计和限流；但修改提示词、策略或其他设置仍需人来完成，服务进程存活和重启恢复也仍依赖外部每小时检查。当前单机部署一旦主机休眠或离线，整个系统停止，这正是第 5 节要解决的问题。
 
