@@ -67,7 +67,7 @@ export const consumerRetry = (previous: number | undefined, ranMs: number): numb
 async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   const resolved = launch([bot(ctx).cli, 'event', 'consume', 'im.message.receive_v1', '--as', 'bot'])
   const child = spawn(resolved.program, resolved.args,
-    { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
+    { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
       LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
   const stdout = createInterface({ input: child.stdout }); const stderr = createInterface({ input: child.stderr })
   let chain = Promise.resolve(); let diagnostic = ''; let ready = false
@@ -82,7 +82,7 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
     // The npm shim runs a Node launcher whose child is the real consumer, so end the whole tree if stdin close was not enough.
     const terminate = setTimeout(() => {
       if (child.pid === undefined) return
-      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => {})
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => {})
     }, 5000)
     child.once('exit', () => clearTimeout(terminate))
   }

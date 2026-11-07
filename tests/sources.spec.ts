@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Engine, MemoryRepositories, key, type Assessor, type Executor, type Thread, type Ticket, type Trigger } from '../src/core/index.ts'
 import { consumerRetry, feishuKind, feishuTriggerId, feishuTime, feishuTrigger } from '../src/sources/feishu.ts'
@@ -953,6 +954,15 @@ else { ready(); setTimeout(() => { printEvents(); setInterval(() => {}, 1000) },
     await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'error',
       detail: expect.stringContaining('did not become ready within 45 seconds') }), until)
     expect(alive(pid)).toBe(false)
+    controller.abort(); await running; store.close()
+  }, 20_000)
+  it.skipIf(process.platform !== 'win32')('starts the Windows event consumer without a visible window', async () => {
+    const { ctx, health, store } = consumerSource(cli('ready'))
+    running = runFeishu(ctx, controller.signal)
+    await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'ready' }), until)
+    const pid = Number(readFileSync(join(dir, 'pid'), 'utf8'))
+    const window = execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${pid}).MainWindowHandle`], { encoding: 'utf8' }).trim()
+    expect(window).toBe('0')
     controller.abort(); await running; store.close()
   }, 20_000)
   it('reports a warning the consumer prints as an error', async () => {
