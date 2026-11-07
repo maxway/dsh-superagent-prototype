@@ -51,6 +51,8 @@ export interface SourceChannel<C> {
    * @throws when delivery failed but may succeed on a later retry.
    */
   send(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'>
+  /** Sends a new message to a chat rather than a reply; omitted for kinds that cannot post on their own. */
+  sendChat?(host: Pick<SourceContext, 'commands'>, chatId: string, text: string, idempotencyKey: string): Promise<void>
   /** Returns the URL and label for `address`; `url` is empty when `links` lack the required deployment info. */
   link(address: Record<string, string>, links: ChannelLinks): ChannelLink
 }

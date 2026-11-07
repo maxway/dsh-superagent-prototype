@@ -350,7 +350,7 @@ Some generic modules still need provider-specific behavior:
 | `src/app/views/text.ts` | The two forms of a view's text: `preview`, plain text on one line, and `markdown` without HTML; `plain` and `readable` |
 | `src/app/views/records.ts` | The rows the views share: Triggers, Tickets, Threads, Decisions and Channel links, and `ownersOf`, the owners of follow-ups as one request reads them |
 | `src/app/views/tickets.ts` | The Ticket lists by stage, a Ticket's page, the Mandate basis facts and the Executor's load |
-| `src/app/views/watchdog.ts` | The read-only Watchdog view: every open Ticket's stage, latest Assignment and report, silence and mechanical signals |
+| `src/app/views/watchdog.ts` | The read-only Watchdog view and `watchdogSummary`: every open Ticket's stage, latest Assignment and report, silence and mechanical signals, rendered as the Feishu observation report |
 | `src/app/watchdog.ts` | The Watchdog intervention service: mode and action guards, snapshot freshness, safety preconditions, cooldown and hourly limits, and the audited retry/stop call |
 | `src/app/views/threads.ts` | The Thread lists, a Thread's timeline, the search and the Decision list |
 | `src/app/views/sources.ts` | The Source status: each Source instance's state, its last day's counts, and what it filtered and dropped in that day |
@@ -383,7 +383,7 @@ Some generic modules still need provider-specific behavior:
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
 | `src/sources/feishu-trigger.ts` | Feishu live messages to the bot as Triggers |
 | `src/sources/feishu-loops.ts` | The Feishu event consumer, its health and its restart backoff |
-| `src/sources/feishu-channel.ts` | The Feishu Channel: topic replies, `sent` or `gone` |
+| `src/sources/feishu-channel.ts` | The Feishu Channel: topic replies, `sent` or `gone`, and new chat messages for a Watchdog report |
 | `src/sources/admission-context.ts` | The bounded window an assessment starts from: the first pages of a Trigger's Thread, read through its kind, and the messages around the Trigger |
 | `src/client/index.tsx` | The client plugin entry: the sidebar entry, the main panel and the page in DeepSeek Harness's Plugin Manager |
 | `src/client/app.tsx` | The panel: header, search, glossary, tabs and the page of the current route |
@@ -444,7 +444,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
-| `tests/watchdog.spec.ts` | The Watchdog view: stages, latest reports, silence, faults, off-peak and review waits, and activity from Inputs |
+| `tests/watchdog.spec.ts` | The Watchdog view and its Feishu observation summary: stages, latest reports, silence, faults, off-peak and review waits, activity from Inputs, and the rendered report |
 | `tests/watchdog-action.spec.ts` | Watchdog interventions: off/observe/report/enforce, guards, retry and stop, idempotency, cooldown and limits |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
@@ -453,8 +453,9 @@ Some generic modules still need provider-specific behavior:
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, the agent's process environment, the plugin entry |
-| `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh`, and its Watchdog snapshot and retry decisions |
+| `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh`, and its Watchdog snapshot, retry decisions and Feishu report |
 | `tests/launch.spec.ts` | The Windows launcher: `.cmd` shim resolution, `.js` entries and the refusal of a shell-only wrapper |
+| `tests/commands-window.spec.ts` | The CLI transport hides the window when it runs a background command |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
 | `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route |
 | `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, and the panel's search, glossary and route memory |

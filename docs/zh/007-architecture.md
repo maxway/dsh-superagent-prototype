@@ -352,7 +352,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/views/text.ts` | 视图文本的两种形式：`preview`（单行纯文本）和不含 HTML 的 `markdown`；`plain` 和 `readable` |
 | `src/app/views/records.ts` | 视图共用的行：触发、工单、线程、决定和渠道链接，以及 `ownersOf`（按一次请求读取到的跟进的拥有者） |
 | `src/app/views/tickets.ts` | 按阶段划分的工单列表、工单页面、授权依据事实和执行器负载 |
-| `src/app/views/watchdog.ts` | 只读的 Watchdog 视图：每个进行中工单的阶段、最近派工与报告、静默时长和机械信号 |
+| `src/app/views/watchdog.ts` | 只读的 Watchdog 视图与 `watchdogSummary`：每个进行中工单的阶段、最近派工与报告、静默时长和机械信号，并渲染成飞书观察报告 |
 | `src/app/watchdog.ts` | Watchdog 介入服务：模式与动作校验、快照新鲜度、安全前置条件、冷却与每小时限流，以及带审计的 retry/stop 调用 |
 | `src/app/views/threads.ts` | 线程列表、线程时间线、搜索和决定列表 |
 | `src/app/views/sources.ts` | 来源状态：每个来源实例的状态、它最后一天的计数，以及它在那一天过滤和丢弃的内容 |
@@ -385,7 +385,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/sources/feishu.ts` | 飞书种类和插件入口，导出为 `./feishu-watch` |
 | `src/sources/feishu-trigger.ts` | 把发给机器人的飞书实时消息作为触发 |
 | `src/sources/feishu-loops.ts` | 飞书事件消费者、其健康状态和重启退避 |
-| `src/sources/feishu-channel.ts` | 飞书渠道：主题回复，`sent` 或 `gone` |
+| `src/sources/feishu-channel.ts` | 飞书渠道：主题回复，`sent` 或 `gone`，以及 Watchdog 报告使用的新会话消息 |
 | `src/sources/admission-context.ts` | 研判起步时的有界窗口：通过其种类读取的触发所在线程的头几页，以及触发周围的消息 |
 | `src/client/index.tsx` | 客户端插件入口：侧边栏条目、主面板，以及 DeepSeek Harness 插件管理器中的页面 |
 | `src/client/app.tsx` | 面板：页头、搜索、术语表、标签页和当前路由的页面 |
@@ -446,7 +446,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/http.spec.ts` | 同源和回环检查、每种失败的状态码、请求体上限、路径参数和查询 |
 | `tests/settings.spec.ts` | 与模型检查或账号检查竞争的设置保存、被保存抢先的策略同步，以及暂停、同步和某个块的拒绝 |
 | `tests/views.spec.ts` | 管理视图从 Store 推导出的内容，例如被丢弃的消息属于哪个线程 |
-| `tests/watchdog.spec.ts` | Watchdog 视图：阶段、最近报告、静默时长、故障、谷价与评审等待，以及来自输入的活跃度 |
+| `tests/watchdog.spec.ts` | Watchdog 视图及其飞书观察汇总：阶段、最近报告、静默时长、故障、谷价与评审等待、来自输入的活跃度，以及渲染出的报告 |
 | `tests/watchdog-action.spec.ts` | Watchdog 介入：off/observe/report/enforce、安全前置、retry 与 stop、幂等、冷却与限流 |
 | `tests/timeline.spec.ts` | 线程的页面，以及触发按时间再按 id 排序的邻近项，每个已接收触发的时间都采用同一种形式 |
 | `tests/migration.spec.ts` | schema 11 迁移：每条已存储记录都处于当前形状，以及拒绝更旧的 schema |
@@ -455,8 +455,9 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/cards.spec.ts` | 内置文本必须陈述的规则，逐文件验证 |
 | `tests/model-surface.spec.ts` | 模型读到的一切：工具、提示词、技能和输入，对照工具 schema、执行环境和术语表检查，每种角色有大小预算 |
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | 插件配置和安装配置、智能体的进程环境、插件入口 |
-| `tests/service-script.spec.ts` | `scripts/dsh-superagent` 对照伪造的 `ps`、`tmux` 和 `dsh`，以及它的 Watchdog 快照与重试决定 |
+| `tests/service-script.spec.ts` | `scripts/dsh-superagent` 对照伪造的 `ps`、`tmux` 和 `dsh`，以及它的 Watchdog 快照、重试决定与飞书报告 |
 | `tests/launch.spec.ts` | Windows 启动器：`.cmd` shim 解析、`.js` 入口，以及拒绝只能走 shell 的包装 |
+| `tests/commands-window.spec.ts` | CLI 传输在运行后台命令时隐藏窗口 |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | 客户端插件的注册和轮询、Session 导航和路由记忆、本地控件，以及面板的导入（没有循环） |
 | `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | 面板的每个页面，对照按路由作答的伪造管理 API |
 | `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | 设置分组、草稿和历史、提示词、部署页面，以及面板的搜索、术语表和路由记忆 |

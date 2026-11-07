@@ -97,6 +97,15 @@ export class SourceRegistry implements SourceScope {
     if (!kind) return 'waiting'
     return kind.channel ? kind.channel.send({ commands }, message) : 'gone'
   }
+  /**
+   * Posts a new message to a chat through `source`'s channel, if its kind supports proactive chat messages; the caller
+   * checks that the Source is installed and enabled. A kind without `sendChat` never accepts the message.
+   */
+  async sendChat(source: string, chatId: string, text: string, idempotencyKey: string, commands: Commands): Promise<void> {
+    const kind = this.kinds.get(source)
+    if (!kind?.channel?.sendChat) throw new Error(`The ${source} Source cannot send new chat messages`)
+    await kind.channel.sendChat({ commands }, chatId, text, idempotencyKey)
+  }
   link(channel: ChannelRef, links: ChannelLinks): ChannelLink {
     const link = this.kinds.get(channel.source)?.channel?.link(channel.address, links)
     return link ?? { url: '', label: { zh: channel.source, en: channel.source } }

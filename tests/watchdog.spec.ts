@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { Store } from '../src/app/store.ts'
-import { watchdogView } from '../src/app/views/watchdog.ts'
+import { watchdogSummary, watchdogView } from '../src/app/views/watchdog.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import type { Assignment, ReportState, Ticket } from '../src/core/index.ts'
 import { githubKind } from '../src/sources/github.ts'
@@ -90,4 +90,33 @@ it('exposes a Ticket\'s question, delivery error, retry availability and worker 
   const question = row('question')
   expect(question).toMatchObject({ attention: { id: 'q1', question: 'Which branch?', triggerId: 'e1' }, actions: { retry: false, stop: true },
     sessionId: 'worker-question' })
+})
+
+it('renders the observation as a Feishu summary with the flagged Tickets and the Watchdog judgement', () => {
+  const host = views()
+  store.tickets.save(ticket('stalled', { title: 'Fix the build', updatedAt: at(50),
+    assignments: [assignment({ startedAt: at(120), report: report('blocked', 'Waiting for a design file', at(50)) })] }))
+  store.tickets.save(ticket('quiet', { title: 'Update the README', updatedAt: at(5),
+    assignments: [assignment({ startedAt: at(60), report: report('progress', 'Editing the README', at(5)) })] }))
+  const text = watchdogSummary({ view: watchdogView(host, NOW, 30), paused: false, load: { running: 1, maxWorkers: 3 },
+    health: { runtime: { state: 'ready' }, feishu: { state: 'ready' } }, config: SettingsSchema.parse({}).watchdog, audit: [],
+    note: 'It has not reported for a while.' })
+  expect(text).toContain('**Watchdog 观察汇总**')
+  expect(text).toContain('服务 ready · 执行器 1/3')
+  expect(text).toContain('进行中 2 个工单，1 个需要关注：')
+  expect(text).toContain('- `stalled` Fix the build — 受阻，静默 50 分钟，信号 waiting-person')
+  expect(text).toContain('最近报告 blocked：Waiting for a design file')
+  expect(text).toContain('其余 1 个工单没有机械信号。')
+  expect(text).toContain('Watchdog observe，允许动作 retry，静默阈值 30 分钟。')
+  expect(text).toContain('**Watchdog 判断**：It has not reported for a while.')
+})
+
+it('renders an empty observation, a paused service and non-ready parts, without a judgement', () => {
+  const host = views()
+  const text = watchdogSummary({ view: watchdogView(host, NOW, 30), paused: true, load: { running: 0, maxWorkers: 3 },
+    health: { runtime: { state: 'ready' }, feishu: { state: 'error', detail: 'socket closed' } },
+    config: SettingsSchema.parse({}).watchdog, audit: [] })
+  expect(text).toContain('服务 ready · 执行器 0/3 · 已暂停 · 其他异常 feishu error（socket closed）')
+  expect(text).toContain('没有进行中的工单。')
+  expect(text).not.toContain('Watchdog 判断')
 })

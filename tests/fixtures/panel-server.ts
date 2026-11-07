@@ -312,6 +312,8 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
       ticketId: params.id, action: params.action === 'stop' ? 'stop' as const : 'retry' as const, mode: server.settings.watchdog.mode,
       initiator: 'watchdog' as const, reason: body.reason, result: 'observed' as const }
   } },
+  'POST watchdog/report': { body: true, answer: ({ body }) =>
+    ({ sent: true as const, at: '2026-11-07T00:00:00.000Z', chatId: body.chatId, text: '**Watchdog 观察汇总**' }) },
   'GET overview': { answer: overviewView },
   'GET search': { query: ['q'], answer: async ({ query }) => {
     const q = query.q ?? ''
