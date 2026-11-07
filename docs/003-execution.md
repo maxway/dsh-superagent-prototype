@@ -52,6 +52,8 @@ Before the first Assignment, if the Ticket directory does not exist, the prepare
 
 A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A typical command uses `git worktree` to create a checkout. A pull request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
 
+When a Ticket ends, the Executor stops its background work and then reclaims the directory if it is a linked git worktree on the Ticket's `agent/<short name>` branch, `git status --porcelain` is empty, and every commit is reachable from a remote ref or from the remote ref the prepare command fetched into `refs/dsh-superagent/<Ticket id>`. It removes the worktree and deletes the local branch and that fetched ref. The remote branch, the pull request and the main checkout stay. A directory with uncommitted or untracked changes, unpushed commits, or another checked-out branch is kept. A resumed Ticket whose directory was removed runs the prepare command again.
+
 ### Concurrency
 
 A Ticket holds a worker slot from the start of a launch, including preparation, or from the delivery that wakes its idle Executor. It also holds the slot throughout an active turn.

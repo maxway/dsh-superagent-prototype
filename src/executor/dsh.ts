@@ -18,6 +18,7 @@ import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { offPeakWait } from '../offpeak.ts'
+import { reclaimWorkspace, type GitRun } from './workspace.ts'
 import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
 
 const now = (): string => new Date().toISOString()
@@ -41,6 +42,8 @@ const SHUTDOWN_STOP_MS = 10_000
 const SLOT_WAIT_MS = 5000
 /** How often a launch held for the off-peak window re-reads the settings, so a changed window takes effect soon. */
 const OFFPEAK_RECHECK_MS = 60_000
+/** How long one git command of a workspace cleanup may run before the attempt is abandoned and retried later. */
+const CLEANUP_TIMEOUT_MS = 60_000
 /** True when an input comes from a person (a non-context human trigger or a direct text input such as a status request). */
 const fromPerson = (input?: TicketInput): boolean => input?.kind === 'trigger' ? !!input.human && !input.context : input?.kind === 'text'
 /**
@@ -235,9 +238,11 @@ export class DshExecutor implements Executor {
   private readonly left = new Map<string, { jobs: Set<string>; collect: AbortController }>()
   /** When a person's message typed into a worker's Session last started a turn, by ticket. */
   private readonly personal = new Map<string, string>()
+  /** The workspace cleanup a Ticket runs, by ticket, which a launch of that Ticket waits for so they cannot overlap. */
+  private readonly cleaning = new Map<string, Promise<void>>()
   /** The timers of workers that go on after a passing failure, which dispose clears. */
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
-  /** Registers the `launch` and `delivery` effect handlers; both are held (concurrency limit 0) while processing is paused. */
+  /** Registers the `launch`, `delivery` and `cleanup` effect handlers; launch and delivery are held (concurrency limit 0) while processing is paused. */
   constructor(private readonly host: ExecutorHost) {
     this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
       () => host.store.settings().executor.maxWorkers)
@@ -246,6 +251,9 @@ export class DshExecutor implements Executor {
       retry: [5000, 300_000] })
     // Failed input deliveries are recorded on the ticket itself rather than reported through the `delivery` effect health entry (`quiet: true`).
     host.effects.handle('delivery', payload => this.deliverQueued(payload.ticketId), { limit: () => host.paused() ? 0 : 4, quiet: true })
+    // A cleanup only removes a clean checkout whose commits are all remote, so its repeated failures stay off the health
+    // board; the effect retries, for example after a file lock on Windows is released.
+    host.effects.handle('cleanup', payload => this.cleanupQueued(payload.ticketId), { limit: () => host.paused() ? 0 : 1, retry: [30_000, 3_600_000], quiet: true })
   }
   /** Why `ticket` must not run on the active Git host: it was accepted on another one, and its remote and change requests stay there. */
   private hostProblem(ticket: Ticket): string | undefined {
@@ -287,6 +295,9 @@ export class DshExecutor implements Executor {
   deliver(ticket: Ticket, _assignment: Assignment): void { this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id }) }
   /** Launches a queued assignment unless its ticket ended, a newer assignment replaced it, or it is deferred outside the off-peak window. */
   private async launchQueued({ ticketId, assignmentId }: { ticketId: string; assignmentId: string }): Promise<void> {
+    // A resumed Ticket may be launching while its finished workspace is still being reclaimed; the launch waits for that
+    // cleanup, then prepares a fresh checkout when the directory is gone.
+    await this.cleaning.get(ticketId)?.catch(() => {})
     const ticket = this.host.store.tickets.get(ticketId)
     const assignment = ticket && latestAssignment(ticket)
     if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== 'pending') return
@@ -385,6 +396,8 @@ export class DshExecutor implements Executor {
    */
   stop(ticket: Ticket, assignment: Assignment, reason: string): void {
     this.transient.delete(assignment.id); this.transient.delete(`launch:${assignment.id}`)
+    // The Ticket ended in the domain, so its checkout is no longer needed once its background work has stopped.
+    if (ticket.ended) this.host.effects.enqueue('cleanup', ticket.id, { ticketId: ticket.id })
     const report = assignment.report
     const busy = !!assignment.deliveredAt && !!report && assignment.deliveredAt >= report.at
     const ownTurn = (report?.state === 'ready' || report?.state === 'dropped') && !busy
@@ -551,6 +564,10 @@ export class DshExecutor implements Executor {
    * while failed launches (`waitsForPerson`) wait for a person's message or a retry.
    */
   resume(): void {
+    // Reclaim finished Tickets' checkouts too, including those that ended before this version or while the host was down.
+    for (const ticket of this.host.store.tickets.list()) {
+      if (ticket.ended && ticket.execution?.directory) this.host.effects.enqueue('cleanup', ticket.id, { ticketId: ticket.id })
+    }
     // Launch pending tickets oldest first (in acceptance order).
     for (const ticket of this.host.store.tickets.open().sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
       const running = runningAssignment(ticket), latest = latestAssignment(ticket)
@@ -635,6 +652,43 @@ export class DshExecutor implements Executor {
         await this.host.sessions.prompt(agent.id, `ended:${job.id}`, note, { inject: 'Background job ended' })
       }))
     }
+  }
+  /**
+   * Reclaims the checkout of a Ticket that ended, unless it resumed and is running again. One cleanup of a Ticket runs
+   * at a time; a launch waits for it, and the cleanup checks the Ticket again before removing anything.
+   */
+  private async cleanupQueued(ticketId: string): Promise<void> {
+    // A newer end can enqueue this again while an older cleanup still runs; wait for it and look again.
+    for (;;) {
+      const ticket = this.host.store.tickets.get(ticketId)
+      if (!ticket?.ended || !ticket.execution?.directory) return
+      const running = this.cleaning.get(ticketId)
+      if (!running) break
+      await running.catch(() => {})
+    }
+    const task = this.reclaim(ticketId)
+    this.cleaning.set(ticketId, task)
+    try { await task } finally { if (this.cleaning.get(ticketId) === task) this.cleaning.delete(ticketId) }
+  }
+  /** Stops the Ticket's background work, then removes its clean, fully remote checkout if the Ticket is still ended. */
+  private async reclaim(ticketId: string): Promise<void> {
+    await this.stopped(ticketId)
+    if (this.host.closing()) throw new Later('dsh-superagent is stopping')
+    const ticket = this.host.store.tickets.get(ticketId)
+    if (!ticket?.ended || !ticket.execution?.directory) return
+    // A person can type into the worker's Session directly; its checkout is in use while that turn runs.
+    if (this.host.context.agents.get(workerSessionId(ticketId) as SessionId)?.status === 'running') {
+      throw new Later('The Ticket workspace is in use', 60_000)
+    }
+    const stillEnded = () => {
+      const current = this.host.store.tickets.get(ticketId)
+      return !!current?.ended && current.execution?.directory === ticket.execution?.directory
+        && this.host.context.agents.get(workerSessionId(ticketId) as SessionId)?.status !== 'running'
+    }
+    const run: GitRun = (argv, cwd) => runAsWorker(this.host.context.subprocess, ['git', ...argv], cwd,
+      AbortSignal.any([this.host.lifetime, AbortSignal.timeout(CLEANUP_TIMEOUT_MS)]))
+    const result = await reclaimWorkspace(run, { id: ticket.id, name: ticket.execution.name, directory: ticket.execution.directory }, stillEnded)
+    if (result.status === 'reclaimed') this.host.context.logger.info('dsh-superagent removed the workspace of ticket %s', ticket.id)
   }
   private async workerIdle(ticket: Ticket, idle: Assignment, agent: Agent): Promise<void> {
     await agent.whenIdle()
