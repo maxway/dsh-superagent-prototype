@@ -196,13 +196,15 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
   const mode = settings.eval.mode
   /** Gate non-human triggers: only listed bots (as inferred candidates) and senderless system/CI events may pass; other bots are rejected. */
   const machineGate = (trigger: Trigger): GateResult => {
+    // Direct messages are open only to listed people, so no machine message is admitted there.
+    if (trigger.addressed === 'direct') return { admissible: false, reason: 'not_human' }
     const scope = listened(sources, trigger.source, trigger.meta)
     const row = scope.listened ? scope.row : undefined
     const recorded = { source: trigger.source, scope: trigger.meta, ...row === undefined ? {} : { row } }
     const addressed = trigger.addressed ? { addressed: trigger.addressed } : {}
     // A bot or agent that addresses the agent in a group scope admitting read-only questions asks one, whether or not it is
-    // listed. Direct messages stay limited to listed senders, so a direct reply cell never admits one.
-    if (trigger.addressed && trigger.addressed !== 'direct' && scope.listened
+    // listed. Direct messages were already rejected above.
+    if (trigger.addressed && scope.listened
       && admissionOf(settings, trigger.source, row, 'unlistedAddressed') === 'reply') {
       return { admissible: true, strength: 'reply', basis: { ...recorded, via: 'admission', cell: 'unlistedAddressed', ...addressed } }
     }
@@ -225,6 +227,8 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
     gate(trigger: Trigger, thread, tickets) {
       if (!trigger.human) return machineGate(trigger)
       const allowed = allowedSender(settings, trigger.actor)
+      // Direct messages are open only to listed senders; no table cell admits an unlisted direct sender.
+      if (trigger.addressed === 'direct' && !allowed) return { admissible: false, reason: 'not_a_member' }
       const scope = listened(sources, trigger.source, trigger.meta)
       const row = scope.listened ? scope.row : undefined
       const recorded = { source: trigger.source, scope: trigger.meta, ...row === undefined ? {} : { row }, ...allowed ? { sender: senderName(allowed) } : {} }
@@ -252,6 +256,8 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       const { basis } = mandate
       // Read-only replies are a group-scope grant; a direct-message reply Mandate never holds.
       if (mandate.strength === 'reply' && basis.via !== 'followup' && (basis.addressed === 'direct' || basis.row === 'direct')) return false
+      // A direct message from an unlisted sender never holds, whatever strength it was accepted with.
+      if (basis.via !== 'followup' && basis.addressed === 'direct' && !allowedSender(settings, mandate.actor)) return false
       const { source } = basis
       const current = source && basis.scope ? listened(sources, source, basis.scope) : undefined
       if (current && !current.listened) return false

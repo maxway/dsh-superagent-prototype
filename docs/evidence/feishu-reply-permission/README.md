@@ -17,7 +17,7 @@ production state, credentials, bot CLI or chat content is used. The baseline lin
   **只读答疑** and is set to it and saved: anyone there, a person, bot or agent, may ask a read-only
   question that is answered after read-only investigation without executing. The footnote explains the
   two permissions and that direct messages stay limited to listed senders; the direct row shows
-  **忽略** and its cell offers no read-only reply.
+  **忽略**, its cell offers only **忽略** for unlisted senders, and unlisted direct messages are not admitted.
 
 The only intended difference is this change. The before build shows the same page except that a
 read-only reply is not offered; the after capture shows that group cell saved as **只读答疑**, with the

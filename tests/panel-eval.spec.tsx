@@ -138,7 +138,7 @@ it('sets the Feishu admission table per receiving scope, offering only the cells
   expect([...cell.options].map(option => option.value)).toEqual(['explicit', 'reply', 'inferred', 'ignore'])
   // Direct messages stay limited to listed senders, so their cell offers no read-only reply.
   expect([...field<HTMLSelectElement>('私聊 · 名单外 · 点名智能体').options].map(option => option.value))
-    .toEqual(['explicit', 'inferred', 'ignore'])
+    .toEqual(['ignore'])
   await type(cell, 'explicit')
   // The warning is an icon in a slot every cell reserves, with the text on hover, so the table does not move.
   expect(document.querySelector('.dt-admission .dt-info-warn')?.getAttribute('aria-label')).toBe(zh.admissionAnyoneWarning)

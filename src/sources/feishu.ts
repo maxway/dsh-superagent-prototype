@@ -90,10 +90,11 @@ export const feishuKind: SourceKind<FeishuConfig> = {
           cells: { listedUnaddressed: chat.listen === 'all', unlistedAddressed: true, unlistedUnaddressed: chat.listen === 'all' } })),
         { id: 'other', label: { zh: '其他群', en: 'Other chats' }, note: config.otherChats === 'mentions' ? mentions : { zh: '不接收', en: 'Not received' },
           cells: { listedUnaddressed: false, unlistedAddressed: config.otherChats === 'mentions', unlistedUnaddressed: false } },
-        // Direct messages stay limited to listed senders: only group chats may grant read-only replies.
+        // Direct messages stay limited to listed senders: their unlisted-addressed cell only ignores, and only group chats
+        // may grant read-only replies.
         { id: 'direct', label: { zh: '私聊', en: 'Direct messages' }, note: config.directMessages ? { zh: '接收', en: 'Received' } : { zh: '不接收', en: 'Not received' },
           cells: { listedUnaddressed: false, unlistedAddressed: config.directMessages, unlistedUnaddressed: false },
-          options: { unlistedAddressed: ['explicit', 'inferred', 'ignore'] as const } },
+          options: { unlistedAddressed: ['ignore'] as const } },
       ]
     },
   },
