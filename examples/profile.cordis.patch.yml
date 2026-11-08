@@ -12,8 +12,9 @@
 # On Windows, point that CLI at the npm lark-cli .cmd shim or the package's Node entry.
 # - id: dsh-superagent-feishu
 #   disabled: false
-# One Git Source is active at a time. For GitLab, enable dsh-superagent-gitlab and disable dsh-superagent-github.
+# One Git Source is active at a time. Enable the GitLab plugin (GitHub is on by default) to configure
+# and switch hosts in the panel; set dsh-superagent-github disabled: true to use only GitLab.
 # - id: dsh-superagent-gitlab
 #   disabled: false
 # - id: dsh-superagent-github
-#   disabled: true
+#   disabled: false
