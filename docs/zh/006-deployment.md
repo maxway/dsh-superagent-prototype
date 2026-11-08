@@ -263,6 +263,23 @@ Windows 上用 `node scripts\dsh-superagent ...`。`--stale-minutes` 只改变�
 
 从 Watchdog 修改提示词或其他设置属于后续阶段；本巡检不会暂停执行器、编辑提示词或修改设置。
 
+### 独立 Watchdog 进程
+
+任务级巡检也可以不用 DSH 定时会话，而作为独立进程运行。`scripts/watchdog` 读取同一份只读快照，把每次观测记录成一次运行，把发生变化的机械发现报告给飞书，并维护自己的配置、状态和日志；它不需要 DSH，也不依赖运营者的 profile，后续的主机看护与部署监督会放在这个进程里。创建 `watchdog.json`；其中的相对路径按该文件所在目录解析：
+
+```json
+{
+  "url": "http://127.0.0.1:3083",
+  "chatId": "oc_...",
+  "report": true,
+  "intervalSeconds": 900,
+  "staleMinutes": 30,
+  "stateDir": "watchdog-state"
+}
+```
+
+在前台或进程管理器下运行 `node scripts/watchdog --config watchdog.json`，或由计划任务每 15 到 30 分钟运行一次 `--once`。`--status` 打印最近记录的状态；进程在 `stateDir` 下写 `state.json` 与 `watchdog.log`，运行期间持有 `watchdog.pid`。它每轮都记录一次运行，因此 `GET watchdog` 的 `lastRun` 与 `watchdog runs` 能看出它还活着；只有机械发现集合变化时才发报告。它没有模型判断：报告工单信号、异常的服务部件和安装配置问题，执行器满载或服务暂停会解释掉相应的工单信号。服务停止时它只记录失败并继续检查，无法通过飞书机器人发报告（机器人属于服务）；若还需要模型判断，保留上一节的 DSH 巡检。主机检查项、有界恢复与部署监督（路线图工作流 K、L）后续也放进这个进程。
+
 ## 设置
 
 安装配置必须成功，轮询或工作才会开始。概览会列出缺失的要求，并链接到对应的设置。更改设置会再次运行安装配置。如果你在应用之外修复了某些东西，例如 CLI 登录，请选择 **重新检查**。

@@ -261,6 +261,23 @@ On Windows use `node scripts\dsh-superagent ...`. `--stale-minutes` changes only
 
 Changing prompts or other settings from the Watchdog is a later phase; this check never pauses the Executor, edits prompts or changes settings.
 
+### Independent Watchdog process
+
+The task-level check can also run as an independent process instead of a scheduled DSH Session. `scripts/watchdog` reads the same read-only snapshot, records each observation as a run, reports changed mechanical findings to Feishu, and keeps its own configuration, state and log; it needs neither DSH nor the operator's profile, and it is where host and deployment checks will live. Create `watchdog.json`; its relative paths resolve against the file's folder:
+
+```json
+{
+  "url": "http://127.0.0.1:3083",
+  "chatId": "oc_...",
+  "report": true,
+  "intervalSeconds": 900,
+  "staleMinutes": 30,
+  "stateDir": "watchdog-state"
+}
+```
+
+Run `node scripts/watchdog --config watchdog.json` in the foreground or under a process manager, or run `--once` from a scheduled task every 15 to 30 minutes. `--status` prints the last recorded state; the process writes `state.json` and `watchdog.log` under `stateDir` and holds `watchdog.pid` while it runs. It records a run every cycle, so `GET watchdog`'s `lastRun` and `watchdog runs` show that it is alive, and it reports only when the mechanical finding set changes. It has no model judgement: it reports Ticket signals, unhealthy service parts and setup problems, and a full worker load or a paused service explains the signals it leaves out. While the service is down it logs the failure and keeps checking, but it cannot send a Feishu report because the bot belongs to the service. Keep the DSH check above as well if you also want model judgement. Host checks, bounded recovery and deployment supervision (roadmap workflows K and L) belong in this process later.
+
 ## Settings
 
 Setup must succeed before polling or work starts. Overview lists missing requirements and links to their settings. A settings change runs setup again. If you fix something outside the application, such as CLI authentication, choose **Check again**.

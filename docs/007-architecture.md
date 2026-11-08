@@ -356,6 +356,7 @@ Some generic modules still need provider-specific behavior:
 | `src/app/views/tickets.ts` | The Ticket lists by stage, a Ticket's page, the Mandate basis facts and the Executor's load |
 | `src/app/views/watchdog.ts` | The read-only Watchdog view and `watchdogSummary`: every open Ticket's stage, latest Assignment and report, silence and mechanical signals, rendered as the Feishu observation report |
 | `src/app/watchdog.ts` | The Watchdog intervention service and recorded observation runs: mode and action guards, snapshot freshness, safety preconditions, cooldown and hourly limits, the audited retry/stop call, and the rendered run kept as the last-run heartbeat |
+| `scripts/watchdog` | The independent Watchdog process: its own configuration, state, log and pid; it reads the panel snapshot, records a run every cycle, reports changed mechanical findings to Feishu, and is the future home for host and deployment checks |
 | `src/app/views/threads.ts` | The Thread lists, a Thread's timeline, the search and the Decision list |
 | `src/app/views/sources.ts` | The Source status: each Source instance's state, its last day's counts, and what it filtered and dropped in that day |
 | `src/app/views/settings.ts` | The settings page's view: each block with its revision, each Source's settings with its kind's form, and the execution environment |
@@ -454,6 +455,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/watchdog.spec.ts` | The Watchdog view and its Feishu observation summary: stages, latest reports, silence, faults, off-peak and review waits, activity from Inputs, and the rendered report |
 | `tests/watchdog-action.spec.ts` | Watchdog interventions: off/observe/report/enforce, guards, retry and stop, idempotency, cooldown and limits |
+| `tests/watchdog-process.spec.ts` | The independent Watchdog process: configuration validation, mechanical findings and their stable identity, run recording, report dedupe, an unreachable service and the status command |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |

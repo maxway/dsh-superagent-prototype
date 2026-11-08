@@ -27,7 +27,7 @@
 | 4.2 | 多信道交互 | 已实现（飞书/GitHub/GitLab） | `src/sources/*-channel.ts`、`src/app/outbox.ts`；`src/infra/text.ts` 的 `IM_WORDS = 100`；`src/sources/` 下没有邮件或文档来源 |
 | 5.1 | 计算与状态分离 | 未实现 | `src/core/ports.ts` 只提供逻辑端口；`src/app/runtime.ts` 在本机 `stateDir` 上加锁并打开 SQLite；Session 日志仍在 DSH home 下；[006 部署](../006-deployment.md) |
 | 5.2 | 计算与执行环境分离 | 未实现 | `src/executor/dsh.ts` 创建本机 DSH Session；`src/app/execution-environment.ts` 只描述本机环境变量与工作目录根；没有端侧 daemon 或设备注册 |
-| 6 | Watchdog | 部分实现 | `src/app/api.ts` 的 `GET watchdog` 与 `POST watchdog/tickets/:id/:action`；`src/app/watchdog.ts`；`src/app/store.ts` 的 `watchdog_audit` 表；`src/policy.ts` 的 `WatchdogConfigSchema`；`scripts/dsh-superagent`；`tests/watchdog*.spec.ts` |
+| 6 | Watchdog | 部分实现 | `src/app/api.ts` 的 `GET watchdog` 与 `POST watchdog/tickets/:id/:action`；`src/app/watchdog.ts`；`src/app/store.ts` 的 `watchdog_audit` 表；`src/policy.ts` 的 `WatchdogConfigSchema`；`scripts/dsh-superagent`；`scripts/watchdog`；`tests/watchdog*.spec.ts` |
 | 7 | 架构实验 | 未实现 | `tests/` 有功能与并发测试，但没有批处理、直通或双层架构对比的负载脚本与指标 |
 | 8.1–8.4 | 长程记忆、Session 之外的协作、A2A、安全与隐私 | 未解决 | 设计标为开放问题；当前实现没有完整方案：8.2 已有执行中追加消息、停止与重试，8.4 见下文的权限限制；`src/core/memory.ts` 只是测试用的内存仓储，不是长程记忆 |
 
@@ -65,6 +65,7 @@
 - [006 部署](../006-deployment.md) 的“每小时检查”是文档化的外部巡检提示词：在另一个 DSH profile 中定时运行 `status`，进程退出码为 1 时执行 `restart`。它是进程级的，需要人工按文档配置，不判断 worker 是否在无效循环或偏离目标。
 - **已落地的只读任务级巡检（MR !28）**：`GET /orchestrator/api/watchdog` 返回每个进行中工单的阶段、最近派工与报告、静默时长、机械信号（投递失败、未送达输入、排队过久、无进展、等待人工过久）和线程信息；`scripts/dsh-superagent watchdog` 输出 JSON 快照；部署文档给出独立 profile 的定时任务提示词。
 - **观测记录与运行心跳**：`watchdog run [--note "<一句话>"]` 把每次巡检的实时观测（服务状态、设置、有信号的工单和判断）记入 SQLite 并保留 30 天；`watchdog runs` 列出最近的观测结果，`GET watchdog` 的 `lastRun` 给出最近运行时间，因此能区分“安静正常”和“定时巡检没跑”。记录观测不修改工单、不发送消息。
+- **独立 Watchdog 进程（基础）**：`scripts/watchdog` 不依赖 DSH 定时会话，用自己的配置、状态、日志和 pid 运行；每轮读取面板快照、记录一次运行，只在机械发现变化时发飞书。主机检查项、有界恢复与部署监督（路线图 K/L）后续接入这个进程。
 - **已落地的介入（阶段 2，MR !30、!32）**：`watchdog` 设置块（默认 `observe`，只有 `enforce` 执行动作）、专用 `POST /orchestrator/api/watchdog/tickets/<id>/retry|stop`、SQLite 持久化审计、按工单冷却与每小时限流，以及等待人工、人类跟进、未送达输入、谷价等待、暂停或未配置时的拒绝规则；面板提供同样的设置项，快照由该 API 与 CLI 读取。`scripts/dsh-superagent watchdog retry|stop` 只向该 API 请求决定；重试与停止都由服务端重新读取工单后执行，失败不回滚、只记录并报告。实现入口见上表的核查列，行为由 `tests/watchdog.spec.ts` 与 `tests/watchdog-action.spec.ts` 覆盖。
 
 **影响。** 巡检能在设置的边界内发现并重试或停止卡住的工单，每一次决定都有审计和限流；但修改提示词、策略或其他设置仍需人来完成，服务进程存活和重启恢复也仍依赖外部每小时检查。当前单机部署一旦主机休眠或离线，整个系统停止，这正是第 5 节要解决的问题。
@@ -136,4 +137,4 @@
 | 4 | 3.4 投机执行 | 中 | 效果已可由主动规则近似；先明确授权、成本与丢弃语义，再在一个低风险来源试点 |
 | 5 | 飞书上下文 / G 评测 / H 安全 / 邮件文档 / Watchdog 阶段 3 | 小到大 | 按权限、验证需求与场景优先级分别推进；Watchdog 阶段 3 可选 |
 
-Watchdog 阶段 2 已经落地；若目标只是让当前单机部署更稳，先把 [006 部署](../006-deployment.md) 的外部巡检按文档运行起来并积累观察数据，再考虑阶段 3。若目标是让 Super-agent 脱离单台设备，5.1 和 5.2 是绕不开的架构工作。各工作流的依赖、可并行边界和验收标准见 [落地计划](super-agent-design-roadmap.md)。
+Watchdog 阶段 2 已经落地；若目标只是让当前单机部署更稳，先把 [006 部署](../006-deployment.md) 的巡检（DSH 定时 agent 或独立进程）运行起来并积累观察数据，再考虑阶段 3。若目标是让 Super-agent 脱离单台设备，5.1 和 5.2 是绕不开的架构工作。各工作流的依赖、可并行边界和验收标准见 [落地计划](super-agent-design-roadmap.md)。

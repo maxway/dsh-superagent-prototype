@@ -358,6 +358,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/views/tickets.ts` | 按阶段划分的工单列表、工单页面、授权依据事实和执行器负载 |
 | `src/app/views/watchdog.ts` | 只读的 Watchdog 视图与 `watchdogSummary`：每个进行中工单的阶段、最近派工与报告、静默时长和机械信号，并渲染成飞书观察报告 |
 | `src/app/watchdog.ts` | Watchdog 介入服务与观测记录：模式与动作校验、快照新鲜度、安全前置条件、冷却与每小时限流、带审计的 retry/stop 调用，以及作为“最近运行”心跳保存的渲染观测 |
+| `scripts/watchdog` | 独立的 Watchdog 进程：自有配置、状态、日志与 pid；读取面板快照、每轮记录一次运行、把发生变化的机械发现报告到飞书，也是后续主机看护与部署检查的落点 |
 | `src/app/views/threads.ts` | 线程列表、线程时间线、搜索和决定列表 |
 | `src/app/views/sources.ts` | 来源状态：每个来源实例的状态、它最后一天的计数，以及它在那一天过滤和丢弃的内容 |
 | `src/app/views/settings.ts` | 设置页面的视图：每个块及其修订版本、每个来源的设置及其种类的表单，以及执行环境 |
@@ -456,6 +457,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/views.spec.ts` | 管理视图从 Store 推导出的内容，例如被丢弃的消息属于哪个线程 |
 | `tests/watchdog.spec.ts` | Watchdog 视图及其飞书观察汇总：阶段、最近报告、静默时长、故障、谷价与评审等待、来自输入的活跃度，以及渲染出的报告 |
 | `tests/watchdog-action.spec.ts` | Watchdog 介入：off/observe/report/enforce、安全前置、retry 与 stop、幂等、冷却与限流 |
+| `tests/watchdog-process.spec.ts` | 独立 Watchdog 进程：配置校验、机械发现及其稳定标识、运行记录、报告去重、服务不可达与状态命令 |
 | `tests/timeline.spec.ts` | 线程的页面，以及触发按时间再按 id 排序的邻近项，每个已接收触发的时间都采用同一种形式 |
 | `tests/migration.spec.ts` | schema 11 迁移：每条已存储记录都处于当前形状，以及拒绝更旧的 schema |
 | `tests/store.spec.ts` | 仓储及其工作集（SQLite 中与内存中一致）、kv 区域，其中 `KV` 的每个键只在 `src/kv.ts` 和迁移中拼写，以及设置历史与查询 |
