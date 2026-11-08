@@ -49,11 +49,11 @@ Human messages that reach no Ticket, including Threads whose Tickets were stoppe
 | Strength | Cases |
 | --- | --- |
 | explicit | A person on the list addresses the agent, or follows up on a Thread that already has a Ticket; a cell of the admission table set to explicit request |
-| reply | A person or bot addresses the agent in a scope whose admission row grants read-only replies; the Ticket may investigate and answer, never execute |
+| reply | A person or bot addresses the agent in a group scope whose admission row grants read-only replies; the Ticket may investigate and answer, never execute |
 | inferred | A person not on the list follows up on a Thread with a Ticket, unless their cell of the admission table is explicit or reply; a cell of the admission table set to inferred candidate; a message of a bot on the Source's bot list that addresses the agent or arrives where the Source receives every message |
 | not admitted | Any other bot's message, everything the admission table ignores, and every inferred case while the accept mode is `off` |
 
-Execution and replies are separate permissions. Someone on the allowed list may originate execution: code changes, pull requests and the other work a Ticket normally delivers. A scope that grants read-only replies admits anyone who addresses the agent there, including bots and agents not on the bot list, to ask a question only; their Ticket investigates read-only and answers, and may not modify, commit, push or open a change request. A reply grant never authorizes execution, and a listed sender keeps execution even in a reply-only scope.
+Execution and replies are separate permissions. Someone on the allowed list may originate execution: code changes, pull requests and the other work a Ticket normally delivers. A group scope that grants read-only replies admits anyone who addresses the agent there, including bots and agents not on the bot list, to ask a question only; their Ticket investigates read-only and answers, and may not modify, commit, push or open a change request. A reply grant never authorizes execution, and a listed sender keeps execution even in a reply-only scope. Direct messages are not such a scope: they stay limited to senders on the list, and the admission table offers no read-only reply for them.
 
 For an unlisted person, an explicit or reply admission cell takes precedence even on a Thread with Tickets and works in every accept mode. Otherwise their follow-up is inferred and is not admitted in `off` mode. Messages on Threads followed only for context use the admission table instead of follow-up strength.
 
@@ -75,13 +75,13 @@ A row has up to three cells. Each cell decides whether a message becomes an expl
 
 Cells for unaddressed messages are available only where the Source receives every message, such as a Feishu chat set to **全部消息**, a GitHub or GitLab scope with its receive-all switch enabled. A CI result has no sender, so its row offers only the last cell. Bot messages use the bot list instead of these cells.
 
-Setting the unlisted-addressed cell to explicit lets anyone in that scope request work by mentioning the agent. This can be useful for a dedicated support chat. Setting it to reply instead lets anyone there, people and bots alike, ask a read-only question that the agent answers without executing; the maintenance window, execution settings and repository access stay closed to them. Inferred candidates still depend on the accept mode. Follow-ups normally bypass this table, except that an explicit or reply cell still grants its strength.
+Setting the unlisted-addressed cell to explicit lets anyone in that scope request work by mentioning the agent. This can be useful for a dedicated support chat. Setting it to reply instead, in a group chat, lets anyone there, people and bots alike, ask a read-only question that the agent answers without executing; the maintenance window, execution settings and repository access stay closed to them. A direct-message row offers no read-only reply and remains limited to listed senders. Inferred candidates still depend on the accept mode. Follow-ups normally bypass this table, except that an explicit or reply cell still grants its strength.
 
 The admission table is part of the Policy version. Weakening a cell does not immediately stop open Tickets accepted under it. It can revoke their Mandates when they are revalidated before resuming.
 
 ### Bots and automated reviewers
 
-The host recognizes GitHub Apps, logins ending in `[bot]`, GitLab bot users and Feishu bots as bots. A Source can list bots such as `dependabot[bot]` whose messages may become inferred candidates. They must either address the agent or post in a scope that receives every message. They cannot make explicit requests or stop Tickets. In a scope whose admission row grants read-only replies, a bot or agent that addresses the agent may ask a read-only question there, whether or not it is on the bot list; its reply-only Ticket still cannot execute or stop anything.
+The host recognizes GitHub Apps, logins ending in `[bot]`, GitLab bot users and Feishu bots as bots. A Source can list bots such as `dependabot[bot]` whose messages may become inferred candidates. They must either address the agent or post in a scope that receives every message. They cannot make explicit requests or stop Tickets. In a group scope whose admission row grants read-only replies, a bot or agent that addresses the agent may ask a read-only question there, whether or not it is on the bot list; its reply-only Ticket still cannot execute or stop anything. Direct messages never admit such a question.
 
 An automated reviewer using an ordinary account counts as a person to the host. Its comments reach subscribed Tickets and generate follow-up notices. Team prompt text must identify such accounts as automated reviewers.
 

@@ -195,10 +195,20 @@ describe('admission table', () => {
     expect(anyoneMayReply(withTable({ [CHAT]: { unlistedAddressed: 'reply' } }))).toBe(true)
     expect(anyoneMayReply(base)).toBe(false)
   })
+  it('never admits a direct message as a read-only reply, even when the direct row says reply', () => {
+    const settings = setup(withTable({ direct: { unlistedAddressed: 'reply' } }))
+    const direct = (actor: string) => feishu({ actor: { source: 'feishu', id: actor }, addressed: 'direct',
+      meta: { chatId: 'p2p', direct: true, mentioned: false } })
+    expect(settings.policy.gate(direct(STRANGER), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
+    // A listed sender's direct message stays an explicit execution request.
+    expect(settings.policy.gate(direct(MEMBER), thread(), [])).toMatchObject({ admissible: true, strength: 'explicit',
+      basis: { via: 'addressed', addressed: 'direct' } })
+  })
   it('keeps a reply Mandate while the cell still admits replies, and never turns it into execution', () => {
     const open = withTable({ [CHAT]: { unlistedAddressed: 'reply' } })
     const gate = setup(open).policy.gate(inChat(CHAT, STRANGER), thread(), [])
     if (!gate.admissible) throw new Error('expected admission')
+    if (gate.basis.via !== 'admission') throw new Error('expected admission basis')
     const mandate = { strength: gate.strength, policyVersion: 'v', basis: gate.basis, actor: { source: 'feishu', id: STRANGER }, scope: '' }
     expect(mandate.strength).toBe('reply')
     expect(setup(open).policy.revalidate(mandate)).toBe(true)
@@ -206,6 +216,8 @@ describe('admission table', () => {
     expect(setup(withTable({ [CHAT]: { unlistedAddressed: 'explicit' } })).policy.revalidate(mandate)).toBe(true)
     expect(setup(withTable({ [CHAT]: { unlistedAddressed: 'inferred' } })).policy.revalidate(mandate)).toBe(false)
     expect(setup(withTable({})).policy.revalidate(mandate)).toBe(false)
+    // A direct-message reply basis never holds, whatever the chat row says.
+    expect(setup(open).policy.revalidate({ ...mandate, basis: { ...gate.basis, addressed: 'direct' } })).toBe(false)
   })
   })
 describe('revalidating a Mandate from the admission table', () => {

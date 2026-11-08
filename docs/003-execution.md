@@ -30,7 +30,7 @@ The main Session uses `dsh-superagent-router`, with the same 5-second shell and 
 
 ### Reply-only tickets
 
-A Ticket accepted from a read-only reply question has the `reply` Mandate strength. Its Executor may investigate with read-only means and answer, but must not modify, create or delete files, commit, push, open, merge or close a change request, or change settings or accounts. It answers with `orchestrator_report`, naming the question in `reply_to_trigger_id` and putting the answer in the summary; the main Session sends that answer in the conversation where the question was written. A `ready` report ends the Ticket as completed, and it delivers no pull request.
+A Ticket accepted from a read-only reply question has the `reply` Mandate strength. Only a group scope can admit one; a direct message never becomes a reply-only Ticket. Its Executor may investigate with read-only means and answer, but must not modify, create or delete files, commit, push, open, merge or close a change request, or change settings or accounts. It answers with `orchestrator_report`, naming the question in `reply_to_trigger_id` and putting the answer in the summary; the main Session sends that answer in the conversation where the question was written. A `ready` report ends the Ticket as completed, and it delivers no pull request.
 
 The read-only rule is instruction- and Mandate-level, like the other limits a worker reads, not an OS sandbox: a worker still runs as the operator's user. The host does not let a reply-only Ticket execute through any other path: it has no rule-based authority, no acceptance as execution and no way to stop a Ticket.
 

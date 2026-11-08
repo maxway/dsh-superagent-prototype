@@ -13,12 +13,14 @@ production state, credentials, bot CLI or chat content is used. The baseline lin
   **能发起工作的飞书用户**, and an unlisted sender's message in a chat can only be an explicit request,
   an inferred candidate or ignored.
 - `after-policy-feishu-admission.png` — this change. The allowed list is labelled
-  **能发起执行（修改、提交 PR 等）的飞书用户**. The same chat's unlisted-addressed cell now offers
+  **能发起执行（修改、提交 PR 等）的飞书用户**. The same group chat's unlisted-addressed cell now offers
   **只读答疑** and is set to it and saved: anyone there, a person, bot or agent, may ask a read-only
   question that is answered after read-only investigation without executing. The footnote explains the
-  two permissions.
+  two permissions and that direct messages stay limited to listed senders; the direct row shows
+  **忽略** and its cell offers no read-only reply.
 
-The only intended difference is this change. The before build shows the same page and interaction
-except that selecting a read-only reply is impossible; the after capture selects it in that cell and
-saves. The test instance showed the save toast and a save bar while saving; the capture waits for them
-to clear. No private Feishu content or credentials appear in the images.
+The only intended difference is this change. The before build shows the same page except that a
+read-only reply is not offered; the after capture shows that group cell saved as **只读答疑**, with the
+direct row still **忽略** and without a read-only reply choice. The test instances were seeded with the
+same state; any save toast or save bar was cleared before the capture. No private Feishu content or
+credentials appear in the images.

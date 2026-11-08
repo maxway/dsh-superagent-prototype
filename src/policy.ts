@@ -200,8 +200,10 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
     const row = scope.listened ? scope.row : undefined
     const recorded = { source: trigger.source, scope: trigger.meta, ...row === undefined ? {} : { row } }
     const addressed = trigger.addressed ? { addressed: trigger.addressed } : {}
-    // A bot or agent that addresses the agent in a scope admitting read-only questions asks one, whether or not it is listed.
-    if (trigger.addressed && scope.listened && admissionOf(settings, trigger.source, row, 'unlistedAddressed') === 'reply') {
+    // A bot or agent that addresses the agent in a group scope admitting read-only questions asks one, whether or not it is
+    // listed. Direct messages stay limited to listed senders, so a direct reply cell never admits one.
+    if (trigger.addressed && trigger.addressed !== 'direct' && scope.listened
+      && admissionOf(settings, trigger.source, row, 'unlistedAddressed') === 'reply') {
       return { admissible: true, strength: 'reply', basis: { ...recorded, via: 'admission', cell: 'unlistedAddressed', ...addressed } }
     }
     const bot = trigger.actor.id ? listedBot(settings, trigger.actor) : undefined
@@ -234,8 +236,9 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       const basis = { ...recorded, via: 'admission' as const, cell, ...trigger.addressed ? { addressed: trigger.addressed } : {} }
       // Check explicit and reply admission cells before thread follow-ups so a thread's tickets never weaken a direct request to a follow-up.
       if (admission === 'explicit') return { admissible: true, strength: 'explicit', basis }
-      // A reply cell admits an unlisted sender's addressed message as a read-only question: it answers, but never executes.
-      if (admission === 'reply') return { admissible: true, strength: 'reply', basis }
+      // A reply cell admits an unlisted sender's addressed message in a group as a read-only question: it answers, but never
+      // executes. Direct messages stay limited to listed senders.
+      if (admission === 'reply' && trigger.addressed !== 'direct') return { admissible: true, strength: 'reply', basis }
       // Direct-message threads belong to one sender (no follow-up for others), and inferred follow-ups require an accept mode other than off (when off, the table decides).
       if (!(trigger.addressed === 'direct' && !allowed) && (allowed || mode !== 'off') && participating(thread, tickets)) {
         return { admissible: true, strength: allowed ? 'explicit' : 'inferred', basis: { ...recorded, via: 'followup' } }
@@ -247,6 +250,8 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
     revalidate(mandate: Mandate) {
       // Revalidation rules follow docs/002 (Eval path; Resume revalidates).
       const { basis } = mandate
+      // Read-only replies are a group-scope grant; a direct-message reply Mandate never holds.
+      if (mandate.strength === 'reply' && basis.via !== 'followup' && (basis.addressed === 'direct' || basis.row === 'direct')) return false
       const { source } = basis
       const current = source && basis.scope ? listened(sources, source, basis.scope) : undefined
       if (current && !current.listened) return false
