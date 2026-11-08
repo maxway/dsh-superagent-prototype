@@ -305,7 +305,11 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET state': { answer: stateView },
   'GET watchdog': { query: ['stale_minutes'], answer: ({ query }) =>
     ({ at: '2026-11-07T00:00:00.000Z', staleMinutes: Number(query.stale_minutes ?? 30), open: 0, tickets: [], state: stateView(),
-      watchdog: server.settings.watchdog, audit: [] }) },
+      watchdog: server.settings.watchdog, audit: [], lastRun: null }) },
+  'POST watchdog/runs': { body: true, answer: ({ body }) =>
+    ({ id: 'watchdog-run-1', idempotency: body.idempotencyKey, at: '2026-11-07T00:00:00.000Z', mode: server.settings.watchdog.mode,
+      paused: false, open: 0, flagged: 0, ...(body.note ? { note: body.note } : {}), text: '**Watchdog 观察汇总**' }) },
+  'GET watchdog/runs': { query: ['limit', 'before'], answer: () => ({ runs: [] }) },
   'POST watchdog/tickets/:id/:action': { body: true, answer: ({ params, body }) => {
     if (!ticketOf(params.id)) return refuse(404, 'Ticket not found')
     return { id: 'watchdog-audit-1', idempotency: body.idempotencyKey, at: '2026-11-07T00:00:00.000Z', snapshotAt: body.snapshotAt,

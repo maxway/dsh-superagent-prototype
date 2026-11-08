@@ -258,6 +258,8 @@ it('exposes the platform-specific process, start and argument forms', async () =
     command: m.tmuxCommand('/opt/dsh', 'superagent', '/tmp/log file.log', { DSH_HOME: '/tmp/home', PATH: '/usr/bin', HOME: undefined, TMUX: '/tmp/x,1,0' }),
     argv: m.parseArgv(['--respect-stop', 'start', '--profile', 'one', '--timeout', '5']),
     watchdog: m.parseArgv(['watchdog', '--stale-minutes', '7', '--url', 'http://127.0.0.1:1']),
+    record: m.parseArgv(['watchdog', 'run', '--note', 'No signals']),
+    runs: m.parseArgv(['watchdog', 'runs', '--limit', '5']),
     report: m.parseArgv(['watchdog', 'report', '--chat', 'oc_team', '--note', 'Stalled']),
     serves: [
       m.serves(['node', '/x/scripts/dsh-superagent', '--profile', 'one', 'start'], 'one'),
@@ -269,7 +271,7 @@ it('exposes the platform-specific process, start and argument forms', async () =
   })))`
   const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
     (error, stdout) => error ? reject(error) : resolve(stdout)))
-  const value = JSON.parse(out) as { ps: unknown[]; windows: unknown[]; start: unknown; socket: string; command: string; argv: Record<string, unknown>; watchdog: Record<string, unknown>; report: Record<string, unknown>; serves: boolean[] }
+  const value = JSON.parse(out) as { ps: unknown[]; windows: unknown[]; start: unknown; socket: string; command: string; argv: Record<string, unknown>; watchdog: Record<string, unknown>; record: Record<string, unknown>; runs: Record<string, unknown>; report: Record<string, unknown>; serves: boolean[] }
   expect(value.ps).toEqual([{ pid: 123, name: 'node', args: ['node', '/opt/my', 'tools/dsh', '--profile', 'superagent', '--no-open'] }])
   expect(value.windows).toEqual([{ pid: 7, name: 'node', args: ['node', '/opt/dsh', '--profile', 'superagent', '--no-open'] },
     { pid: 9, name: 'deepseek harness', args: ['D:\\app\\DeepSeek', 'Harness.exe', '--expose-internals', 'D:\\app\\cli.js', '--profile', 'superagent', '--no-open'] }])
@@ -278,6 +280,8 @@ it('exposes the platform-specific process, start and argument forms', async () =
   expect(value.command).toBe("umask 077; export DSH_HOME=/tmp/home; unset HOME; export PATH=/usr/bin; unset TMUX TMUX_PANE; exec /opt/dsh --profile superagent --no-open >> '/tmp/log file.log' 2>&1")
   expect(value.argv).toMatchObject({ action: 'start', profile: 'one', timeout: 5, respect_stop: true })
   expect(value.watchdog).toMatchObject({ action: 'watchdog', stale_minutes: 7, url: 'http://127.0.0.1:1' })
+  expect(value.record).toMatchObject({ action: 'watchdog', watchdog_action: 'run', note: 'No signals' })
+  expect(value.runs).toMatchObject({ action: 'watchdog', watchdog_action: 'runs', limit: 5 })
   expect(value.report).toMatchObject({ action: 'watchdog', watchdog_action: 'report', chat: 'oc_team', note: 'Stalled' })
   // A control invocation of this script carries --profile too, but only the DSH launcher is the service.
   expect(value.serves).toEqual([false, false, false, true, false])
@@ -411,7 +415,7 @@ it('refuses an action for a Ticket that is not open, and a missing ticket or rea
   expect(await run('watchdog', 'stop', 't1', '--url', url)).toMatchObject({ code: 1,
     stderr: expect.stringContaining('needs --reason') })
   expect(await run('watchdog', 'restart', 't1', '--url', url)).toMatchObject({ code: 1,
-    stderr: expect.stringContaining('watchdog action must be retry, stop or report') })
+    stderr: expect.stringContaining('watchdog action must be retry, stop, report, run or runs') })
   expect(calls.some(call => call.method === 'POST')).toBe(false)
 })
 it('reports a management API refusal from the action route', async () => {
@@ -458,6 +462,47 @@ it('asks the server to send the Watchdog observation summary to a Feishu chat', 
   expect(await run('watchdog', 'report', 't1', '--chat', 'oc_team', '--url', url)).toMatchObject({ code: 1,
     stderr: expect.stringContaining('takes no ticket id') })
   expect(calls).toHaveLength(1)
+})
+
+it('records an observation run and prints recent runs', async () => {
+  const calls: { method?: string; url?: string; body?: string; header?: string }[] = []
+  server = createServer((request, response) => {
+    let body = ''
+    request.on('data', chunk => { body += chunk })
+    request.on('end', () => {
+      calls.push({ method: request.method, url: request.url, body, header: String(request.headers['x-orchestrator-request']) })
+      if (request.method === 'POST') {
+        const value = JSON.parse(body) as { note: string; idempotencyKey: string }
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ id: 'watchdog-run-1',
+          idempotency: value.idempotencyKey, at: '2026-11-07T00:00:00.000Z', mode: 'report', paused: false, open: 1, flagged: 1,
+          note: value.note, text: '**Watchdog 观察汇总**' }))
+        return
+      }
+      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ runs: [{ id: 'watchdog-run-1' }] }))
+    })
+  })
+  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
+  const recorded = await run('watchdog', 'run', '--note', 'One stuck Ticket', '--url', url)
+  expect(recorded.code).toBe(0)
+  expect(JSON.parse(recorded.stdout)).toMatchObject({ mode: 'report', open: 1, flagged: 1, note: 'One stuck Ticket' })
+  const posts = calls.filter(call => call.method === 'POST')
+  expect(posts).toHaveLength(1)
+  expect(posts[0]).toMatchObject({ method: 'POST', url: '/orchestrator/api/watchdog/runs', header: '1' })
+  const body = JSON.parse(posts[0]!.body!) as { note: string; idempotencyKey: string }
+  expect(body).toMatchObject({ note: 'One stuck Ticket' })
+  expect(body.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
+  const listed = await run('watchdog', 'runs', '--limit', '5', '--url', url)
+  expect(listed.code).toBe(0)
+  expect(JSON.parse(listed.stdout)).toMatchObject({ runs: [{ id: 'watchdog-run-1' }] })
+  expect(calls.at(-1)).toMatchObject({ method: 'GET', url: '/orchestrator/api/watchdog/runs?limit=5', header: '1' })
+  // A run takes no ticket id and both commands reject invalid input before any request.
+  expect(await run('watchdog', 'run', 't1', '--url', url)).toMatchObject({ code: 1,
+    stderr: expect.stringContaining('takes no ticket id') })
+  expect(await run('watchdog', 'run', '--note', 'x'.repeat(501), '--url', url)).toMatchObject({ code: 1,
+    stderr: expect.stringContaining('--note must be at most 500 characters') })
+  expect(await run('watchdog', 'runs', '--limit', '0', '--url', url)).toMatchObject({ code: 1,
+    stderr: expect.stringContaining('--limit must be an integer between 1 and 100') })
 })
 
 it('reports a management API refusal from the report route', async () => {

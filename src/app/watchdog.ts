@@ -1,9 +1,9 @@
 /** Watchdog interventions: guards, limits and audit around the existing retry and stop ticket operations. */
 import { canRetry, key, latestReport, ticketStage, UserError, type EngineForPeople } from '../core/index.ts'
 import type { WatchdogAction, WatchdogConfig } from '../policy.ts'
-import type { Store, WatchdogAudit } from './store.ts'
+import type { Store, WatchdogAudit, WatchdogRun } from './store.ts'
 import type { ViewHost } from './views/records.ts'
-import { watchdogView } from './views/watchdog.ts'
+import { watchdogSummary, watchdogView } from './views/watchdog.ts'
 
 /** The snapshot a Watchdog decision is based on may not be older than this when the API re-reads the Ticket. */
 const SNAPSHOT_MAX_MS = 10 * 60_000
@@ -130,4 +130,46 @@ export function watchdogAction(host: WatchdogHost, request: WatchdogRequest): Wa
   }
   host.store.watchdog.save(reserved.entry)
   return reserved.entry
+}
+/** How long recorded observation runs are kept; older rows are pruned whenever a new run is recorded. */
+export const WATCHDOG_RUN_RETENTION_DAYS = 30
+/** Service facts the observation record carries besides the Ticket snapshot. */
+export interface WatchdogRunState {
+  paused: boolean
+  load: { running: number; maxWorkers: number }
+  health: Record<string, { state: string; detail?: string }>
+}
+/** One recorded observation: the live snapshot, the rendered observation and an optional one-sentence judgement. */
+export interface WatchdogRunRequest {
+  note?: string
+  idempotencyKey: string
+}
+/**
+ * Record one Watchdog observation run. The server renders the observation from the live snapshot, so a stored run means
+ * the check ran and what it saw even when nothing was flagged; a repeated idempotency key returns the first record.
+ */
+export function watchdogRun(host: WatchdogHost, state: WatchdogRunState, request: WatchdogRunRequest): WatchdogRun {
+  return host.store.atomic(() => {
+    const existing = host.store.watchdogRuns.byIdempotency(request.idempotencyKey)
+    if (existing) return existing
+    const settings = host.store.settings()
+    const at = new Date().toISOString()
+    const view = watchdogView(host.view, at, settings.watchdog.staleMinutes)
+    const note = request.note?.trim() || undefined
+    const run: WatchdogRun = {
+      id: key('watchdog-run', request.idempotencyKey),
+      idempotency: request.idempotencyKey,
+      at,
+      mode: settings.watchdog.mode,
+      paused: state.paused,
+      open: view.open,
+      flagged: view.tickets.filter(ticket => ticket.signals.length).length,
+      ...(note ? { note } : {}),
+      text: watchdogSummary({ view, paused: state.paused, load: state.load, health: state.health, config: settings.watchdog,
+        audit: host.store.watchdog.recent(20), ...(note ? { note } : {}) }),
+    }
+    host.store.watchdogRuns.save(run)
+    host.store.watchdogRuns.prune(new Date(Date.parse(at) - WATCHDOG_RUN_RETENTION_DAYS * 86_400_000).toISOString())
+    return run
+  })
 }
