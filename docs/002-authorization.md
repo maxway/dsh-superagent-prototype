@@ -10,10 +10,11 @@ The host enforces allowed lists, rules and Mandates. Messages, comments and quot
 
 The Source records whether a message addresses the agent: `mention` for a mention of the bot or agent account, and `direct` for a direct message. The gate checks the sender and the Source's Policy:
 
-- An allowed person who addresses the agent makes an explicit request.
+- An allowed person who addresses the agent makes an explicit request to execute work.
+- A person or bot that addresses the agent in a scope whose admission row grants read-only replies makes a reply-only question, which may investigate and answer but never execute.
 - A person's follow-up on a Thread with Tickets follows the rules below.
 - Other human messages use the admission table for their receiving scope.
-- A bot on the Source's bot list can produce an inferred candidate, never an explicit request. Other bots are not admitted.
+- A bot on the Source's bot list can produce an inferred candidate, never an explicit request. Other bots are not admitted, unless the scope grants read-only replies.
 
 ### Subscriptions: continuing existing work
 
@@ -48,10 +49,13 @@ Human messages that reach no Ticket, including Threads whose Tickets were stoppe
 | Strength | Cases |
 | --- | --- |
 | explicit | A person on the list addresses the agent, or follows up on a Thread that already has a Ticket; a cell of the admission table set to explicit request |
-| inferred | A person not on the list follows up on a Thread with a Ticket, unless their cell of the admission table is explicit; a cell of the admission table set to inferred candidate; a message of a bot on the Source's bot list that addresses the agent or arrives where the Source receives every message |
+| reply | A person or bot addresses the agent in a group scope whose admission row grants read-only replies; the Ticket may investigate and answer, never execute |
+| inferred | A person not on the list follows up on a Thread with a Ticket, unless their cell of the admission table is explicit or reply; a cell of the admission table set to inferred candidate; a message of a bot on the Source's bot list that addresses the agent or arrives where the Source receives every message |
 | not admitted | Any other bot's message, everything the admission table ignores, and every inferred case while the accept mode is `off` |
 
-For an unlisted person, an explicit admission cell takes precedence even on a Thread with Tickets and works in every accept mode. Otherwise their follow-up is inferred and is not admitted in `off` mode. Messages on Threads followed only for context use the admission table instead of follow-up strength.
+Execution and replies are separate permissions. Someone on the allowed list may originate execution: code changes, pull requests and the other work a Ticket normally delivers. A group scope that grants read-only replies admits anyone who addresses the agent there, including bots and agents not on the bot list, to ask a question only; their Ticket investigates read-only and answers, and may not modify, commit, push or open a change request. A reply grant never authorizes execution, and a listed sender keeps execution even in a reply-only scope. Direct messages are not such a scope: they stay limited to senders on the list, the admission table offers only Ignore for unlisted direct senders, and an unlisted direct message is not admitted.
+
+For an unlisted person, an explicit or reply admission cell takes precedence even on a Thread with Tickets and works in every accept mode. Otherwise their follow-up is inferred and is not admitted in `off` mode. Messages on Threads followed only for context use the admission table instead of follow-up strength.
 
 ## Admission
 
@@ -61,29 +65,29 @@ Each Source's Policy has an admission table. Its rows are receiving scopes:
 - **GitHub:** new Issues, new pull requests, comments and the default branch's CI.
 - **GitLab:** new Issues, merge requests, notes and CI.
 
-A row has up to three cells. Each cell decides whether a message becomes an explicit request, an inferred candidate or nothing:
+A row has up to three cells. Each cell decides whether a message becomes an explicit request, a read-only reply question, an inferred candidate or nothing:
 
 | Cell | Choices | Default |
 | --- | --- | --- |
 | On the list, not addressing the agent | inferred, ignore | inferred |
-| Not on the list, addressing the agent | explicit, inferred, ignore | ignore |
+| Not on the list, addressing the agent | explicit, reply, inferred, ignore | ignore |
 | Not on the list, not addressing the agent | inferred, ignore | ignore |
 
 Cells for unaddressed messages are available only where the Source receives every message, such as a Feishu chat set to **全部消息**, a GitHub or GitLab scope with its receive-all switch enabled. A CI result has no sender, so its row offers only the last cell. Bot messages use the bot list instead of these cells.
 
-Setting the unlisted-addressed cell to explicit lets anyone in that scope request work by mentioning the agent. This can be useful for a dedicated support chat. Inferred candidates still depend on the accept mode. Follow-ups normally bypass this table, except that an explicit cell still grants explicit strength.
+Setting the unlisted-addressed cell to explicit lets anyone in that scope request work by mentioning the agent. This can be useful for a dedicated support chat. Setting it to reply instead, in a group chat, lets anyone there, people and bots alike, ask a read-only question that the agent answers without executing; the maintenance window, execution settings and repository access stay closed to them. A direct-message row offers only Ignore for unlisted senders and remains limited to listed senders. Inferred candidates still depend on the accept mode. Follow-ups normally bypass this table, except that an explicit or reply cell still grants its strength.
 
 The admission table is part of the Policy version. Weakening a cell does not immediately stop open Tickets accepted under it. It can revoke their Mandates when they are revalidated before resuming.
 
 ### Bots and automated reviewers
 
-The host recognizes GitHub Apps, logins ending in `[bot]`, GitLab bot users and Feishu bots as bots. A Source can list bots such as `dependabot[bot]` whose messages may become inferred candidates. They must either address the agent or post in a scope that receives every message. They cannot make explicit requests or stop Tickets.
+The host recognizes GitHub Apps, logins ending in `[bot]`, GitLab bot users and Feishu bots as bots. A Source can list bots such as `dependabot[bot]` whose messages may become inferred candidates. They must either address the agent or post in a scope that receives every message. They cannot make explicit requests or stop Tickets. In a group scope whose admission row grants read-only replies, a bot or agent that addresses the agent may ask a read-only question there, whether or not it is on the bot list; its reply-only Ticket still cannot execute or stop anything. Direct messages never admit such a question.
 
 An automated reviewer using an ordinary account counts as a person to the host. Its comments reach subscribed Tickets and generate follow-up notices. Team prompt text must identify such accounts as automated reviewers.
 
 ## Routing candidates
 
-The main Session routes explicit candidates with `orchestrator_route`. One call can contain several accept, attach, stop or ignore decisions. Each item is processed independently: a refused item or a missing field does not prevent the others from running.
+The main Session routes explicit candidates and reply questions with `orchestrator_route`. One call can contain several accept, attach, stop or ignore decisions. Each item is processed independently: a refused item or a missing field does not prevent the others from running. A reply question is never assessed; accepting one creates a reply-only Ticket.
 
 An inferred candidate normally needs a full assessment. There is one shortcut: if its card clearly touches no enabled rule, such as plain chat or unrelated discussion, the main Session may ignore it directly. The Decision records `ignoredFromCard` to distinguish this from a rule assessment. The main Session reads the enabled rules in its Policy prompt section.
 
@@ -135,7 +139,9 @@ The Source must still listen to the original Thread. The remaining checks depend
 
 - An explicit follow-up Mandate passes.
 - An inferred Mandate needs `auto` mode and its matched rules still enabled.
-- A Mandate admitted by a table cell must still receive at least its original strength under today's table and sender membership. Removing a sender from the list can therefore revoke a Mandate accepted through the listed-sender cell.
+- A Mandate admitted by a table cell must still receive at least its original strength under today's table and sender membership. Removing a sender from the list can therefore revoke a Mandate accepted through the listed-sender cell, and changing a reply cell to ignore or inferred revokes the reply-only Tickets accepted under it.
+- A reply-only Mandate may continue to answer, but never gains execution.
+- Other Mandates require the sender to remain on the Source's allowed list.
 - A bot's Mandate requires that bot to remain on the Source's bot list. Inferred table and bot Mandates also need `auto` mode and enabled matched rules.
 - Other Mandates require the sender to remain on the Source's allowed list.
 

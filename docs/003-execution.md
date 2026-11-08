@@ -28,6 +28,12 @@ Executor Sessions run commands without approval as the operator's OS user. Their
 
 The main Session uses `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for routing. Sessions retain the preset selected at creation. Worker subagents use DeepSeek Harness's `standard` preset.
 
+### Reply-only tickets
+
+A Ticket accepted from a read-only reply question has the `reply` Mandate strength. Only a group scope can admit one; an unlisted direct message is not admitted and never becomes a reply-only Ticket. Its Executor may investigate with read-only means and answer, but must not modify, create or delete files, commit, push, open, merge or close a change request, or change settings or accounts. It answers with `orchestrator_report`, naming the question in `reply_to_trigger_id` and putting the answer in the summary; the main Session sends that answer in the conversation where the question was written. A `ready` report ends the Ticket as completed, and it delivers no pull request.
+
+The read-only rule is instruction- and Mandate-level, like the other limits a worker reads, not an OS sandbox: a worker still runs as the operator's user. The host does not let a reply-only Ticket execute through any other path: it has no rule-based authority, no acceptance as execution and no way to stop a Ticket.
+
 ### Background work and worker slots
 
 When a turn ends with shell jobs or subagents still running, the Ticket keeps its worker slot and stays working. It is not reported as waiting, and the main Session receives no waiting report. A completed job or subagent wakes the Executor with its result in the same slot. Once a turn ends with no background work, the Executor reports waiting normally.

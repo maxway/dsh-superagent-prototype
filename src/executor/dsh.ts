@@ -97,10 +97,16 @@ export const sourceTrigger = (host: { store: Pick<Store, 'triggers'> }, ticket: 
   host.store.triggers.get(ticket.origin.triggerId)
 
 /**
- * Returns additional system-prompt mandate instructions for a worker beyond the request: for work accepted proactively under
- * rules (`strength === 'inferred'`), restricts authorization to small internal changes within the rule scope; returns `''` for explicit requests.
+ * Returns additional system-prompt mandate instructions for a worker beyond the request: a reply-only ticket may investigate but
+ * not change anything, while work accepted proactively under rules (`strength === 'inferred'`) is limited to small internal changes
+ * within the rule scope; an explicit request has no extra mandate instructions.
  */
 export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string {
+  if (mandate.strength === 'reply') return 'This is a read-only reply ticket: investigate the question with read-only means and answer it. '
+    + 'Do not modify, create or delete files, commit, push, open, merge or close a change request, or change settings or accounts, and keep any subagents read-only. '
+    + 'Answer with orchestrator_report: set reply_to_trigger_id to the question\'s trigger_id and put the concise answer in summary. '
+    + 'Report ready when the answer is complete; report dropped when the question needs no investigation or cannot be answered read-only, '
+    + 'and hand back or state plainly anything that would need an execution request from a sender allowed to make one.'
   return mandate.strength === 'inferred' ? 'This ticket has limited proactive authorization. Independently verify that it is a small change '
     + 'internal to one module within the accepted rule scope. If it requires public-interface or behavior changes, new interaction, product '
     + 'decisions or clarification, stop and report dropped; do not expand scope.' : ''

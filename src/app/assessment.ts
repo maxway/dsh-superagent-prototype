@@ -38,6 +38,7 @@ export const AssessmentSchema = z.object({
 const TRIGGER_CHARS = 4000, NEAR_CHARS = 1200, WINDOW_CHARS = 400, STUB_CHARS = 50
 const FINISHED = 'This assessment has finished: it was decided, timed out or restarted'
 const EXPLICIT = 'This is an explicit request, which is routed instead of assessed: use orchestrator_route with its trigger_id and kind accept, attach, stop or ignore'
+const REPLY = 'This is a read-only reply question, which is routed instead of assessed: use orchestrator_route with its trigger_id and kind accept to create its reply-only ticket, or ignore it'
 type AssessmentContext = Awaited<ReturnType<typeof admissionContext>>
 type ReadCache = {
   snapshots: Map<string, string>; images: Map<string, { id: string; text: string }>; messages: Map<string, string>; cursors: Set<string>
@@ -112,6 +113,7 @@ export class MasterAssessor implements Assessor {
     const candidate = this.host.engine.candidate(triggerId)
     if (!candidate) throw new Error('No assessment is in progress for this trigger; it was already decided, timed out, or never reached assessment')
     if (candidate.strength === 'explicit') throw new Error(EXPLICIT)
+    if (candidate.strength === 'reply') throw new Error(REPLY)
     const trigger = candidate.triggers.find(item => item.id === triggerId)!
     return { candidate, trigger }
   }

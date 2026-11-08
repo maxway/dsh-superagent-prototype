@@ -304,6 +304,29 @@ it('assesses a proactive observation in the orchestrator Session and creates the
   expect(await runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `ticket/${ticket.id}/assignment` })).toMatchObject({ text: expect.stringContaining('Proactively accepted under copy') })
 })
 
+it('admits a read-only question from a bot, makes a reply-only ticket, and answers it without execution', async () => {
+  const settings = runtime.store.settings()
+  await runtime.settings.save('policy', { ...settings.policy, sources: { ...settings.policy.sources,
+    feishu: { ...settings.policy.sources.feishu!, admission: { [CHAT]: { unlistedAddressed: 'reply' } } } } },
+  runtime.store.blockRevision('policy'), 'panel')
+  const question = feishu('30', '@bot 这个项目怎么跑测试？', { sender_id: 'ou_agent', sender_type: 'bot' })
+  await receive(question)
+  const card = relays(runtime.masterId).at(-1)!
+  expect(card).toMatchObject({ kind: 'candidate', strength: 'reply', next_action: expect.stringContaining('read-only') })
+  const result = await route({ kind: 'accept', trigger_id: question.id, title: '回答测试命令', worktree_name: 'answer-tests',
+    acknowledgement: '我查一下。' })
+  const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+  expect(ticket.mandate).toMatchObject({ strength: 'reply', actor: { source: 'feishu', id: 'ou_agent' } })
+  await runtime.idle()
+  expect(sections.get(`worker-${ticket.id}`)!.text({})).toContain(mandateInstructions({ strength: 'reply' }))
+  await runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'ready', summary: '用 pnpm test。', reply_to_trigger_id: question.id })
+  expect(runtime.store.tickets.get(ticket.id)).toMatchObject({ ended: expect.objectContaining({ outcome: 'completed' }) })
+  // The main Session may now answer the bot's question; a reply-only ticket never yields a result for delivery.
+  expect(await runTool(runtime.masterId, 'orchestrator_reply', { purpose: 'answer', trigger_id: question.id, text: '用 pnpm test。' }))
+    .toEqual({ status: 'sent' })
+  expect(runtime.store.replyStatus(key('ack', question.id))).toBeUndefined()
+})
+
 it('accepts silently under a rule that says so, gives the worker the rule procedure, and closes it as dropped when nothing is left for a human', async () => {
   const policy = runtime.store.settings().policy
   await runtime.settings.save('policy', { ...policy, rules: [...policy.rules, { id: 'silent-bugfix', name: '沉默地复现和修复', enabled: true, instruction: 'Reproduce minimally first; accept silently.' }] }, runtime.store.blockRevision('policy'), 'panel')

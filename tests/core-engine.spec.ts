@@ -183,6 +183,49 @@ describe('eval', () => {
     expect(h.repo.threads.get('chat:t1')).not.toHaveProperty('expired')
   })
 })
+describe('reply-only tickets', () => {
+  /** Alice may execute; a guest may only ask a read-only question; other senders are refused. */
+  const replyGate = (t: Trigger) => t.actor.id === 'alice' ? { admissible: true as const, strength: 'explicit' as const, basis: { via: 'listed' as const } }
+    : t.actor.id === 'guest' ? { admissible: true as const, strength: 'reply' as const,
+      basis: { via: 'admission' as const, cell: 'unlistedAddressed' as const, addressed: 'mention' as const } }
+      : { admissible: false as const, reason: 'not a member' }
+  it('accepts a reply question as a reply-only ticket that cannot stop work', () => {
+    const h = harness({ gate: replyGate })
+    h.engine.receive(trigger('1', { actor: guest })); h.pump()
+    const candidate = h.requests.at(-1)!
+    expect(candidate.strength).toBe('reply')
+    const decision = h.decide(candidate, { kind: 'accept', title: 'Answer how it works', scope: 'Answer how it works', reason: 'asked',
+      acknowledgement: 'ok' })
+    const ticket = h.repo.tickets.get(decision.ticketId!)!
+    expect(ticket.mandate).toMatchObject({ strength: 'reply', actor: guest })
+    h.settle()
+    // A guest's message cannot stop that ticket, even though it could ask another question.
+    h.engine.receive(trigger('2', { actor: guest, threads: [{ source: 'chat', id: 't2' }] })); h.pump()
+    const stop = h.decide(h.requests.at(-1)!, { kind: 'stop', ticketId: ticket.id, reason: 'stop' })
+    expect(stop).toMatchObject({ kind: 'ignore' })
+    expect(stop.reason).toContainEqual({ code: 'stopNotExplicit' })
+    expect(h.repo.tickets.get(ticket.id)?.ended).toBeUndefined()
+  })
+  it('lets a reply-only ticket answer a bot question and send the answer there', () => {
+    const h = harness({ gate: replyGate })
+    const bot = { ...trigger('1', { actor: { source: 'chat', id: 'guest' } }), human: false }
+    h.engine.receive(bot); h.pump()
+    const candidate = h.requests.at(-1)!
+    expect(candidate.strength).toBe('reply')
+    const decision = h.decide(candidate, { kind: 'accept', title: 'Answer', scope: 'Answer', reason: 'asked', acknowledgement: 'ok' })
+    h.settle()
+    expect(() => h.engine.report(decision.ticketId!, { state: 'ready', summary: 'The answer is 42', answers: '1' })).not.toThrow()
+    const reply = h.engine.reply({ purpose: 'answer', triggerId: '1', text: 'The answer is 42' })
+    expect(reply.status).toBe('pending')
+    expect(h.outbox.at(-1)).toMatchObject({ kind: 'reply', text: 'The answer is 42', channel: bot.channel, ticketId: decision.ticketId })
+  })
+  it('refuses an answer for a bot question when no reply-only ticket was accepted for it', () => {
+    const h = harness()
+    accepted(h)
+    h.engine.receive({ ...trigger('2', { actor: { source: 'chat', id: 'bot' } }), human: false }); h.pump()
+    expect(() => h.engine.reply({ purpose: 'answer', triggerId: '2', text: 'Answer' })).toThrow('original question')
+  })
+})
 describe('subscription fan-out', () => {
   it('delivers a person\'s later message on a subscribed thread to the live ticket as context, and not to Eval', async () => {
     const h = harness()

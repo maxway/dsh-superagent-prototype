@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, isAbsolutePath,
-  type Settings } from '../src/policy.ts'
+import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, anyoneMayReply,
+  isAbsolutePath, type Settings } from '../src/policy.ts'
 import type { MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
@@ -120,7 +120,8 @@ describe('admission table', () => {
     expect(explicit).toEqual({ admissible: true, strength: 'explicit', basis: { source: 'feishu', scope: { chatId: CHAT, direct: false, mentioned: true }, row: CHAT, via: 'admission', cell: 'unlistedAddressed', addressed: 'mention' } })
     expect(setup(withTable({ [CHAT]: { unlistedAddressed: 'inferred' } })).policy.gate(inChat(CHAT, STRANGER), thread(), [])).toMatchObject({ admissible: true, strength: 'inferred', basis: { cell: 'unlistedAddressed' } })
     expect(setup(withTable({ [CHAT]: { unlistedAddressed: 'inferred' } }, {}, 'off')).policy.gate(inChat(CHAT, STRANGER), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
-    expect(setup(withTable({ direct: { unlistedAddressed: 'explicit' } })).policy.gate(feishu({ actor: { source: 'feishu', id: STRANGER }, addressed: 'direct', meta: { chatId: 'p2p', direct: true, mentioned: false } }), thread(), [])).toMatchObject({ admissible: true, strength: 'explicit', basis: { row: 'direct', cell: 'unlistedAddressed' } })
+    // Direct messages are open only to listed senders: no table cell admits an unlisted one.
+    expect(setup(withTable({ direct: { unlistedAddressed: 'explicit' } })).policy.gate(feishu({ actor: { source: 'feishu', id: STRANGER }, addressed: 'direct', meta: { chatId: 'p2p', direct: true, mentioned: false } }), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
     expect(setup(withTable({ [OBSERVED]: { unlistedAddressed: 'explicit' } })).policy.gate(inChat(CHAT, STRANGER), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
   })
   it('ignores a listed sender\'s unaddressed message where the row says so, and never reads the table for messages the chat does not receive', () => {
@@ -172,7 +173,59 @@ describe('admission table', () => {
     expect(setup(withTable({ [CHAT]: { unlistedAddressed: 'explicit' } })).version).not.toBe(setup().version)
     expect(setup(withTable({})).version).toBe(setup().version)
   })
-})
+  it('admits an unlisted sender\'s mention as a read-only reply question in every mode, also on a Thread with Tickets', () => {
+    for (const mode of ['auto', 'observe', 'off'] as const) {
+      const open = setup(withTable({ [CHAT]: { unlistedAddressed: 'reply' } }, {}, mode))
+      expect(open.policy.gate(inChat(CHAT, STRANGER), thread(), [])).toEqual({ admissible: true, strength: 'reply',
+        basis: { source: 'feishu', scope: { chatId: CHAT, direct: false, mentioned: true }, row: CHAT, via: 'admission',
+          cell: 'unlistedAddressed', addressed: 'mention' } })
+      expect(open.policy.gate(inChat(CHAT, STRANGER), thread(['ticket']), [])).toMatchObject({ admissible: true, strength: 'reply',
+        basis: { via: 'admission', cell: 'unlistedAddressed' } })
+    }
+  })
+  it('admits a bot or agent that addresses the agent in a reply scope, but not without one or unaddressed', () => {
+    const bot: Trigger = { ...inChat(CHAT, 'ou_bot'), human: false, actor: { source: 'feishu', id: 'ou_bot' } }
+    expect(setup(withTable({ [CHAT]: { unlistedAddressed: 'reply' } })).policy.gate(bot, thread(), []))
+      .toMatchObject({ admissible: true, strength: 'reply', basis: { via: 'admission', cell: 'unlistedAddressed', addressed: 'mention' } })
+    // Without a reply cell, an unlisted bot's message stays inadmissible even when it mentions the agent.
+    expect(setup().policy.gate(bot, thread(), [])).toEqual({ admissible: false, reason: 'not_human' })
+    // A reply cell admits only addressed messages: an unaddressed bot message stays outside the table.
+    const observed = setup(withTable({ [OBSERVED]: { unlistedAddressed: 'reply' } }))
+    const { addressed: _addressed, ...quiet } = { ...bot, meta: { chatId: OBSERVED, direct: false, mentioned: false } }
+    expect(observed.policy.gate(quiet, thread(), [])).toEqual({ admissible: false, reason: 'not_human' })
+    expect(anyoneMayReply(withTable({ [CHAT]: { unlistedAddressed: 'reply' } }))).toBe(true)
+    expect(anyoneMayReply(base)).toBe(false)
+  })
+  it('never admits a direct message as a read-only reply, even when the direct row says reply', () => {
+    const settings = setup(withTable({ direct: { unlistedAddressed: 'reply' } }))
+    const direct = (actor: string) => feishu({ actor: { source: 'feishu', id: actor }, addressed: 'direct',
+      meta: { chatId: 'p2p', direct: true, mentioned: false } })
+    expect(settings.policy.gate(direct(STRANGER), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
+    // A listed sender's direct message stays an explicit execution request.
+    expect(settings.policy.gate(direct(MEMBER), thread(), [])).toMatchObject({ admissible: true, strength: 'explicit',
+      basis: { via: 'addressed', addressed: 'direct' } })
+    // An unlisted sender's direct Mandate never holds, whatever strength and cell it records.
+    const basis = { via: 'admission' as const, source: 'feishu', scope: { chatId: 'p2p', direct: true },
+      row: 'direct', cell: 'unlistedAddressed' as const, addressed: 'direct' as const }
+    expect(settings.policy.revalidate({ strength: 'explicit', policyVersion: 'v', basis,
+      actor: { source: 'feishu', id: STRANGER }, scope: '' })).toBe(false)
+  })
+  it('keeps a reply Mandate while the cell still admits replies, and never turns it into execution', () => {
+    const open = withTable({ [CHAT]: { unlistedAddressed: 'reply' } })
+    const gate = setup(open).policy.gate(inChat(CHAT, STRANGER), thread(), [])
+    if (!gate.admissible) throw new Error('expected admission')
+    if (gate.basis.via !== 'admission') throw new Error('expected admission basis')
+    const mandate = { strength: gate.strength, policyVersion: 'v', basis: gate.basis, actor: { source: 'feishu', id: STRANGER }, scope: '' }
+    expect(mandate.strength).toBe('reply')
+    expect(setup(open).policy.revalidate(mandate)).toBe(true)
+    // Strengthening the cell to execution keeps the read-only Ticket, which still may not execute.
+    expect(setup(withTable({ [CHAT]: { unlistedAddressed: 'explicit' } })).policy.revalidate(mandate)).toBe(true)
+    expect(setup(withTable({ [CHAT]: { unlistedAddressed: 'inferred' } })).policy.revalidate(mandate)).toBe(false)
+    expect(setup(withTable({})).policy.revalidate(mandate)).toBe(false)
+    // A direct-message reply basis never holds, whatever the chat row says.
+    expect(setup(open).policy.revalidate({ ...mandate, basis: { ...gate.basis, addressed: 'direct' } })).toBe(false)
+  })
+  })
 describe('revalidating a Mandate from the admission table', () => {
   type Cell = 'listedUnaddressed' | 'unlistedAddressed' | 'unlistedUnaddressed'
   const cells: Cell[] = ['listedUnaddressed', 'unlistedAddressed', 'unlistedUnaddressed']

@@ -74,14 +74,14 @@ export const feishuKind: SourceKind<FeishuConfig> = {
         .refine(bots => new Set(bots.map(bot => bot.id)).size === bots.length, 'Duplicate bot ids').optional(),
     }).strict(),
     fields: [
-      { key: 'allowed', type: 'rows', label: { zh: '能发起工作的飞书用户', en: 'Feishu users who may originate work' },
+      { key: 'allowed', type: 'rows', label: { zh: '能发起执行（修改、提交 PR 等）的飞书用户', en: 'Feishu users who may originate execution, such as changes and pull requests' },
         columns: [{ key: 'id', type: 'text', label: { zh: 'open_id', en: 'open_id' }, pattern: 'ou_[a-zA-Z0-9]+' }, { key: 'name', type: 'text', label: { zh: '名字', en: 'Name' }, optional: true }] },
       { key: 'bots', type: 'rows', label: { zh: '消息可以成为候选的机器人', en: 'Bots whose messages may become candidates' },
         hint: { zh: '名单里的机器人在接收的群里发的消息成为推断的候选，交给评估；它们不能发起明确的请求，也不能停止工单。其他机器人的消息不接收。', en: 'Messages of a bot on this list, in chats the Source receives, become inferred candidates for an assessment; they never make an explicit request or stop a ticket. Other bots\' messages are not admitted.' },
         columns: [{ key: 'id', type: 'text', label: { zh: 'App ID 或 open_id', en: 'App ID or open_id' }, pattern: '(cli|ou)_[a-zA-Z0-9]+' },
           { key: 'name', type: 'text', label: { zh: '名字', en: 'Name' }, optional: true }] },
     ],
-    explicit: { zh: '名单内的人 @ 机器人或私聊机器人，总是明确的请求，不需要配置。', en: 'Someone on the list who mentions the bot or messages it directly always makes an explicit request; that needs no setting.' },
+    explicit: { zh: '名单内的人 @ 机器人或私聊机器人，总是明确的执行请求，不需要配置。其他人在群里开放只读答疑的范围里点名机器人，只能得到只读调查后的回答；私聊只开放给名单内的人。', en: 'Someone on the list who mentions the bot or messages it directly always makes an explicit request to execute; that needs no setting. Anyone else who addresses the bot in a group scope admitting read-only replies gets an answer after read-only investigation, never execution; direct messages stay limited to listed senders.' },
     rows(stored) {
       const config = FeishuConfigSchema.parse(stored)
       const mentions = { zh: '仅 @', en: '@ only' }
@@ -90,8 +90,11 @@ export const feishuKind: SourceKind<FeishuConfig> = {
           cells: { listedUnaddressed: chat.listen === 'all', unlistedAddressed: true, unlistedUnaddressed: chat.listen === 'all' } })),
         { id: 'other', label: { zh: '其他群', en: 'Other chats' }, note: config.otherChats === 'mentions' ? mentions : { zh: '不接收', en: 'Not received' },
           cells: { listedUnaddressed: false, unlistedAddressed: config.otherChats === 'mentions', unlistedUnaddressed: false } },
+        // Direct messages stay limited to listed senders: their unlisted-addressed cell only ignores, and only group chats
+        // may grant read-only replies.
         { id: 'direct', label: { zh: '私聊', en: 'Direct messages' }, note: config.directMessages ? { zh: '接收', en: 'Received' } : { zh: '不接收', en: 'Not received' },
-          cells: { listedUnaddressed: false, unlistedAddressed: config.directMessages, unlistedUnaddressed: false } },
+          cells: { listedUnaddressed: false, unlistedAddressed: config.directMessages, unlistedUnaddressed: false },
+          options: { unlistedAddressed: ['ignore'] as const } },
       ]
     },
   },
