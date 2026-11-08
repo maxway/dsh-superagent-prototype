@@ -266,7 +266,7 @@ Windows 上用 `node scripts\dsh-superagent ...`。`--stale-minutes` 只改变�
 安装配置必须成功，轮询或工作才会开始。概览会列出缺失的要求，并链接到对应的设置。更改设置会再次运行安装配置。如果你在应用之外修复了某些东西，例如 CLI 登录，请选择 **重新检查**。
 
 1. **来源。** 只启用一个 Git 来源。GitHub 部署设置仓库（`owner/name`）和智能体 CLI，例如 `/home/me/.local/bin/gh-agent`；请求通常通过智能体账号的通知到达，提到该账号的新 Issue 或评论会在下一次轮询时到达，通过编辑已有 Issue 正文来添加提及则不会，请改为发表新评论。GitLab 部署在 profile 中加入 GitLab 插件，在 GitLab 来源卡片里配置地址、项目和智能体 CLI（例如 `/home/me/.local/bin/glab-agent`），然后在来源页切换到它；它从启用时开始扫描项目里的 Issue、合并请求、note 和流水线变化。可选地设置 **Webhook 地址** 让 GitLab 事件立即触发同步（见上面的 GitLab webhook 一节），留空则退化为 `pollSeconds` 轮询。使用飞书时，设置机器人 CLI、群、每个群的接收全部消息或仅提及模式，以及是否接收私信。Windows 上把 CLI 设为原生 `gh` 或 `glab`，并设置高级的配置目录字段而不是包装脚本路径；见上面的 Windows 凭据。
-2. **策略。** 两条示例规则可以编辑或删除。在 **在各来源上** 下，添加可以请求工作的 GitHub 或 GitLab 账号以及飞书用户；在名单里有人之前，任何请求都不能成为工单。使用飞书时，可以选择一个群来同步名单，在启动时和 **立即同步** 时进行。
+2. **策略。** 两条示例规则可以编辑或删除。在 **在各来源上** 下，添加可以请求执行的 GitHub 或 GitLab 账号以及飞书用户；在名单里有人或某个范围开放只读答疑之前，任何请求都不能成为工单。使用飞书时，可以选择一个群来同步名单，在启动时和 **立即同步** 时进行。准入表还可以把某个范围的「名单外 · 点名智能体」单元格设为**只读答疑**，让那里的任何人（包括机器人和智能体）提问，由智能体只读调查后回答，而不执行。
 3. **执行。** 目录根路径和一个准备命令。要让每个工单都有一份仓库检出，GitHub 部署使用：
 
    ```sh
@@ -346,7 +346,7 @@ Windows 上用 `node scripts\dsh-superagent ...`。`--stale-minutes` 只改变�
 这些块：
 
 - `source:github`、`source:gitlab`、`source:feishu`：`{"enabled": true, "config": {…}}`。GitHub 的配置有 `repository`、`cli` 和高级的 `configDir`（即选择智能体账号的 `GH_CONFIG_DIR`），以及开关 `observeIssues`、`observePulls`、`observeComments` 和 `observeCi`，默认关闭，它们接收仓库中每个新 Issue、新 pull request 和评论，以及默认分支的 CI。GitLab 的配置有 `host`、写作 `group/project` 的 `repository`、`cli`、`configDir`（`GLAB_CONFIG_DIR`）、可选的 `webhookUrl`、高级的 `webhookPort`（默认 3084）和 `webhookBind`（默认 `0.0.0.0`）、`pollSeconds`、`failuresBeforeError` 和同样的 observe 开关。飞书的配置有 `cli`、`configDir`（`LARKSUITE_CLI_CONFIG_DIR`）、`chats`（形如 `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]`，或 `"all"`）、`directMessages`，以及 `otherChats`（`"none"` 或 `"mentions"`）。
-- `policy`：`{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`。`bots` 列出其消息可以成为推断候选的机器人。`admission` 行以群 id 为键；飞书还用 `other` 或 `direct`，GitHub 用 `issues`、`pulls`、`comments` 或 `ci`；未设置的单元格取默认值（见 [002 授权机制](002-authorization.md)）。
+- `policy`：`{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`。`bots` 列出其消息可以成为推断候选的机器人。`admission` 行以群 id 为键；飞书还用 `other` 或 `direct`，GitHub 用 `issues`、`pulls`、`comments` 或 `ci`；`unlistedAddressed` 单元格可取 `explicit`、`reply`、`inferred` 或 `ignore`，未设置的单元格取默认值（见 [002 授权机制](002-authorization.md)）。
 - `eval`：`mode`、`timeoutSeconds` 和 `model`。
 - `executor`：`model`、`maxWorkers`、`offPeak`、`directory`、`prepare` 和 `blockedCommands`。`offPeak` 默认是 `{"enabled": false, "start": "22:00", "end": "08:00", "timezone": "Asia/Shanghai"}`：带有 `offPeak` 标记的工单只在该每日窗口内启动新的派工（见 [003 执行](003-execution.md)）。阿里云百炼的 DeepSeek 按北京时间 22:00 至次日 08:00 的闲时价计费，忙时为 08:00 至 22:00（[计费说明](https://help.aliyun.com/zh/model-studio/billing-for-model-studio)），默认值与该时段一致。处理暂停是一个单独的设置 `paused`，由 `POST executor/pause` 设置。
 

@@ -20,7 +20,7 @@ const RoutingNoteSchema = z.string().trim()
   .describe(`Optional routing background or explicit human constraint, at most ${NOTE_WORDS} words. Never add implementation instructions or replace the original source.`)
 export interface MainToolsHost {
   readonly context: Context
-  readonly engine: Pick<EngineForMainSession, 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'> & EngineForPeople
+  readonly engine: Pick<EngineForMainSession, 'candidate' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'> & EngineForPeople
   readonly store: Pick<Store, 'tickets' | 'triggers' | 'threads' | 'atomic' | 'replyStatus' | 'settings'>
   readonly prompts: Pick<Prompts, 'preview' | 'save'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery' | 'modelRetry'>
@@ -99,7 +99,9 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
       const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
       const source = host.store.triggers.get(item.trigger_id)?.source
       const offPeak = item.off_peak ?? (source !== undefined && offPeakByDefault(source))
-      const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: 'explicitRouted' },
+      // A reply-only candidate becomes a read-only ticket that answers its question and may not execute.
+      const reply = host.engine.candidate(item.trigger_id)?.strength === 'reply'
+      const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: reply ? 'replyRouted' : 'explicitRouted' },
         acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...(offPeak ? { offPeak: true as const } : {}), ...note })
       // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
       if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }
@@ -130,7 +132,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
 function routeTool(host: MainToolsHost): Tool {
   return tool({
     name: 'orchestrator_route',
-    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. An accept follows the source\'s off-peak default unless an explicit off_peak overrides it. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
+    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, accept a read-only reply question as a reply-only ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. An accept follows the source\'s off-peak default unless an explicit off_peak overrides it. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
     schema: z.object({ decisions: z.array(RouteItemSchema).min(1).max(20) }).strict(),
     execute: async ({ decisions }) => {
       const decided = new Map<string, string>()
@@ -227,7 +229,7 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     }),
     tool({
       name: 'orchestrator_reply',
-      description: `Send an answer to a human question, a ready result, or attention requiring human action, as the replies section says; the gate refuses anything else, such as progress. purpose=result needs a ticket in person/review after a ready report, a completed or merged one, or a dropped one whose matched rule asks for a closing message. IM limit: ${IM_WORDS} words.`,
+      description: `Send an answer to a question, including a reply-only ticket's read-only question, a ready result, or attention requiring human action, as the replies section says; the gate refuses anything else, such as progress. purpose=result needs a ticket in person/review after a ready report, a completed or merged one, or a dropped one whose matched rule asks for a closing message. IM limit: ${IM_WORDS} words.`,
       schema: z.object({
         trigger_id: z.string().optional().describe('The original human question, for an answer only.'),
         ticket_id: z.string().optional(),

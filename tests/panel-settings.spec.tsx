@@ -71,7 +71,7 @@ it('loads configuration history on demand with localized changes, Source field l
   await click(find(zh['tab.settings'], '.dt-status-head button'))
   expect(server.requests.some(request => request.path === 'policy/history')).toBe(false)
   await click(zh.configHistory)
-  for (const expected of ['第 3 次保存 · 从群同步', '生成策略版本 abcdef12', '接单模式：关闭 → 仅观察', '飞书 · 能发起工作的飞书用户 新增：Bob',
+  for (const expected of ['第 3 次保存 · 从群同步', '生成策略版本 abcdef12', '接单模式：关闭 → 仅观察', '飞书 · 能发起执行（修改、提交 PR 等）的飞书用户 新增：Bob',
     '因策略变更通知了 1 个进行中的工单：修复回归']) expect(text()).toContain(expected)
 })
 

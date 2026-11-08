@@ -93,7 +93,11 @@ export function followupOwners(trigger: Pick<Trigger, 'id' | 'human' | 'threads'
 export const settled = (decision: Pick<Decision, 'kind' | 'reason'>): boolean => !['stop', 'unavailable'].includes(decision.kind)
   && !decision.reason.some(reason => ['stopNotExplicit', 'stopUnknown', 'routed'].includes(reason.code))
 
-export type Strength = 'explicit' | 'inferred'
+/**
+ * How a Trigger was admitted: `explicit` work from a sender allowed to execute, `reply` from a sender allowed to ask a
+ * read-only question only, or `inferred` as a proactive candidate.
+ */
+export type Strength = 'explicit' | 'reply' | 'inferred'
 /** The cells of a receiving scope's row in the admission table, by whether the sender is listed and addresses the agent. */
 export type AdmissionCell = 'listedUnaddressed' | 'unlistedAddressed' | 'unlistedUnaddressed'
 /**
@@ -107,8 +111,8 @@ interface Received { source?: string; scope?: Record<string, unknown>; row?: str
  * How the gate admitted the Trigger a Mandate came from, which `revalidate` re-checks (see `docs/002`):
  * - `addressed`: a sender on the Source's list addressed the agent;
  * - `followup`: a message on a Thread that has tickets;
- * - `admission`: the cell of the receiving scope's admission row; `observation` when it made an inferred candidate under
- *   an accept mode;
+ * - `admission`: the cell of the receiving scope's admission row, an explicit work request, a read-only reply question
+ *   (`reply` strength, addressed only) or an inferred candidate (`observation` when an accept mode made it);
  * - `listed`: accepted before Mandates recorded their basis, from a sender who must still be on the list; `authority` is
  *   what an earlier version recorded instead.
  * `sender` names the allowed sender at acceptance time, and `rules` the rules an assessment matched.

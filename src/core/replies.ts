@@ -75,7 +75,8 @@ export class Replies extends EnginePart {
     const attention = request.purpose === 'attention' ? ticket?.attention : undefined
     // Attention replies must match the ticket's currently open question text.
     if (request.purpose === 'attention' && (!attention || attention.question !== request.question)) throw new UserError('notAttention')
-    if (request.purpose === 'answer' && !trigger?.human) throw new UserError('notQuestion')
+    // A reply-only ticket may answer a question an agent or bot asked in the scope that admits read-only questions.
+    if (request.purpose === 'answer' && !trigger?.human && ticket?.mandate.strength !== 'reply') throw new UserError('notQuestion')
     const id = attention ? key('attention-reply', attention.id) : key('reply', trigger?.id ?? ticket?.id ?? '', request.text)
     const existing = this.options.outbox.status(id)
     const ready = !ticket || !trigger || ticket.answers?.includes(trigger.id)

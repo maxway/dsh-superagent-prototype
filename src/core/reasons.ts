@@ -11,6 +11,7 @@ export const REASONS = {
   acceptedBefore: 'Trigger {trigger} was accepted before',
   routed: 'Routed to ticket {ticket}',
   explicitRouted: 'Explicit request from an allowed sender routed by the orchestrator',
+  replyRouted: 'Read-only question from a sender allowed to ask here, routed by the orchestrator',
   humanStop: 'Human asked to stop',
   legacyImport: 'Imported from the pre-domain-model task record',
   forwarded: 'Forwarded to the worker of the Ticket already on this Thread',

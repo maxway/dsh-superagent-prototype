@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, isAbsolutePath,
-  type Settings } from '../src/policy.ts'
+import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, anyoneMayReply,
+  isAbsolutePath, type Settings } from '../src/policy.ts'
 import type { MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
@@ -172,7 +172,42 @@ describe('admission table', () => {
     expect(setup(withTable({ [CHAT]: { unlistedAddressed: 'explicit' } })).version).not.toBe(setup().version)
     expect(setup(withTable({})).version).toBe(setup().version)
   })
-})
+  it('admits an unlisted sender\'s mention as a read-only reply question in every mode, also on a Thread with Tickets', () => {
+    for (const mode of ['auto', 'observe', 'off'] as const) {
+      const open = setup(withTable({ [CHAT]: { unlistedAddressed: 'reply' } }, {}, mode))
+      expect(open.policy.gate(inChat(CHAT, STRANGER), thread(), [])).toEqual({ admissible: true, strength: 'reply',
+        basis: { source: 'feishu', scope: { chatId: CHAT, direct: false, mentioned: true }, row: CHAT, via: 'admission',
+          cell: 'unlistedAddressed', addressed: 'mention' } })
+      expect(open.policy.gate(inChat(CHAT, STRANGER), thread(['ticket']), [])).toMatchObject({ admissible: true, strength: 'reply',
+        basis: { via: 'admission', cell: 'unlistedAddressed' } })
+    }
+  })
+  it('admits a bot or agent that addresses the agent in a reply scope, but not without one or unaddressed', () => {
+    const bot: Trigger = { ...inChat(CHAT, 'ou_bot'), human: false, actor: { source: 'feishu', id: 'ou_bot' } }
+    expect(setup(withTable({ [CHAT]: { unlistedAddressed: 'reply' } })).policy.gate(bot, thread(), []))
+      .toMatchObject({ admissible: true, strength: 'reply', basis: { via: 'admission', cell: 'unlistedAddressed', addressed: 'mention' } })
+    // Without a reply cell, an unlisted bot's message stays inadmissible even when it mentions the agent.
+    expect(setup().policy.gate(bot, thread(), [])).toEqual({ admissible: false, reason: 'not_human' })
+    // A reply cell admits only addressed messages: an unaddressed bot message stays outside the table.
+    const observed = setup(withTable({ [OBSERVED]: { unlistedAddressed: 'reply' } }))
+    const { addressed: _addressed, ...quiet } = { ...bot, meta: { chatId: OBSERVED, direct: false, mentioned: false } }
+    expect(observed.policy.gate(quiet, thread(), [])).toEqual({ admissible: false, reason: 'not_human' })
+    expect(anyoneMayReply(withTable({ [CHAT]: { unlistedAddressed: 'reply' } }))).toBe(true)
+    expect(anyoneMayReply(base)).toBe(false)
+  })
+  it('keeps a reply Mandate while the cell still admits replies, and never turns it into execution', () => {
+    const open = withTable({ [CHAT]: { unlistedAddressed: 'reply' } })
+    const gate = setup(open).policy.gate(inChat(CHAT, STRANGER), thread(), [])
+    if (!gate.admissible) throw new Error('expected admission')
+    const mandate = { strength: gate.strength, policyVersion: 'v', basis: gate.basis, actor: { source: 'feishu', id: STRANGER }, scope: '' }
+    expect(mandate.strength).toBe('reply')
+    expect(setup(open).policy.revalidate(mandate)).toBe(true)
+    // Strengthening the cell to execution keeps the read-only Ticket, which still may not execute.
+    expect(setup(withTable({ [CHAT]: { unlistedAddressed: 'explicit' } })).policy.revalidate(mandate)).toBe(true)
+    expect(setup(withTable({ [CHAT]: { unlistedAddressed: 'inferred' } })).policy.revalidate(mandate)).toBe(false)
+    expect(setup(withTable({})).policy.revalidate(mandate)).toBe(false)
+  })
+  })
 describe('revalidating a Mandate from the admission table', () => {
   type Cell = 'listedUnaddressed' | 'unlistedAddressed' | 'unlistedUnaddressed'
   const cells: Cell[] = ['listedUnaddressed', 'unlistedAddressed', 'unlistedUnaddressed']
