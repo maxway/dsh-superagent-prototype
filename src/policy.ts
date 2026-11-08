@@ -78,7 +78,7 @@ export type RoleModel = z.infer<typeof RoleModelSchema>
 
 export const AllowedSchema = z.object({ id: z.string().trim().min(1).max(200), name: z.string().trim().max(100).optional() }).strict()
 const Weak = z.enum(['inferred', 'ignore'])
-export const AdmissionRowSchema: z.ZodType<AdmissionRow> = z.object({ listedUnaddressed: Weak.optional(), unlistedAddressed: z.enum(['explicit', 'inferred', 'ignore']).optional(), unlistedUnaddressed: Weak.optional() }).strict()
+export const AdmissionRowSchema: z.ZodType<AdmissionRow> = z.object({ listedUnaddressed: Weak.optional(), unlistedAddressed: z.enum(['explicit', 'reply', 'inferred', 'ignore']).optional(), unlistedUnaddressed: Weak.optional() }).strict()
 export const AdmissionTableSchema = z.record(z.string(), AdmissionRowSchema)
 export const SourcePolicySchema = z.object({ allowed: z.array(AllowedSchema).default([]), admission: AdmissionTableSchema.default({}) }).catchall(z.unknown())
 export type SourcePolicy = z.infer<typeof SourcePolicySchema>
@@ -148,6 +148,9 @@ export function listedBot(settings: Settings, actor: ActorRef): z.infer<typeof A
   return bots.find(entry => sameName(entry.id, actor.id))
 }
 export const anyoneAllowed = (settings: Settings): boolean => Object.values(settings.policy.sources).some(part => part.allowed.length > 0)
+/** Whether any scope's admission row admits an unlisted sender's addressed message as a read-only reply question. */
+export const anyoneMayReply = (settings: Settings): boolean =>
+  Object.values(settings.policy.sources).some(part => Object.values(part.admission).some(row => row.unlistedAddressed === 'reply'))
 const senderName = (entry: z.infer<typeof AllowedSchema>): string => entry.name || entry.id
 
 /** Check whether a thread has tickets of its own (excluding context-only subscriptions). */
@@ -161,7 +164,8 @@ function admissionCell(allowed: boolean, addressed: boolean): AdmissionCell | un
 function admissionOf(settings: Settings, source: string, row: string | undefined, cell: AdmissionCell): Admission {
   return (row === undefined ? undefined : settings.policy.sources[source]?.admission[row]?.[cell]) ?? ADMISSION_DEFAULTS[cell]
 }
-const STRENGTH: Readonly<Record<Admission, number>> = { ignore: 0, inferred: 1, explicit: 2 }
+/** Admission strengths in ascending order: a reply-only grant is below execution and above an inferred candidate. */
+const STRENGTH: Readonly<Record<Admission, number>> = { ignore: 0, inferred: 1, reply: 2, explicit: 3 }
 
 /** Compute how a settings change from `old` to `now` affects the authorization or matched rules of each open ticket. */
 export function policyEffects(tickets: readonly Ticket[], old: Settings, now: Settings, scope: (settings: Settings) => SourceScope):
@@ -192,12 +196,21 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
   const mode = settings.eval.mode
   /** Gate non-human triggers: only listed bots (as inferred candidates) and senderless system/CI events may pass; other bots are rejected. */
   const machineGate = (trigger: Trigger): GateResult => {
+    // Direct messages are open only to listed people, so no machine message is admitted there.
+    if (trigger.addressed === 'direct') return { admissible: false, reason: 'not_human' }
+    const scope = listened(sources, trigger.source, trigger.meta)
+    const row = scope.listened ? scope.row : undefined
+    const recorded = { source: trigger.source, scope: trigger.meta, ...row === undefined ? {} : { row } }
+    const addressed = trigger.addressed ? { addressed: trigger.addressed } : {}
+    // A bot or agent that addresses the agent in a group scope admitting read-only questions asks one, whether or not it is
+    // listed. Direct messages were already rejected above.
+    if (trigger.addressed && scope.listened
+      && admissionOf(settings, trigger.source, row, 'unlistedAddressed') === 'reply') {
+      return { admissible: true, strength: 'reply', basis: { ...recorded, via: 'admission', cell: 'unlistedAddressed', ...addressed } }
+    }
     const bot = trigger.actor.id ? listedBot(settings, trigger.actor) : undefined
     if (trigger.actor.id && !bot) return { admissible: false, reason: 'not_human' }
-    const scope = listened(sources, trigger.source, trigger.meta)
     if (!scope.listened || !(trigger.addressed || scope.observed)) return { admissible: false, reason: 'not_human' }
-    const recorded = { source: trigger.source, scope: trigger.meta, ...scope.row === undefined ? {} : { row: scope.row } }
-    const addressed = trigger.addressed ? { addressed: trigger.addressed } : {}
     if (bot) {
       if (mode === 'off') return { admissible: false, reason: 'admission_ignored' }
       const basis = { ...recorded, via: 'bot' as const, sender: senderName(bot), ...addressed, observation: { mode } }
@@ -214,6 +227,8 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
     gate(trigger: Trigger, thread, tickets) {
       if (!trigger.human) return machineGate(trigger)
       const allowed = allowedSender(settings, trigger.actor)
+      // Direct messages are open only to listed senders; no table cell admits an unlisted direct sender.
+      if (trigger.addressed === 'direct' && !allowed) return { admissible: false, reason: 'not_a_member' }
       const scope = listened(sources, trigger.source, trigger.meta)
       const row = scope.listened ? scope.row : undefined
       const recorded = { source: trigger.source, scope: trigger.meta, ...row === undefined ? {} : { row }, ...allowed ? { sender: senderName(allowed) } : {} }
@@ -223,8 +238,11 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       const receivable = !!trigger.addressed || (scope.listened && scope.observed)
       const admission = receivable ? admissionOf(settings, trigger.source, row, cell) : 'ignore'
       const basis = { ...recorded, via: 'admission' as const, cell, ...trigger.addressed ? { addressed: trigger.addressed } : {} }
-      // Check explicit admission cells before thread follow-ups so a thread's tickets never weaken an explicit request to a follow-up.
+      // Check explicit and reply admission cells before thread follow-ups so a thread's tickets never weaken a direct request to a follow-up.
       if (admission === 'explicit') return { admissible: true, strength: 'explicit', basis }
+      // A reply cell admits an unlisted sender's addressed message in a group as a read-only question: it answers, but never
+      // executes. Direct messages stay limited to listed senders.
+      if (admission === 'reply' && trigger.addressed !== 'direct') return { admissible: true, strength: 'reply', basis }
       // Direct-message threads belong to one sender (no follow-up for others), and inferred follow-ups require an accept mode other than off (when off, the table decides).
       if (!(trigger.addressed === 'direct' && !allowed) && (allowed || mode !== 'off') && participating(thread, tickets)) {
         return { admissible: true, strength: allowed ? 'explicit' : 'inferred', basis: { ...recorded, via: 'followup' } }
@@ -236,6 +254,10 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
     revalidate(mandate: Mandate) {
       // Revalidation rules follow docs/002 (Eval path; Resume revalidates).
       const { basis } = mandate
+      // Read-only replies are a group-scope grant; a direct-message reply Mandate never holds.
+      if (mandate.strength === 'reply' && basis.via !== 'followup' && (basis.addressed === 'direct' || basis.row === 'direct')) return false
+      // A direct message from an unlisted sender never holds, whatever strength it was accepted with.
+      if (basis.via !== 'followup' && basis.addressed === 'direct' && !allowedSender(settings, mandate.actor)) return false
       const { source } = basis
       const current = source && basis.scope ? listened(sources, source, basis.scope) : undefined
       if (current && !current.listened) return false

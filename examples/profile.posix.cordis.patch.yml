@@ -9,7 +9,9 @@
     stateDir: /home/me/.dsh/state/superagent
 # - id: dsh-superagent-feishu
 #   disabled: false
+# One Git Source is active at a time. Enable the GitLab plugin (GitHub is on by default) to configure
+# and switch hosts in the panel; set dsh-superagent-github disabled: true to use only GitLab.
 # - id: dsh-superagent-gitlab
 #   disabled: false
 # - id: dsh-superagent-github
-#   disabled: true
+#   disabled: false

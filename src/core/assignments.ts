@@ -101,12 +101,14 @@ export class Assignments extends EnginePart {
     if (!liveTicket(ticket)) throw new UserError('ticketEnded')
     if (report.question && (report.state === 'ready' || report.answers)) throw new UserError('questionWithResult')
     if (report.askedBy && !report.question) throw new UserError('askerWithoutQuestion')
-    const person = (id: string, channel: boolean) => {
+    // A reply-only ticket answers the read-only question it was accepted for, whether a person or a bot asked it.
+    const person = (id: string, channel: boolean, reply = false) => {
       const trigger = this.repo.triggers.get(id)
-      return !!trigger?.human && (!channel || !!trigger.channel) && this.reaches(ticket, trigger, false)
+      const asker = !!trigger && (trigger.human || reply && ticket.mandate.strength === 'reply')
+      return asker && (!channel || !!trigger.channel) && this.reaches(ticket, trigger, false)
     }
     if (report.askedBy && !person(report.askedBy, true)) throw new UserError('notAsker')
-    if (report.answers && !person(report.answers, false)) throw new UserError('notAnswerable')
+    if (report.answers && !person(report.answers, false, true)) throw new UserError('notAnswerable')
     const assignment = runningAssignment(ticket) ?? latestAssignment(ticket)
     if (!assignment) throw new UserError('unknownAssignment')
     if (assignment.state === 'ended') throw new UserError('assignmentEnded')

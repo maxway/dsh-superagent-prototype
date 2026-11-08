@@ -64,7 +64,8 @@ it('keeps the Policy to its rules and each Source\'s part, in that Source\'s own
   // Auto-merge and its threshold are prompt text, and no Source's settings sit in the Policy core.
   for (const gone of ['自动合并', '行数阈值', '成员', '计入策略版本']) expect(text()).not.toContain(gone)
   expect(all('.dt-lv').map(item => item.textContent)[0]).toBe('策略版本 abcdef12')
-  expect(text()).toContain('名单内的人 @ 机器人或私聊机器人，总是明确的请求')
+  expect(text()).toContain('名单内的人 @ 机器人或私聊机器人，总是明确的执行请求')
+  expect(text()).toContain('只读答疑')
   await click(find(zh['source.github'], '.dt-subtab'))
   expect(text()).toContain('能发起工作的 GitHub 账号')
   expect(text()).toContain('名单里的账号在 Issue 或评论里 @ 智能体的账号。')
@@ -133,14 +134,22 @@ it('sets the Feishu admission table per receiving scope, offering only the cells
   expect(rows).toEqual([['团队群', 3], ['另一个群', 1], ['其他群', 0], ['私聊', 1]])
   const cell = field<HTMLSelectElement>('团队群 · 名单外 · 点名智能体')
   expect(cell.value).toBe('ignore')
+  // The cell offers execution and read-only replies as separate permissions.
+  expect([...cell.options].map(option => option.value)).toEqual(['explicit', 'reply', 'inferred', 'ignore'])
+  // Direct messages stay limited to listed senders, so their cell offers no read-only reply.
+  expect([...field<HTMLSelectElement>('私聊 · 名单外 · 点名智能体').options].map(option => option.value))
+    .toEqual(['ignore'])
   await type(cell, 'explicit')
   // The warning is an icon in a slot every cell reserves, with the text on hover, so the table does not move.
   expect(document.querySelector('.dt-admission .dt-info-warn')?.getAttribute('aria-label')).toBe(zh.admissionAnyoneWarning)
   expect(all('.dt-admission-slot')).toHaveLength(5)
   // A message not addressed to the bot cannot be an explicit request.
   expect([...field<HTMLSelectElement>('团队群 · 名单外 · 未 @').options].map(option => option.value)).toEqual(['inferred', 'ignore'])
+  // Read-only replies need no "anyone may originate work" warning: they grant no execution.
+  await type(cell, 'reply')
+  expect(document.querySelector('.dt-admission .dt-info-warn')).toBeNull()
   await click(zh.save)
-  expect(server.settings.policy.sources.feishu!.admission).toEqual({ oc_team: { unlistedAddressed: 'explicit' } })
+  expect(server.settings.policy.sources.feishu!.admission).toEqual({ oc_team: { unlistedAddressed: 'reply' } })
 })
 
 it('lists each Source\'s bots next to its people and saves them, and sets the GitHub admission table by its receiving scopes', async () => {
@@ -159,7 +168,7 @@ it('lists each Source\'s bots next to its people and saves them, and sets the Gi
     await click([...list(label).querySelectorAll('button')].find(button => button.textContent === zh.addRow)!)
     return [...list(label).querySelectorAll('.dt-rows-item')].at(-1)!
   }
-  expect(lists()).toEqual(['能发起工作的飞书用户', '消息可以成为候选的机器人'])
+  expect(lists()).toEqual(['能发起执行（修改、提交 PR 等）的飞书用户', '消息可以成为候选的机器人'])
   const bot = await add('消息可以成为候选的机器人')
   await type(bot.querySelector<HTMLInputElement>('input[aria-label="App ID 或 open_id"]')!, 'cli_reviewer')
   await type(bot.querySelector<HTMLInputElement>('input[aria-label="名字"]')!, '评审机器人')

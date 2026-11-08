@@ -14,7 +14,9 @@ export type Outcome = AssessmentOutcome & { evalId?: string }
 interface Finished { kind: DecisionKind; reason: Reason[]; audit?: Record<string, unknown>; ticketId?: string; mandate?: Mandate }
 /** An outcome's reason: a code it carries, else the words its assessor or person wrote. */
 const reasonOf = (reason: string | Reason): Reason[] => [typeof reason === 'string' ? said(reason) : reason]
-const stronger = (a: Strength, b: Strength): Strength => a === 'explicit' || b === 'explicit' ? 'explicit' : 'inferred'
+/** The stronger of two admission strengths: explicit work beats a read-only reply question, which beats an inferred candidate. */
+const RANK: Readonly<Record<Strength, number>> = { explicit: 3, reply: 2, inferred: 1 }
+const stronger = (a: Strength, b: Strength): Strength => RANK[a] >= RANK[b] ? a : b
 /** How many times in a row an expired Eval queues its Triggers again before it is recorded unavailable. */
 const REQUEUES = 2
 
@@ -148,8 +150,10 @@ export class Evals extends EnginePart {
     if (outcome.kind !== 'stop') this.leftToWorkers(trigger)
     const thread = held ?? this.thread(trigger.threads[0]!)
     const evaluation = held?.evaluating ?? this.directEval(thread, trigger, outcome.kind, outcome.kind === 'stop' ? outcome.ticketId : undefined)
-    // An inferred candidate is accepted only on enabled rules its assessment matched, while assessments may accept.
-    if (outcome.kind === 'accept' && evaluation.strength !== 'explicit' && !this.policy().admitsInferred(outcome.rules ?? [])) {
+    // An inferred candidate is accepted only on enabled rules its assessment matched; an explicit request and a
+    // read-only reply question are routed without an assessment, and are accepted as they were admitted.
+    if (outcome.kind === 'accept' && evaluation.strength !== 'explicit' && evaluation.strength !== 'reply'
+      && !this.policy().admitsInferred(outcome.rules ?? [])) {
       throw new UserError('notExplicit')
     }
     return this.decideEval(thread, evaluation, outcome)

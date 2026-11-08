@@ -878,6 +878,10 @@ describe('the Executor\'s parts', () => {
     expect(execution.assignment).not.toContain(mandateInstructions(ticket.mandate))
     expect(execution.assignment).toContain('- Copy fixes (copy): Fix typos only.')
     expect(mandateInstructions({ strength: 'explicit' })).toBe('')
+    // A reply-only ticket reads the read-only limits and the answer route.
+    expect(mandateInstructions({ strength: 'reply' })).toContain('read-only reply ticket')
+    expect(mandateInstructions({ strength: 'reply' })).toContain('reply_to_trigger_id')
+    expect(mandateInstructions({ strength: 'reply' })).toContain('Report ready when the answer is complete')
   })
   it('renders each kind of Input as its worker reads it, inline, and no reopen Input', () => {
     const asked = { id: 'tr1', source: 'feishu', threads: [{ source: 'feishu', id: 'oc:om_1' }], actor: { source: 'feishu', id: 'ou_a' }, human: true,

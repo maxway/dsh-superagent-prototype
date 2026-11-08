@@ -106,11 +106,12 @@ function AdmissionTable({ rows, labels, table, explicit, onChange }: {
   const set = (row: string, cell: AdmissionCell, value: Admission) => onChange({ ...table, [row]: { ...table[row], [cell]: value } })
   const select = (row: AdmissionRowView, cell: AdmissionCell) => {
     const value = table[row.id]?.[cell] ?? ADMISSION_DEFAULTS[cell]
+    const options = row.options?.[cell] ?? ADMISSION_OPTIONS[cell]
     // Reserve a fixed-width slot for the warning icon so selecting a value never shifts column widths.
     return <td key={cell}><span className="dt-admission-cell">
       <select className="dt-select" aria-label={`${name(row)} · ${t(`admissionCell.${cell}`)}`} value={value} onChange={event => set(row.id,
         cell, event.target.value as Admission)}>
-        {ADMISSION_OPTIONS[cell].map(option => <option key={option} value={option}>{t(`admissionValue.${option}`)}</option>)}
+        {options.map(option => <option key={option} value={option}>{t(`admissionValue.${option}`)}</option>)}
       </select>
       <span className="dt-admission-slot">{cell === 'unlistedAddressed' && value === 'explicit' && <InfoTip
         text={t('admissionAnyoneWarning')} icon="alert" warn />}</span>
