@@ -271,6 +271,7 @@ Each model request binds the Session to the current prompt revision. The revisio
   | Outbox receipts | The Outbox: the Engine's messages and Sources' `notify` go through its `send`, and its `reply` effects mark them |
   | A health entry | The part that claimed it on the `HealthBoard` (`src/infra/health.ts`), which refuses a second claim: `runtime` the Runtime, which Passes report through, `evals` the Runtime after each pass, `models` Sessions, each effect kind Effects, `worker` the DshExecutor, a Source kind's entries the SourceRegistry for that kind's Source, `sync:<id>` Settings |
   | Watchdog decisions | `src/app/watchdog.ts`, through `Store.watchdog` |
+  | Watchdog observation runs | `src/app/watchdog.ts`, through `Store.watchdogRuns` |
 
   A Source changes a Ticket only through `SourceContext.tickets.bindThread` and `threadClosed`, which call the Engine.
 - **Requests and facts.** A method that asks for something is named by an imperative verb and its object, such as `stopTicket` or `bindThread`, and may be refused; a method that records what an adapter did is named in the past tense, such as `assignmentStarted` or `deliveryFailed`. Each host receives the Engine as the role type it needs.
@@ -354,7 +355,8 @@ Some generic modules still need provider-specific behavior:
 | `src/app/views/records.ts` | The rows the views share: Triggers, Tickets, Threads, Decisions and Channel links, and `ownersOf`, the owners of follow-ups as one request reads them |
 | `src/app/views/tickets.ts` | The Ticket lists by stage, a Ticket's page, the Mandate basis facts and the Executor's load |
 | `src/app/views/watchdog.ts` | The read-only Watchdog view and `watchdogSummary`: every open Ticket's stage, latest Assignment and report, silence and mechanical signals, rendered as the Feishu observation report |
-| `src/app/watchdog.ts` | The Watchdog intervention service: mode and action guards, snapshot freshness, safety preconditions, cooldown and hourly limits, and the audited retry/stop call |
+| `src/app/watchdog.ts` | The Watchdog intervention service and recorded observation runs: mode and action guards, snapshot freshness, safety preconditions, cooldown and hourly limits, the audited retry/stop call, and the rendered run kept as the last-run heartbeat |
+| `scripts/watchdog` | The independent Watchdog process: its own configuration, state, log and pid; it reads the panel snapshot, records a run every cycle, reports changed mechanical findings to Feishu, and is the future home for host and deployment checks |
 | `src/app/views/threads.ts` | The Thread lists, a Thread's timeline, the search and the Decision list |
 | `src/app/views/sources.ts` | The Source status: each Source instance's state, its last day's counts, and what it filtered and dropped in that day |
 | `src/app/views/settings.ts` | The settings page's view: each block with its revision, each Source's settings with its kind's form, and the execution environment |
@@ -453,6 +455,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/watchdog.spec.ts` | The Watchdog view and its Feishu observation summary: stages, latest reports, silence, faults, off-peak and review waits, activity from Inputs, and the rendered report |
 | `tests/watchdog-action.spec.ts` | Watchdog interventions: off/observe/report/enforce, guards, retry and stop, idempotency, cooldown and limits |
+| `tests/watchdog-process.spec.ts` | The independent Watchdog process: configuration validation, mechanical findings and their stable identity, run recording, report dedupe, an unreachable service and the status command |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |
@@ -460,7 +463,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, the agent's process environment, the plugin entry |
-| `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh`, and its Watchdog snapshot, retry decisions and Feishu report |
+| `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh`, and its Watchdog snapshot, recorded runs, retry decisions and Feishu report |
 | `tests/launch.spec.ts` | The Windows launcher: `.cmd` shim resolution, `.js` entries and the refusal of a shell-only wrapper |
 | `tests/commands-window.spec.ts` | The CLI transport hides the window when it runs a background command |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
@@ -488,6 +491,7 @@ One SQLite file, `<stateDir>/orchestrator.sqlite`, which only the Store opens.
 | `effect` | The effect queue: per kind and key, the payload, its order, failed attempts with the last error, and when it is due | Effects; the schema 11 migration queues what earlier versions kept for the main Session |
 | `outbox` | The receipt of each message for a Channel, by id, with the Ticket it is for and its `status`, `pending`, `sent` or `dropped`, kept so an id is never queued twice; for a dropped message, when and why, as the generated column `dropped`, its time, and a reason code. A message that waits has a `reply` effect, which holds its attempts | The Outbox |
 | `watchdog_audit` | Every Watchdog decision, by its id and unique idempotency key: the snapshot, Ticket, action, mode, reason, evidence, before and after state, result or refusal, limits and any error; `executing` reserves an action before it runs, so a concurrent request refuses it | `src/app/watchdog.ts` |
+| `watchdog_run` | Every recorded Watchdog observation run, by its id and unique idempotency key: the time, mode, paused state, open and flagged counts, the caller's note and the rendered observation; the newest thirty days are kept, so a fresh run proves the scheduled check is alive | `src/app/watchdog.ts` |
 | `kv` | Every other record, by key | The part that names it |
 
 A generated column is computed from its row's JSON and is empty outside its set, and each has an index over its set, so a pass reads only active work. A database that predates a column gets it when the Store opens it.
@@ -508,7 +512,7 @@ Dismissal is stored on its Decision. Input text is rendered from the Ticket when
 
 Read caches use bounded in-memory `TextCache` instances and are lost on restart. A Session paging through an original Source record or prompt preview must reread offset 0 after a restart. Feishu AppLinks delivered with a Trigger are cached the same way when its card is built; link-based search finds them for the current process lifetime.
 
-Nothing deletes old records yet, so these grow without bound: the `trigger`, `disposition`, `decision` and `watchdog_audit` rows; ended Tickets and their Threads; the outbox's receipts; and in `kv`, every saved settings revision and prompt version, the prompt revisions each Session worked under, and the Sources' records per Thread and per Issue or pull request.
+Nothing deletes old records yet, so these grow without bound: the `trigger`, `disposition`, `decision` and `watchdog_audit` rows; ended Tickets and their Threads; the outbox's receipts; and in `kv`, every saved settings revision and prompt version, the prompt revisions each Session worked under, and the Sources' records per Thread and per Issue or pull request. `watchdog_run` is the exception: recording a run prunes rows older than thirty days.
 
 `SCHEMA_VERSION` only increases. A database of a newer version refuses to start; `src/app/migration.ts` upgrades a database of the pre-release schema 10 once, at start, and refuses an older one.
 

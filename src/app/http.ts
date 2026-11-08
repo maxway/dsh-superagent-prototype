@@ -30,7 +30,7 @@ import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 import { watchdogView, watchdogSummary } from './views/watchdog.ts'
-import { watchdogAction, type WatchdogRequest } from './watchdog.ts'
+import { watchdogAction, watchdogRun, type WatchdogRequest } from './watchdog.ts'
 
 export interface HttpHost {
   readonly store: Store
@@ -127,8 +127,11 @@ export type StateView = ReturnType<typeof stateView>
 /** Build the read-only `/orchestrator/api/watchdog` response: service state plus every open Ticket's supervision facts. */
 function watchdogPage(runtime: HttpHost, staleMinutes: number) {
   const at = new Date().toISOString()
+  const last = runtime.store.watchdogRuns.last()
   return { ...watchdogView(views(runtime), at, staleMinutes), state: stateView(runtime),
-    watchdog: runtime.store.settings().watchdog, audit: runtime.store.watchdog.recent(20) }
+    watchdog: runtime.store.settings().watchdog, audit: runtime.store.watchdog.recent(20),
+    lastRun: last ? { at: last.at, ageMinutes: Math.max(0, Math.floor((Date.parse(at) - Date.parse(last.at)) / 60_000)),
+      mode: last.mode, paused: last.paused, open: last.open, flagged: last.flagged, ...(last.note ? { note: last.note } : {}) } : null }
 }
 export type WatchdogPageView = ReturnType<typeof watchdogPage>
 /** A delivered Watchdog report: the Feishu chat, the rendered observation and when the server sent it. */
@@ -171,6 +174,14 @@ const WatchdogReportBody = z.object({
   idempotencyKey: z.string().trim().min(1).max(50).regex(/^[A-Za-z0-9._:-]+$/, 'A stable idempotency key'),
   note: z.string().trim().max(500).optional(),
 })
+const WatchdogRunBody = z.object({
+  idempotencyKey: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/, 'A stable idempotency key'),
+  note: z.string().trim().max(500).optional(),
+})
+const WatchdogRunsQuery = z.object({
+  limit: limit(20, 100),
+  before: z.string().refine(value => Number.isFinite(Date.parse(value)), 'A parseable timestamp').optional(),
+})
 const ThreadsQuery = z.object({ filter: z.enum(THREAD_FILTERS).catch('subscribed'), offset, limit: limit(20, 1000) })
 const ThreadQuery = z.object({ limit: limit(50, 100), before: z.string().optional(), around: z.string().optional() })
 const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.literal('24h').optional().catch(undefined), offset,
@@ -207,6 +218,16 @@ function routes(runtime: HttpHost): Routes {
         config: page.watchdog, audit: page.audit, ...request.note ? { note: request.note } : {} })
       await runtime.sources.sendChat('feishu', request.chatId, text, request.idempotencyKey, runtime.commands)
       return { sent: true as const, at: new Date().toISOString(), chatId: request.chatId, text }
+    },
+    'POST watchdog/runs': async ({ body }) => {
+      const request = WatchdogRunBody.parse(await body())
+      const state = stateView(runtime)
+      return watchdogRun({ store, engine: runtime.engine, view: views(runtime), configured: () => runtime.configured(),
+        setupProblem: runtime.setupProblem }, { paused: state.paused, load: state.load, health: state.health }, request)
+    },
+    'GET watchdog/runs': ({ query }) => {
+      const { limit, before } = WatchdogRunsQuery.parse(query)
+      return { runs: store.watchdogRuns.recent(limit, before) }
     },
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),

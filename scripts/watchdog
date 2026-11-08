@@ -1,0 +1,379 @@
+#!/usr/bin/env node
+/**
+ * Independent Watchdog process: observes a running dsh-superagent panel on its own schedule, records each observation
+ * through the management API, reports changed mechanical findings to Feishu, and keeps its configuration, state and log
+ * independent of the service and of DSH. The host and deployment checks of roadmap workflows K and L are meant to plug
+ * into this process later; this first version owns the task-level observation and the run heartbeat.
+ */
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
+import { randomUUID } from 'node:crypto'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const VERSION = 1
+const MAX_LOG_BYTES = 5 * 1024 * 1024
+const USAGE = `Usage: watchdog --config <path> [--once|--status|--help]
+
+Watch dsh-superagent from an independent process: every interval it reads the read-only snapshot, records the
+observation as a run, reports changed mechanical findings to Feishu, and keeps its own state and log.
+
+Options:
+  --config <path>   JSON configuration (default: ./watchdog.json).
+  --once            Run one cycle and exit; exit 0 when the service answered, 1 when it did not.
+  --status          Print the last recorded state and exit.
+  --help            Print this help.`
+
+/** A configuration problem: reported with a usage-style message and exit code 2. */
+class ConfigError extends Error {}
+/** The management API could not be reached or answered unusably. */
+class Unreachable extends Error {}
+
+/** Read a JSON file, with a configuration error naming the path when it is missing or malformed. */
+function readJson(path, what) {
+  let text
+  try { text = readFileSync(path, 'utf8') } catch (error) { throw new ConfigError(`Cannot read the ${what} at ${path}: ${error.message}`) }
+  try { return JSON.parse(text) } catch (error) { throw new ConfigError(`The ${what} at ${path} is not JSON: ${error.message}`) }
+}
+
+/** Validate and normalise the watchdog configuration; paths resolve against the configuration file's directory. */
+export function loadConfig(path) {
+  const value = readJson(path, 'watchdog configuration')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ConfigError('The watchdog configuration must be a JSON object')
+  const unknown = Object.keys(value).filter(key => !['url', 'chatId', 'intervalSeconds', 'staleMinutes', 'report', 'stateDir', 'logFile'].includes(key))
+  if (unknown.length) throw new ConfigError(`Unknown watchdog configuration field: ${unknown.join(', ')}`)
+  let url
+  try { url = new URL(String(value.url)) } catch { throw new ConfigError('url must be an absolute http or https address') }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new ConfigError('url must be an absolute http or https address')
+  const report = value.report === true
+  const chatId = value.chatId
+  if (report && (typeof chatId !== 'string' || !/^oc_[a-zA-Z0-9]+$/.test(chatId))) {
+    throw new ConfigError('chatId must be a Feishu chat id (oc_...) when report is true')
+  }
+  if (chatId !== undefined && (typeof chatId !== 'string' || !/^oc_[a-zA-Z0-9]+$/.test(chatId))) {
+    throw new ConfigError('chatId must be a Feishu chat id (oc_...)')
+  }
+  const intervalSeconds = value.intervalSeconds ?? 900
+  if (!Number.isInteger(intervalSeconds) || intervalSeconds < 60 || intervalSeconds > 86_400) {
+    throw new ConfigError('intervalSeconds must be an integer between 60 and 86400')
+  }
+  const staleMinutes = value.staleMinutes ?? 30
+  if (!Number.isInteger(staleMinutes) || staleMinutes < 1 || staleMinutes > 1440) {
+    throw new ConfigError('staleMinutes must be an integer between 1 and 1440')
+  }
+  const base = dirname(resolve(path))
+  const stateDir = resolve(base, String(value.stateDir ?? '.watchdog'))
+  const logFile = resolve(base, String(value.logFile ?? join(stateDir, 'watchdog.log')))
+  return { url: url.toString().replace(/\/+$/, ''), ...(chatId ? { chatId } : {}), intervalSeconds, staleMinutes, report,
+    stateDir, logFile }
+}
+
+/** One JSON request to the same management API the panel and `scripts/dsh-superagent` use. */
+function apiRequest(url, method, path, content) {
+  return new Promise(resolvePromise => {
+    let settled = false
+    const finish = value => { if (!settled) { settled = true; resolvePromise(value) } }
+    let target
+    try { target = new URL(url.replace(/\/+$/, '') + path) } catch { finish(null); return }
+    const payload = content === undefined ? undefined : Buffer.from(content)
+    let request
+    try {
+      request = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, { method, headers: {
+        'x-orchestrator-request': '1', ...payload ? { 'content-type': 'application/json', 'content-length': String(payload.length) } : {} },
+        timeout: 10_000 }, response => {
+        let body = ''
+        response.setEncoding('utf8')
+        response.on('data', chunk => { body += chunk })
+        response.on('end', () => finish({ status: response.statusCode, body }))
+        response.on('error', () => finish(null))
+      })
+    } catch { finish(null); return }
+    request.on('timeout', () => { request.destroy(); finish(null) })
+    request.on('error', () => finish(null))
+    request.end(payload)
+  })
+}
+
+/** Decode the management API answer, or throw with a short description of what went wrong. */
+function answerJson(response, what) {
+  if (response === null) throw new Unreachable(`No management API answer while reading the ${what}; the service may be down.`)
+  let value
+  try { value = JSON.parse(response.body) } catch { throw new Unreachable(`The management API answered ${response.status} with non-JSON while reading the ${what}.`) }
+  if (response.status < 200 || response.status >= 300) {
+    throw new Unreachable(`The management API answered ${response.status} while reading the ${what}: ${String(value.error ?? response.body).slice(0, 200)}`)
+  }
+  return value
+}
+
+/** Read the read-only Watchdog snapshot, the same shape `scripts/dsh-superagent watchdog` prints. */
+export async function readSnapshot(config) {
+  const response = await apiRequest(config.url, 'GET', `/orchestrator/api/watchdog?stale_minutes=${config.staleMinutes}`)
+  const value = answerJson(response, 'Watchdog snapshot')
+  if (!value || typeof value !== 'object' || !Array.isArray(value.tickets)) throw new Unreachable('The management API did not answer with a Watchdog snapshot.')
+  return value
+}
+
+/**
+ * The mechanical findings a person should act on. A signal the snapshot raises for a Ticket, a service part in error, or
+ * setup that is incomplete is reported; a full worker load explains `queued` and `no-progress`, and a paused service
+ * explains `queued`, `no-progress` and `waiting-person`, so those are left out. Faults such as a failed delivery stay
+ * visible while paused. The identities are stable across silence changes, so the same finding is not reported again
+ * until it changes.
+ */
+export function collectFindings(snapshot) {
+  const findings = []
+  const state = snapshot.state ?? {}
+  const load = state.load ?? {}
+  const full = Number.isInteger(load.running) && Number.isInteger(load.maxWorkers) && load.running >= load.maxWorkers
+  const explained = new Set([
+    ...(full ? ['queued', 'no-progress'] : []),
+    ...(state.paused ? ['queued', 'no-progress', 'waiting-person'] : []),
+  ])
+  for (const ticket of snapshot.tickets ?? []) {
+    const signals = (ticket.signals ?? []).filter(signal => !explained.has(signal))
+    if (signals.length) findings.push({ kind: 'ticket', id: String(ticket.id ?? ''), title: String(ticket.title ?? ''), signals })
+  }
+  for (const [part, health] of Object.entries(state.health ?? {})) {
+    // A part that is still starting is normal operation, and a paused runtime is a deliberate pause; only errors count.
+    if (!health || typeof health !== 'object' || health.state !== 'error') continue
+    findings.push({ kind: 'health', part, state: String(health.state), ...(health.detail ? { detail: String(health.detail) } : {}) })
+  }
+  const setup = state.setup?.problem
+  if (setup) findings.push({ kind: 'setup', code: String(setup.code ?? 'setup'), ...(setup.place ? { place: String(setup.place) } : {}) })
+  const feishu = state.setup?.feishuProblem
+  if (feishu) findings.push({ kind: 'setup', code: String(feishu.code ?? 'feishuSetup') })
+  return findings
+}
+
+/** A stable identity for the current findings: detail text, silence and ages change without changing the finding. */
+export function fingerprint(findings) {
+  return JSON.stringify(findings.map(finding => finding.kind === 'ticket'
+    ? { kind: 'ticket', id: finding.id, signals: [...finding.signals].sort() }
+    : finding.kind === 'health' ? { kind: 'health', part: finding.part, state: finding.state }
+      : { kind: finding.kind, code: finding.code, place: finding.place ?? '' }).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))))
+}
+
+/** One line of at most `max` characters for the Feishu note or the run record. */
+function oneLine(text, max) {
+  const line = String(text).replace(/\s+/g, ' ').trim()
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line
+}
+
+/** The judgement carried by both the recorded run and a report note, kept within the API's 500-character note limit. */
+export function noteFor(findings) {
+  if (!findings.length) return '无异常：没有需要关注的机械信号。'
+  const tickets = findings.filter(finding => finding.kind === 'ticket')
+    .map(finding => `${finding.id.slice(0, 8)} ${finding.signals.join('/')}`)
+  const others = findings.filter(finding => finding.kind !== 'ticket')
+    .map(finding => finding.kind === 'health' ? `${finding.part} ${finding.state}` : `setup ${finding.code}`)
+  return oneLine(`独立 Watchdog：${[...tickets, ...others].join('；')}。`, 500)
+}
+
+/** Record this observation as a run; an older service without the route is logged once and otherwise tolerated. */
+async function recordRun(config, note) {
+  const response = await apiRequest(config.url, 'POST', '/orchestrator/api/watchdog/runs',
+    JSON.stringify({ note, idempotencyKey: randomUUID() }))
+  if (response === null) throw new Unreachable('No management API answer while recording the Watchdog run.')
+  if (response.status === 404 || response.status === 405) return { recorded: false }
+  answerJson(response, 'Watchdog run record')
+  return { recorded: true }
+}
+
+/** Ask the service to render the observation and post it to the configured Feishu chat. */
+async function sendReport(config, note) {
+  const response = await apiRequest(config.url, 'POST', '/orchestrator/api/watchdog/report',
+    JSON.stringify({ chatId: config.chatId, idempotencyKey: randomUUID(), note }))
+  answerJson(response, 'Watchdog Feishu report')
+}
+
+/** Read the state file, or return an empty state when there is none or it is unreadable. */
+export function readState(stateDir) {
+  const path = join(stateDir, 'state.json')
+  if (!existsSync(path)) return { version: VERSION }
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8'))
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : { version: VERSION }
+  } catch { return { version: VERSION } }
+}
+
+/** Write the state atomically; a reader never sees a half-written file. */
+function writeState(stateDir, state) {
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 })
+  const path = join(stateDir, 'state.json')
+  const temporary = `${path}.${process.pid}.tmp`
+  writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 })
+  renameSync(temporary, path)
+}
+
+/** Append one timestamped log line, rotating the file once when it grows past the bound. */
+function log(config, level, message) {
+  const line = `${new Date().toISOString()} [${level}] ${message}\n`
+  try {
+    mkdirSync(dirname(config.logFile), { recursive: true, mode: 0o700 })
+    try {
+      if (statSync(config.logFile).size > MAX_LOG_BYTES) {
+        try { unlinkSync(`${config.logFile}.1`) } catch {}
+        renameSync(config.logFile, `${config.logFile}.1`)
+      }
+    } catch {}
+    appendFileSync(config.logFile, line, { mode: 0o600 })
+  } catch (error) { process.stderr.write(`Cannot write ${config.logFile}: ${error.message}${line}`) }
+}
+
+/** Whether a pid names a live process; `EPERM` means it exists but is not ours. */
+function alive(pid) {
+  try { process.kill(pid, 0); return true } catch (error) { return error.code === 'EPERM' }
+}
+
+/**
+ * Take the process lock in the state directory. A pid that is no longer alive is stale and replaced; a live one means
+ * another Watchdog is running.
+ */
+function acquireLock(stateDir) {
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 })
+  const path = join(stateDir, 'watchdog.pid')
+  if (existsSync(path)) {
+    const previous = Number(readFileSync(path, 'utf8').trim())
+    if (Number.isInteger(previous) && previous > 0 && previous !== process.pid && alive(previous)) {
+      throw new ConfigError(`Another Watchdog process is already running (pid ${previous}) in ${stateDir}`)
+    }
+  }
+  writeFileSync(path, `${process.pid}\n`, { mode: 0o600 })
+  return () => {
+    try {
+      if (Number(readFileSync(path, 'utf8').trim()) === process.pid) unlinkSync(path)
+    } catch {}
+  }
+}
+
+/**
+ * One observation cycle: read the snapshot, record the run (always, as the heartbeat), report changed findings, and
+ * persist the state. A failed service read is logged and persisted; the caller decides whether to keep looping.
+ */
+export async function cycle(config, state) {
+  const at = new Date().toISOString()
+  let snapshot
+  try {
+    snapshot = await readSnapshot(config)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    state.lastCycleAt = at
+    state.reachable = false
+    state.lastError = message
+    writeState(config.stateDir, state)
+    log(config, 'error', message)
+    return { ok: false, findings: [] }
+  }
+  const findings = collectFindings(snapshot)
+  const note = noteFor(findings)
+  state.lastCycleAt = at
+  state.reachable = true
+  delete state.lastError
+  state.current = findings.map(finding => finding.kind === 'ticket' ? `${finding.id.slice(0, 8)} ${finding.signals.join('/')}`
+    : finding.kind === 'health' ? `${finding.part} ${finding.state}` : `setup ${finding.code}`)
+  try {
+    const recorded = await recordRun(config, note)
+    if (!recorded.recorded && !state.runRecordMissing) {
+      state.runRecordMissing = true
+      log(config, 'warn', 'The management API has no watchdog run route yet; observation runs are not being recorded.')
+    }
+    if (recorded.recorded) delete state.runRecordMissing
+  } catch (error) {
+    log(config, 'warn', `Could not record the observation run: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const identity = fingerprint(findings)
+  let reported = false
+  if (config.report && findings.length && identity !== state.reportedFingerprint) {
+    try {
+      await sendReport(config, note)
+      state.reportedFingerprint = identity
+      state.reportedAt = at
+      reported = true
+    } catch (error) {
+      log(config, 'error', `Could not send the Feishu report: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  writeState(config.stateDir, state)
+  log(config, 'info', findings.length
+    ? `${reported ? 'Reported' : config.report ? 'Observed' : 'Observed (reporting off)'} ${findings.length} finding(s): ${note}`
+    : 'Observation recorded; nothing to report.')
+  return { ok: true, findings }
+}
+
+/** Wait for the interval so a stop signal is honoured promptly. */
+function sleep(ms, signal) {
+  return new Promise(resolvePromise => {
+    if (signal.aborted) { resolvePromise(); return }
+    const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolvePromise() }
+    const timer = setTimeout(done, ms)
+    signal.addEventListener('abort', done, { once: true })
+  })
+}
+
+/** Parse the command line, including options before the action. */
+export function parseArgv(argv) {
+  const args = { config: 'watchdog.json', once: false, status: false, help: false }
+  for (let index = 0; index < argv.length; index++) {
+    const word = argv[index]
+    if (word === '--config') {
+      const next = argv[index + 1]
+      if (next === undefined) throw new ConfigError('--config needs a path')
+      args.config = next
+      index++
+    } else if (word.startsWith('--config=')) args.config = word.slice('--config='.length)
+    else if (word === '--once') args.once = true
+    else if (word === '--status') args.status = true
+    else if (word === '-h' || word === '--help') args.help = true
+    else throw new ConfigError(`unrecognized argument: ${word}`)
+  }
+  if (args.once && args.status) throw new ConfigError('--once and --status cannot be combined')
+  return args
+}
+
+/** Run the independent Watchdog until stopped, or one cycle with `--once`. */
+export async function main(argv = process.argv.slice(2)) {
+  let args
+  try { args = parseArgv(argv) } catch (error) {
+    process.stderr.write(`${error.message}\n\n${USAGE}\n`)
+    return 2
+  }
+  if (args.help) { process.stdout.write(`${USAGE}\n`); return 0 }
+  let config
+  try { config = loadConfig(args.config) } catch (error) {
+    process.stderr.write(`${error.message}\n\n${USAGE}\n`)
+    return 2
+  }
+  if (args.status) {
+    process.stdout.write(`${JSON.stringify(readState(config.stateDir), null, 2)}\n`)
+    return 0
+  }
+  let release
+  try { release = acquireLock(config.stateDir) } catch (error) {
+    process.stderr.write(`${error.message}\n`)
+    return 2
+  }
+  const state = readState(config.stateDir)
+  const stop = new AbortController()
+  const stopping = signal => { stop.abort(); process.stderr.write(`Stopping on ${signal}.\n`) }
+  process.once('SIGINT', () => stopping('SIGINT'))
+  process.once('SIGTERM', () => stopping('SIGTERM'))
+  try {
+    do {
+      const result = await cycle(config, state)
+      if (args.once) return result.ok ? 0 : 1
+      if (!result.ok) log(config, 'warn', `Retrying in ${config.intervalSeconds}s; the service was unreachable.`)
+      await sleep(config.intervalSeconds * 1000, stop.signal)
+    } while (!stop.signal.aborted)
+    return 0
+  } finally {
+    release()
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().then(code => { process.exitCode = code }).catch(error => {
+    process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`)
+    process.exitCode = 1
+  })
+}

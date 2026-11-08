@@ -47,6 +47,23 @@ export interface WatchdogAudit {
   error?: string
 }
 /**
+ * One recorded Watchdog observation run: the live snapshot the check read, the rendered observation and the caller's
+ * one-sentence judgement. Unlike a decision, it is written even when nothing is flagged, so a quiet period stays
+ * distinguishable from a check that stopped running; the newest thirty days are kept.
+ */
+export interface WatchdogRun {
+  id: string
+  idempotency: string
+  at: string
+  mode: WatchdogMode
+  paused: boolean
+  open: number
+  flagged: number
+  note?: string
+  /** The rendered observation, the same text a Feishu report carries for the same snapshot. */
+  text: string
+}
+/**
  * Generated columns and partial indexes defining active working sets so passes scan only active rows.
  * Older databases missing a column get it added on open and populated by SQLite from stored JSON rows.
  */
@@ -105,12 +122,15 @@ export class Store implements Repositories {
               since TEXT NOT NULL, PRIMARY KEY (kind, key));
             CREATE TABLE IF NOT EXISTS watchdog_audit (id TEXT PRIMARY KEY, idempotency TEXT NOT NULL UNIQUE, at TEXT NOT NULL,
               ticket TEXT NOT NULL, action TEXT NOT NULL, result TEXT NOT NULL, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS watchdog_run (id TEXT PRIMARY KEY, idempotency TEXT NOT NULL UNIQUE, at TEXT NOT NULL,
+              value TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS trigger_at ON trigger(at);
             CREATE INDEX IF NOT EXISTS trigger_thread_at ON trigger_thread(thread, at);
             CREATE INDEX IF NOT EXISTS decision_thread ON decision(thread);
             CREATE INDEX IF NOT EXISTS effect_due ON effect(kind, due, seq);
             CREATE INDEX IF NOT EXISTS watchdog_audit_at ON watchdog_audit(at);
             CREATE INDEX IF NOT EXISTS watchdog_audit_ticket ON watchdog_audit(ticket, at);
+            CREATE INDEX IF NOT EXISTS watchdog_run_at ON watchdog_run(at);
           `)
           this.addColumns()
           if (migrating) migrateTo11(this)
@@ -287,6 +307,24 @@ export class Store implements Repositories {
       .all(limit).map(row => JSON.parse(String(row.value)) as WatchdogAudit),
     /** Decisions at or after `at`, oldest first, for cooldown and limit checks. */
     since: (at: string): WatchdogAudit[] => this.values('SELECT value FROM watchdog_audit WHERE at > ? ORDER BY at', at),
+  }
+  /** Watchdog observation runs: idempotent lookups and the newest first, so a recent run and its result stay retrievable. */
+  readonly watchdogRuns = {
+    byIdempotency: (idempotency: string): WatchdogRun | undefined =>
+      this.values<WatchdogRun>('SELECT value FROM watchdog_run WHERE idempotency = ?', idempotency)[0],
+    save: (run: WatchdogRun): void => {
+      this.db.prepare(`INSERT INTO watchdog_run (id, idempotency, at, value) VALUES (?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET at=excluded.at, value=excluded.value`)
+        .run(run.id, run.idempotency, run.at, JSON.stringify(run))
+    },
+    /** The newest run, for the snapshot's last-run fact. */
+    last: (): WatchdogRun | undefined => this.values<WatchdogRun>('SELECT value FROM watchdog_run ORDER BY at DESC, rowid DESC LIMIT 1')[0],
+    /** Newest first, optionally only runs before `before` for paging. */
+    recent: (limit = 20, before?: string): WatchdogRun[] => before
+      ? this.values<WatchdogRun>('SELECT value FROM watchdog_run WHERE at < ? ORDER BY at DESC, rowid DESC LIMIT ?', before, limit)
+      : this.values<WatchdogRun>('SELECT value FROM watchdog_run ORDER BY at DESC, rowid DESC LIMIT ?', limit),
+    /** Deletes runs older than `before`; returns how many rows were removed. */
+    prune: (before: string): number => Number(this.db.prepare('DELETE FROM watchdog_run WHERE at < ?').run(before).changes),
   }
   /** Read-only queries for management views, orchestrator tools, and source polling (see `storeReads`). */
   readonly read: ReturnType<typeof storeReads>
