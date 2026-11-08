@@ -5,10 +5,10 @@ An assessment of whether one dsh-superagent deployment can work with several Git
 ## Summary
 
 - **Today one deployment has one active Git Source and one repository or project.** A Ticket therefore always has one remote, one prepare command context and one change request. `gitProvider` refuses two configured Git Sources and refuses none. The other provider's CLI is deliberately blocked.
-- **Switching already exists, but it is a deployment operation, not a UI toggle.** It needs the target provider's plugin installed, a source switch, a plugin restart and a transient setup state; running Assignments are interrupted and old-host Tickets are not re-homed.
+- **Switching is now one action in the panel, but a deployment still has exactly one active Git Source.** The action verifies the target account and repository, restarts once, and lists the old host's open Tickets so the person stops them or confirms explicitly; each Ticket records the host it was accepted under and cannot resume on another. Concurrent multi-source remains unimplemented.
 - **Concurrent multi-source is technically feasible, but it is a coordinated redesign of source identity, not a configuration change.** The core domain already stores a `source` on Triggers, Threads and Channels; the problem is that this identifier is also the Source *kind*, and many application layers read one global `Deployment`.
 - **Multiple projects will be confusing if they are added without an explicit project scope.** The confusion is manageable, and worth removing before concurrency: every Ticket, Thread, policy entry, execution environment, repository read and reply must carry the source instance. Each group chat binds one project, and each private chat also binds one project, which the person may rebind themselves; both give Feishu traffic a project. Without such scoping, Feishu routing, `#12` lookups, branch-to-Ticket binding, permissions and checkouts become guesses.
-- **Recommendation.** First harden switching while keeping exactly one active Git Source. If concurrent work is required, add same-host multi-project instances before cross-host concurrency. Do not configure two Git Sources in one deployment before the instance work; do not make one Ticket span projects in the first version.
+- **Recommendation.** Keep exactly one active Git Source and use the panel switch. If concurrent work is required, add same-host multi-project instances before cross-host concurrency. Do not configure two Git Sources in one deployment before the instance work; do not make one Ticket span projects in the first version.
 
 ## Status
 
@@ -24,16 +24,17 @@ The bundle installs both Git plugins but enables one by default: GitHub is enabl
 - Thread keys are kind-wide: `github:<number>`, `gitlab:mr:<iid>`, `gitlab:issue:<iid>`, `github:ci:<branch>` and `gitlab:ci:<branch>`. A Ticket's change request is parsed from those keys and read through the active provider.
 - `Commands` restricts GitHub API paths to the configured repository and GitLab API paths to the configured project id. Repository reads for the assessment use the same single deployment.
 
-### How switching works and where it stops short
+### How switching works
 
-Saving a Source's enable switch or a setup-read field (repository, CLI, account directory) triggers `Settings.save`, which validates the account and calls `setup.restart()`. The plugin restarts, setup resolves the new provider and rewrites the worker environment. Records for the old provider stay in the state directory, so switching back reuses its stored cursors and Tickets.
+Switching is a panel action. The Sources page shows the active host and repository; after configuring the other Git Source card with its account, repository or project, choose **Switch to this source**. The server verifies the target account and repository, enables that Source and disables the other Git Source in the same save, then restarts once. Records for the old host stay in the state directory, so switching back reuses its stored cursors and Tickets.
 
-The gaps for a person switching hosts are:
+When the old host still has open Tickets, the switch is refused and lists them: stop them first, or confirm that they stay on the old host. A Ticket records `ticket.git.provider` when it is accepted, so an old-host Ticket cannot resume on the new host; running Assignments stop with the restart, and those Tickets continue only after switching back.
 
-1. The target provider's plugin must be installed; the default bundle disables GitLab, so moving from GitHub to GitLab starts with a profile edit and a service restart.
-2. Enabling a second *configured* Git Source is refused (`multipleGitSources`). In practice the operator disables the current Source, passes through a setup state with no Git Source, then enables and configures the target.
-3. A restart interrupts running Assignments and restarts them with a recovery note. Their Ticket origin, worktree remote and open change request still belong to the old host, but the worker environment now names the new host. The deployment documentation therefore asks the operator to finish or stop old Tickets first; nothing enforces that.
-4. There is no per-Ticket host binding to fall back on, so a resumed old-host Ticket is not protected from acting through the new host.
+The remaining limits are:
+
+1. Both Git plugins must be installed in the profile to configure and switch to either host from the panel; the default bundle enables only GitHub.
+2. A deployment still has one active Git Source, one repository or project and one prepare-command context. There is no concurrent multi-source and no per-project threads, policy or execution environment.
+3. Switching does not migrate Tickets: old-host Tickets stay on the old host and continue only after switching back.
 
 ## What "multiple sources" can mean
 
@@ -102,7 +103,7 @@ The pattern is the same in every row: make the project an explicit, propagated p
 
 ## Recommendation
 
-1. **Now: harden switching, keep one active Git Source.** Make the active host visible, add a switch check that lists open Tickets on the old host and requires an explicit drain/stop decision, and prevent an old-host Ticket from resuming against the new host. This delivers the "switchable" fallback with predictable behavior and no new domain model.
+1. **Now: keep one active Git Source and use the panel switch.** Phase A is implemented: the active host is visible; the switch verifies the target, lists the old host's open Tickets and requires an explicit decision; and an old-host Ticket cannot resume on the new host. Start B only when several projects are actually needed.
 2. **Next, if concurrency is needed: same-host multi-project instances.** Introduce an instance id separate from the kind, make registry, settings, policy, health, watcher, commands and thread keys instance-scoped, add per-Ticket project variables, bind each group and each private chat to one instance (the person can rebind a private chat), and give the panel project labels and filters. Keep one provider account and one CLI. This covers most real "several projects" needs at the lowest risk.
 3. **Then, only for a real requirement: cross-host concurrency.** Add both CLI/account paths, per-host git credentials, per-Ticket Git skills and health, and per-host setup problems. Treat C as a second phase of B, not a separate architecture.
 4. **Do not start with D.** One Ticket across projects changes the execution contract more than the source model. Route such requests to separate Tickets until a concrete workflow proves otherwise.
@@ -115,7 +116,7 @@ A reasonable order is A, then B, then C. A is useful even if B is never built. B
 - When a group is bound to one project, may a request there ask for another project's work, or must it move to that project's group?
 - Must one Ticket ever change two projects? If yes, that is option D and should be designed as such; if no, one project per Ticket is the simpler contract.
 - Should allowed senders and bots be global across projects or per project? The current per-kind model is global within a kind; per-instance is the safer default.
-- Is a switch allowed while Tickets are running, or should it wait for a drain? The current answer is "finish or stop them first", but nothing enforces it.
+- Is a switch allowed while Tickets are running? The current switch asks the person to stop the old host's open Tickets or confirm the switch, then restarts; there is no per-Ticket parallel host.
 
 ## Evidence
 
@@ -129,5 +130,6 @@ A reasonable order is A, then B, then C. A is useful even if B is never built. B
 | Kind-wide thread keys | `src/sources/github-trigger.ts`, `src/sources/gitlab-trigger.ts`, `src/sources/git-change.ts` |
 | Single repository in commands and assessment | `src/infra/commands.ts`, `src/app/assessment.ts` |
 | One Git skill | `src/app/prompts.ts` (`gitSkill`) |
-| Switching semantics | [006 Deployment](006-deployment.md), `src/app/settings.ts` (`save`) |
+| Switching semantics | [006 Deployment](006-deployment.md), `src/app/settings.ts` (`activateSource`), `src/app/git-switch.ts` |
+| Per-Ticket host binding | `src/core/model.ts` (`TicketGit`), `src/executor/dsh.ts` (`hostProblem`) |
 | One Ticket, one remote | [007 Architecture](007-architecture.md), `src/sources/git-change.ts` |
