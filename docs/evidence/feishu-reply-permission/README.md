@@ -2,10 +2,12 @@
 
 Scenario: **Superagent → 设置 → 评估 → 策略**, the Feishu part of the Policy and its admission
 table, in two isolated non-production candidates at a 1440 × 900 Chromium window (the captured content
-area is 1424 × 805), light theme, Chinese UI. Both candidates have the same state: one Feishu chat
-`oc_team` receiving every message, Alice (`ou_alice`) on the allowed list, no Policy rules, and the
-chat's unlisted-addressed cell starting at **忽略**. Feishu is off in both candidates; no production
-state, credentials, bot CLI or chat content is used.
+area is 1424 × 805), light theme, Chinese UI. Each candidate had its own profile, state directory and
+port under a temporary DSH home, with an identically seeded state: one Feishu chat `oc_team` receiving
+every message, Alice (`ou_alice`) on the allowed list, no Policy rules, and the chat's
+unlisted-addressed cell starting at **忽略**. The Feishu Source is off in both candidates; no
+production state, credentials, bot CLI or chat content is used. The baseline linked a detached
+`12a0559` worktree; the candidate linked this branch's worktree.
 
 - `before-policy-feishu-admission.png` — baseline `main` @ `12a0559`. The allowed list is labelled
   **能发起工作的飞书用户**, and an unlisted sender's message in a chat can only be an explicit request,
