@@ -81,6 +81,159 @@ export function processInJob(pid, run = runPowerShell) {
   } catch { return null }
 }
 
+/**
+ * The PowerShell that reports whether the Jobs a process belongs to can kill it. Plain membership says nothing: Node
+ * puts a process into its own kill-on-close Job the first time it spawns a child, so a long-running service normally
+ * belongs to a Job afterwards. A Job is the process's own when the process itself holds a handle to it; only a Job the
+ * process merely inherited from its launch chain (a DSH tool command or a task) can kill it from outside. The probe
+ * answers `none`, `own`, `foreign`, or `unknown`.
+ */
+const JOB_FACTS_PROBE = `
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public static class DshJobFacts
+{
+  [DllImport("ntdll.dll")] static extern int NtQuerySystemInformation(int kind, IntPtr buffer, int length, out int returned);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool DuplicateHandle(IntPtr sourceProcess, IntPtr source,
+    IntPtr targetProcess, out IntPtr target, uint access, bool inherit, uint options);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
+  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct HandleEntry
+  {
+    public IntPtr Object;
+    public IntPtr ProcessId;
+    public IntPtr Handle;
+    public uint GrantedAccess;
+    public ushort CreatorBackTraceIndex;
+    public ushort ObjectTypeIndex;
+    public uint HandleAttributes;
+    public uint Reserved;
+  }
+
+  static HandleEntry Read(IntPtr buffer, long index, int stride)
+  {
+    return (HandleEntry)Marshal.PtrToStructure((IntPtr)(buffer.ToInt64() + 16 + index * stride), typeof(HandleEntry));
+  }
+
+  public static string Probe(int pid)
+  {
+    IntPtr own = CreateJobObjectW(IntPtr.Zero, null);
+    if (own == IntPtr.Zero) return "unknown";
+    try
+    {
+      int size = 1 << 24;
+      IntPtr buffer = Marshal.AllocHGlobal(size);
+      int returned;
+      int status = NtQuerySystemInformation(64, buffer, size, out returned);
+      while (status == unchecked((int)0xC0000004) && size < (1 << 28))
+      {
+        Marshal.FreeHGlobal(buffer);
+        size <<= 1;
+        buffer = Marshal.AllocHGlobal(size);
+        status = NtQuerySystemInformation(64, buffer, size, out returned);
+      }
+      if (status != 0)
+      {
+        Marshal.FreeHGlobal(buffer);
+        return "unknown";
+      }
+      try
+      {
+        long total = Marshal.ReadInt64(buffer);
+        int stride = Marshal.SizeOf(typeof(HandleEntry));
+        int self = System.Diagnostics.Process.GetCurrentProcess().Id;
+        ushort jobKind = 0;
+        bool known = false;
+        for (long index = 0; index < total && !known; index++)
+        {
+          HandleEntry entry = Read(buffer, index, stride);
+          if (entry.ProcessId.ToInt64() == self && entry.Handle == own)
+          {
+            jobKind = entry.ObjectTypeIndex;
+            known = true;
+          }
+        }
+        if (!known) return "unknown";
+        IntPtr target = OpenProcess(0x1000, false, pid);
+        if (target == IntPtr.Zero) return "unknown";
+        try
+        {
+          bool inJob;
+          if (!IsProcessInJob(target, IntPtr.Zero, out inJob)) return "unknown";
+          if (!inJob) return "none";
+          var holders = new Dictionary<long, List<KeyValuePair<int, IntPtr>>>();
+          var owned = new HashSet<long>();
+          for (long index = 0; index < total; index++)
+          {
+            HandleEntry entry = Read(buffer, index, stride);
+            if (entry.ObjectTypeIndex != jobKind) continue;
+            long key = entry.Object.ToInt64();
+            int owner = (int)entry.ProcessId.ToInt64();
+            if (owner == pid) owned.Add(key);
+            List<KeyValuePair<int, IntPtr>> list;
+            if (!holders.TryGetValue(key, out list)) { list = new List<KeyValuePair<int, IntPtr>>(); holders[key] = list; }
+            list.Add(new KeyValuePair<int, IntPtr>(owner, entry.Handle));
+          }
+          bool contained = false;
+          bool foreign = false;
+          foreach (KeyValuePair<long, List<KeyValuePair<int, IntPtr>>> pair in holders)
+          {
+            bool tested = false;
+            bool member = false;
+            foreach (KeyValuePair<int, IntPtr> holder in pair.Value)
+            {
+              IntPtr process = OpenProcess(0x40, false, holder.Key);
+              if (process == IntPtr.Zero) continue;
+              IntPtr duplicate;
+              bool copied = DuplicateHandle(process, holder.Value, GetCurrentProcess(), out duplicate, 0, false, 2);
+              CloseHandle(process);
+              if (!copied) continue;
+              bool asked = IsProcessInJob(target, duplicate, out member);
+              CloseHandle(duplicate);
+              if (asked) { tested = true; break; }
+            }
+            if (!tested || !member) continue;
+            contained = true;
+            if (!owned.Contains(pair.Key)) foreign = true;
+          }
+          if (!contained) return "unknown";
+          return foreign ? "foreign" : "own";
+        }
+        finally { CloseHandle(target); }
+      }
+      finally { Marshal.FreeHGlobal(buffer); }
+    }
+    finally { CloseHandle(own); }
+  }
+}
+'@
+[DshJobFacts]::Probe(__PID__)
+`
+
+/**
+ * How a Windows process relates to the Jobs it belongs to: `inJob` is plain membership, `foreignJob` answers whether a
+ * Job it does not own can kill it. Null when Windows cannot tell (or on another platform).
+ */
+export function processJobFacts(pid, run = runPowerShell) {
+  if (!WINDOWS || !Number.isInteger(pid) || pid <= 0) return null
+  try {
+    const answer = run(JOB_FACTS_PROBE.replace('__PID__', String(pid)))
+    if (answer === 'none') return { inJob: false, foreignJob: false }
+    if (answer === 'own') return { inJob: true, foreignJob: false }
+    if (answer === 'foreign') return { inJob: true, foreignJob: true }
+    return null
+  } catch { return null }
+}
+
 /** The PowerShell that asks the WMI provider to create a process outside the caller's Job and environment. */
 const WMI_CREATE = '$ErrorActionPreference = \'Stop\'\n'
   + '$process = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ '
@@ -316,12 +469,14 @@ export function outcome(pids, current) {
 async function statusValue(args) {
   const pids = processes(args.profile)
   const current = pids.length ? await state(args.url) : null
-const inJob = WINDOWS && pids.length === 1 ? processInJob(pids[0]) : null
+  const job = WINDOWS && pids.length === 1 ? processJobFacts(pids[0]) : null
+  const inJob = job ? job.inJob : null
+  const foreignJob = job ? job.foreignJob : null
   const value = { pids, cwd: ROOT, url: args.url, profile: args.profile, manually_stopped: stopped(args.profile),
     deployment: deploymentFacts(args.profile, args.home), health: current ? current.health : null,
     errors: current ? current.errors : null, setup: current ? current.setup : null, feishu: current ? current.feishu : null,
-    inJob, start: startFacts(args.profile) }
-  return { pids, current, inJob, value }
+    inJob, foreignJob, start: startFacts(args.profile) }
+  return { pids, current, inJob, foreignJob, value }
 }
 
 async function status(args) {
@@ -374,19 +529,31 @@ export function deploymentFacts(profile, home = process.env.DSH_HOME || join(hom
 
 /**
  * Prove the service survived the independent deployment executor's exit: exactly one process runs the profile, the
- * management API answers ready (or paused), the process is outside every Windows Job, and it is the same process after
- * a survival window. This is the acceptance check the deployment task runs after the DSH agent has exited.
+ * management API answers ready (or paused), the process belongs to no Windows Job it did not create itself, and it is
+ * the same process after a survival window. This is the acceptance check the deployment task runs after the DSH agent
+ * has exited. A service that spawns any child joins its own kill-on-close Job; the service holds that Job, so only a
+ * Job inherited from the launch chain can kill it from outside.
  */
 async function verify(args) {
   const at = new Date().toISOString()
   const fail = message => { process.stderr.write(message + '\n'); return 1 }
+  const jobProblem = (facts, when) => {
+    if (facts.foreignJob === true) {
+      return `The service is inside a Windows Job it does not own${when}; that Job can kill it when it closes. `
+        + 'Restart it outside the Job.'
+    }
+    if (facts.foreignJob !== false) {
+      return 'Could not determine whether the service is only inside Windows Jobs it created itself' + when + '; '
+        + 'survival cannot be proven.'
+    }
+    return undefined
+  }
   const first = await statusValue(args)
   if (first.pids.length !== 1) return fail(`Expected exactly one running service for ${args.profile}; found ${first.pids.length}.`)
   if (!runtimeUp(first.current)) return fail('The management API did not answer ready (or paused); the service is not usable.')
-  if (WINDOWS && first.inJob !== false) {
-    return fail(first.inJob === null
-      ? 'Could not determine whether the service is inside a Windows Job; survival cannot be proven.'
-      : 'The service is inside a Windows Job and can be killed when that Job closes; restart it outside the Job.')
+  if (WINDOWS) {
+    const problem = jobProblem(first, '')
+    if (problem) return fail(problem)
   }
   const pid = first.pids[0]
   if (args.survival_seconds > 0) await sleep(args.survival_seconds * 1_000)
@@ -395,13 +562,13 @@ async function verify(args) {
     return fail(`The service did not keep its process across the ${args.survival_seconds}s survival window; it was ${pid}.`)
   }
   if (!runtimeUp(second.current)) return fail('The management API stopped answering usable within the survival window.')
-  if (WINDOWS && second.inJob !== false) {
-    return fail(second.inJob === null
-      ? 'Could not determine whether the service is inside a Windows Job after the survival window.'
-      : 'The service moved into a Windows Job and can be killed when that Job closes.')
+  if (WINDOWS) {
+    const problem = jobProblem(second, ' after the survival window')
+    if (problem) return fail(problem)
   }
   const value = { ok: true, at, pid, url: args.url, profile: args.profile, inJob: second.inJob,
-    survivalSeconds: args.survival_seconds, health: second.current.health, start: second.value.start }
+    foreignJob: second.foreignJob, survivalSeconds: args.survival_seconds, health: second.current.health,
+    start: second.value.start }
   process.stdout.write(JSON.stringify(value, null, 2) + '\n')
   return 0
 }
@@ -750,17 +917,18 @@ async function start(args) {
       }
       if (method !== 'existing' && inspected.pids.length === 1) {
         recordStartFacts(args.profile, { at: new Date().toISOString(), pid: inspected.pids[0], method,
-          inJob: inspected.inJob, url: args.url, launchedBy: process.pid })
+          inJob: inspected.inJob, foreignJob: inspected.foreignJob, url: args.url, launchedBy: process.pid })
       }
       if (outsideJobEnvironment) rmSync(outsideJobEnvironment, { force: true })
       if (WINDOWS && method !== 'existing') {
-        if (inspected.inJob !== false) {
-          process.stderr.write('The service is not provably outside every Windows Job; a closing DSH Job could still kill it.\n')
+        if (inspected.foreignJob !== false) {
+          process.stderr.write('The service is not provably outside every Windows Job it did not create; a Job it inherited '
+            + 'from the launch chain could still kill it.\n')
           return 1
         }
-      } else if (WINDOWS && inspected.inJob === true) {
-        process.stderr.write('Warning: this running service belongs to a Windows Job and can be killed when that Job closes; '
-          + 'restart it from an independent task during a maintenance window.\n')
+      } else if (WINDOWS && inspected.foreignJob === true) {
+        process.stderr.write('Warning: this running service belongs to a Windows Job it did not create and can be killed '
+          + 'when that Job closes; restart it from an independent task during a maintenance window.\n')
       }
       return code
     }
@@ -898,9 +1066,10 @@ const USAGE = `Usage: dsh-superagent [--respect-stop] <start|stop|restart|status
 Manage a local dsh-superagent service (one DSH profile, default \`superagent\`).
 
 \`start\` and \`restart\` start the service outside any Windows Job when the caller is inside one, so a closing DSH tool
-command cannot kill it; \`status\` reports the process's Job membership and how the newest start began.
-\`verify\` proves the service survived a deployment executor's exit: one process, the management API usable, outside every
-Windows Job, and the same process after --survival-seconds.
+command cannot kill it; \`status\` reports the process's Job membership and how the newest start began. A service that
+spawns a child joins its own kill-on-close Job, which it holds, so \`status\` separates that from a Job it inherited.
+\`verify\` proves the service survived a deployment executor's exit: one process, the management API usable, no Windows
+Job it did not create, and the same process after --survival-seconds.
 \`watchdog\` prints a read-only JSON snapshot of the service, its open Tickets and the last recorded observation;
 \`watchdog run [--note <text>]\` records one observation run from the live snapshot, even when nothing is flagged;
 \`watchdog runs [--limit <n>]\` prints recent observation runs, newest first;
