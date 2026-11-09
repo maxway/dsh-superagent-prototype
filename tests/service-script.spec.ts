@@ -514,6 +514,16 @@ it.skipIf(process.platform !== 'win32')('stops the process that owns the managem
   expect((await status('precision-test', second.url)).pids).toEqual([second.pid])
   second.child.kill()
 }, 30_000)
+it.skipIf(process.platform !== 'win32')('refuses an existing listener started from another DSH home', async () => {
+  const service = await fakeService('home-mismatch')
+  mkdirSync(control('home-mismatch'), { recursive: true })
+  writeFileSync(join(control('home-mismatch'), 'service-start.json'), JSON.stringify({ home: 'C:\\another-home', pid: service.pid }))
+  expect(await run('start', '--profile', 'home-mismatch', '--url', service.url, '--timeout', '2'))
+    .toMatchObject({ code: 1, stderr: expect.stringContaining('started from DSH home') })
+  expect(await run('stop', '--profile', 'home-mismatch', '--url', service.url, '--stop-timeout', '2'))
+    .toMatchObject({ code: 1, stderr: expect.stringContaining('started from DSH home') })
+  service.child.kill()
+}, 30_000)
 it.skipIf(process.platform !== 'win32')('refuses a foreign listener and a recorded process that no longer listens', async () => {
   const foreign = await fakeService('another-profile')
   expect(await run('start', '--profile', 'target-profile', '--url', foreign.url, '--timeout', '2'))

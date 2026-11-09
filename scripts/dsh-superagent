@@ -311,7 +311,18 @@ const START_ENVIRONMENT = ['PATH', 'PATHEXT', 'SystemRoot', 'ComSpec', 'TEMP', '
 
 /** Write the caller environment the independent start wrapper restores, restricted to the current account. */
 export function writeStartEnvironment(profile, home, environment = process.env) {
-  const path = join(control(profile, home), `start-environment-${process.pid}-${Date.now()}.json`)
+  const directory = control(profile, home)
+  // A wrapper that never ran can leave a restricted file holding the model key; remove only files old enough that no
+  // live start can still be waiting for them.
+  try {
+    for (const entry of readdirSync(directory)) {
+      if (!entry.startsWith('start-environment-')) continue
+      const candidate = join(directory, entry)
+      if (Date.now() - statSync(candidate).mtimeMs < 10 * 60_000) continue
+      rmSync(candidate, { force: true })
+    }
+  } catch { /* A missing or unreadable directory fails the write below with a clear error. */ }
+  const path = join(directory, `start-environment-${process.pid}-${Date.now()}.json`)
   const value = Object.fromEntries(START_ENVIRONMENT.filter(name => environment[name] !== undefined)
     .map(name => [name, String(environment[name])]))
   writeFileSync(path, '{}', { mode: 0o600 })
@@ -960,6 +971,12 @@ async function start(args) {
   if (!pids.length && found.recorded) {
     throw new Error(`This home's dsh-superagent process (PID ${found.recorded}) is running but does not listen at ${args.url}; refusing to start another. Check --url, or stop the other instance.`)
   }
+  if (pids.length) {
+    const facts = startFacts(args.profile, args.home)
+    if (facts?.home && resolve(facts.home) !== resolve(args.home)) {
+      throw new Error(`The service at ${args.url} was started from DSH home ${facts.home}; refusing to treat it as this home's service.`)
+    }
+  }
   let method = pids.length ? 'existing' : undefined
   let outsideJobLog
   let outsideJobEnvironment
@@ -1086,6 +1103,7 @@ async function start(args) {
     }
     await sleep(1000)
   }
+  if (outsideJobEnvironment) rmSync(outsideJobEnvironment, { force: true })
   if (outsideJobLog) {
     const tail = logTail(outsideJobLog)
     if (tail) process.stderr.write('The independent start wrapper logged:\n' + tail + '\n')
