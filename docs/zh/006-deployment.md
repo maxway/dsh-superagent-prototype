@@ -267,7 +267,7 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 操作员的 `service.ps1` 仍是服务入口：它设置生产 home 并调用控制脚本，因此服务在进程位于 Job 之外时仍使用自己的 profile home 和凭据。`scripts/service-start.ps1` 也可以由独立计划任务直接运行；该任务应通过 `wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\service-start.ps1 ...` 启动，使包装脚本和它运行的 node 控制脚本都没有窗口。
 
-计划任务没有可继承的控制台，Windows 会给它启动的第一个控制台程序（`node` 或 `pwsh`）一个可见窗口。因此所有非交互入口都经过 `scripts/launch-hidden.vbs`：`wscript.exe` 自身没有控制台，启动器以隐藏窗口运行命令、等待并返回它的退出码，该命令的所有控制台子进程共享这个隐藏控制台。这适用于部署、Watchdog 更新和服务启动任务；Watchdog agent 的启动器（`launch-agent.vbs`、`launch-observer.vbs`）遵循同样的模式。只有人在交互查看时才直接运行命令。控制脚本也会隐藏它自己的 PowerShell、`git` 和 Windows ACL 辅助进程，因此后台的 `status`、`start` 或 `stop` 也不会闪出它们。
+计划任务没有可继承的控制台，Windows 会给它启动的第一个控制台程序（`node` 或 `pwsh`）一个可见窗口。因此所有非交互入口都经过 `scripts/launch-hidden.vbs`：`wscript.exe` 自身没有控制台，启动器以隐藏窗口运行命令、等待并返回它的退出码，该命令的所有控制台子进程共享这个隐藏控制台。这适用于部署、Watchdog 更新、服务启动以及计划任务一次性运行 `scripts/watchdog --once`/`--gate`；Watchdog agent 的启动器（`launch-agent.vbs`、`launch-observer.vbs`）遵循同样的模式。只有人在交互查看时才直接运行命令。控制脚本也会隐藏它自己的 PowerShell、`git` 和 Windows ACL 辅助进程，因此后台的 `status`、`start` 或 `stop` 也不会闪出它们。
 
 `node scripts/dsh-superagent verify --profile superagent --url <url> --survival-seconds 30` 在执行器退出后证明发布有效：恰好一个进程服务该 profile，管理 API 返回 ready（或 paused），进程位于所有 Windows Job 之外，且在存活窗口之后仍是同一进程。退出码 1 会指出未通过的条件。
 
