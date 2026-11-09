@@ -271,7 +271,7 @@ Use these facts to keep the next preflight short:
 4. Stop at the switched, stopped state. Do not start the service from the deploying DSH agent's shell tool: on Windows that child belongs to the agent's Job object and is killed when the agent exits. The outer deployment task must start the service after the DSH child process has exited, wait for readiness outside the agent, and only then report success.
 5. Write the measured stop, start and ready times into the deployment log. The log is the retrospective: a slow run can be compared with the previous one, and the switch target stays under a minute.
 
-The release supervisor still owns identity checks, the backup, rollback readiness and the maintenance window; these facts shorten discovery, they do not replace those steps.
+The release supervisor still owns identity checks, the backup, rollback readiness and the maintenance window; these facts shorten discovery, they do not replace those steps. The summarized timing record is in [the deployment-speed evidence](evidence/deployment-speed/).
 
 ## Settings
 
