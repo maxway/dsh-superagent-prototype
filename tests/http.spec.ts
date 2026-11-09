@@ -133,7 +133,7 @@ it('answers a prompt save that lost a race with 409, and a settings body over 12
 it('serves the Watchdog a read-only snapshot of the service and its open Tickets', async () => {
   const settings = SettingsSchema.parse({})
   const call = serve({
-    store: { settings: () => settings, tickets: { open: () => [] }, watchdog: { recent: () => [] }, watchdogRuns: { last: () => undefined } },
+    store: { settings: () => settings, tickets: { open: () => [] }, watchdogRuns: { last: () => undefined } },
     sources: new SourceRegistry(() => settings),
     links: () => () => ({ url: '', label: { zh: '', en: '' } }),
     executor: { activeCount: () => 0 },
@@ -150,35 +150,11 @@ it('serves the Watchdog a read-only snapshot of the service and its open Tickets
   expect(typeof response.body.at).toBe('string')
 })
 
-it('serves the Watchdog action API, re-reading the Ticket and recording the decision', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-http-watchdog-'))
-  const store = new Store(join(directory, 'orchestrator.sqlite'))
-  try {
-    const settings = SettingsSchema.parse({ watchdog: { mode: 'enforce', actions: ['retry'] } })
-    store.saveSettings(settings)
-    const old = new Date(Date.now() - 120 * 60_000).toISOString()
-    const ticket: Ticket = { id: 't1', title: 'Stuck build', decisionId: 'd1', channels: [], inputs: [], undelivered: [], createdAt: old,
-      updatedAt: old, assignments: [{ id: 'a1', state: 'running', createdAt: old, report: { state: 'failed', summary: 'The build failed', at: old } }],
-      mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' },
-      origin: { triggerId: 'e1', triggerIds: ['e1'] } }
-    store.tickets.save(ticket)
-    const call = serve({ store, sources: new SourceRegistry(() => settings), links: () => () => ({ url: '', label: { zh: '', en: '' } }),
-      engine: { retryTicket: () => {} }, configured: () => true })
-    const body = { reason: 'No report for two hours', snapshotAt: new Date().toISOString(), idempotencyKey: 'http-watchdog-key' }
-    expect(await call('POST', 'watchdog/tickets/t1/retry', body)).toMatchObject({ status: 200,
-      body: { result: 'executed', action: 'retry', ticketId: 't1', mode: 'enforce' } })
-    expect(store.watchdog.byIdempotency('http-watchdog-key')).toMatchObject({ result: 'executed' })
-    expect(await call('POST', 'watchdog/tickets/t1/sideways', body)).toMatchObject({ status: 400 })
-    expect(await call('POST', 'watchdog/tickets/missing/retry', { ...body, idempotencyKey: 'missing-key' })).toMatchObject({ status: 404 })
-    expect(await call('POST', 'watchdog/tickets/t1/retry', { reason: '' })).toMatchObject({ status: 400 })
-  } finally { store.close(); rmSync(directory, { recursive: true, force: true }) }
-})
-
 it('records and lists Watchdog observation runs without changing a Ticket', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-http-watchdog-run-'))
   const store = new Store(join(directory, 'orchestrator.sqlite'))
   try {
-    const settings = SettingsSchema.parse({ watchdog: { mode: 'report' } })
+    const settings = SettingsSchema.parse({})
     store.saveSettings(settings)
     const old = new Date(Date.now() - 120 * 60_000).toISOString()
     const ticket: Ticket = { id: 't1', title: 'Stuck build', decisionId: 'd1', channels: [], inputs: [], undelivered: [], createdAt: old,
@@ -194,7 +170,7 @@ it('records and lists Watchdog observation runs without changing a Ticket', asyn
     const response = await call('POST', 'watchdog/runs', { idempotencyKey: 'run-1', note: 'One stuck Ticket' })
     expect(response.status).toBe(200)
     const recorded = response.body as { id: string, text: string }
-    expect(recorded).toMatchObject({ mode: 'report', open: 1, flagged: 1, note: 'One stuck Ticket', paused: false })
+    expect(recorded).toMatchObject({ open: 1, flagged: 1, note: 'One stuck Ticket', paused: false })
     expect(recorded.text).toContain('**Watchdog 观察汇总**')
     expect(recorded.text).toContain('One stuck Ticket')
     // The same idempotency key returns the recorded run instead of writing a second one.
@@ -203,7 +179,7 @@ it('records and lists Watchdog observation runs without changing a Ticket', asyn
     expect(await call('GET', 'watchdog/runs?limit=5')).toMatchObject({ status: 200,
       body: { runs: [expect.objectContaining({ id: recorded.id })] } })
     expect(await call('GET', 'watchdog?stale_minutes=30')).toMatchObject({ status: 200,
-      body: { lastRun: { open: 1, flagged: 1, mode: 'report', note: 'One stuck Ticket' } } })
+      body: { lastRun: { open: 1, flagged: 1, note: 'One stuck Ticket' } } })
     // A recorded observation reads the Ticket; it does not change it.
     expect(store.tickets.get('t1')?.updatedAt).toBe(old)
     expect(await call('POST', 'watchdog/runs', { note: 'no key' })).toMatchObject({ status: 400 })
@@ -215,7 +191,7 @@ it('sends the Watchdog observation summary to a Feishu chat, and refuses without
   const settings = SettingsSchema.parse({})
   const sent: unknown[] = []
   const runtime = {
-    store: { settings: () => settings, tickets: { open: () => [] }, watchdog: { recent: () => [] }, watchdogRuns: { last: () => undefined } },
+    store: { settings: () => settings, tickets: { open: () => [] }, watchdogRuns: { last: () => undefined } },
     sources: { instance: (id: string) => id === 'feishu' ? { enabled: true, config: {} } : undefined,
       sendChat: async (...args: unknown[]) => { sent.push(args) } },
     links: () => () => ({ url: '', label: { zh: '', en: '' } }),

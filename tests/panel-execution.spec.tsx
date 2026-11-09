@@ -240,21 +240,3 @@ it('sends one stop for a double click on Confirm', async () => {
   await act(async () => { confirm.click(); confirm.click() })
   expect(server.requests.filter(request => request.path === 'tickets/t1/stop')).toHaveLength(1)
 })
-
-it('saves the Watchdog intervention mode, allowed actions and limits from Execution settings', async () => {
-  await mount()
-  await click(tab(zh['tab.settings']))
-  await click(find(zh['settingsGroup.execution'], '.dt-settings-link'))
-  expect(text()).toContain(zh.watchdog)
-  expect(text()).toContain(zh['watchdogMode.observe'])
-  await click(zh['watchdogMode.enforce'])
-  await click(zh.watchdogStop)
-  await type(field<HTMLInputElement>(zh.watchdogStale), '45')
-  await type(field<HTMLInputElement>(zh.watchdogCooldown), '5')
-  const form = [...document.querySelectorAll('form.dt-form')].find(item => item.textContent?.includes(zh.watchdog))!
-  const save = [...form.querySelectorAll('button')].find(button => button.textContent?.trim() === zh.save)!
-  await click(save)
-  expect(server.requests.find(request => request.path === 'settings/watchdog')).toMatchObject({ method: 'PUT',
-    body: { value: { mode: 'enforce', actions: ['retry', 'stop'], staleMinutes: 45, cooldownMinutes: 5 } } })
-  expect(server.settings.watchdog).toMatchObject({ mode: 'enforce', actions: ['retry', 'stop'], staleMinutes: 45, cooldownMinutes: 5 })
-})

@@ -30,7 +30,7 @@ import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 import { watchdogView, watchdogSummary } from './views/watchdog.ts'
-import { watchdogAction, watchdogRun, type WatchdogRequest } from './watchdog.ts'
+import { watchdogRun, WATCHDOG_STALE_MINUTES } from './watchdog.ts'
 
 export interface HttpHost {
   readonly store: Store
@@ -129,9 +129,8 @@ function watchdogPage(runtime: HttpHost, staleMinutes: number) {
   const at = new Date().toISOString()
   const last = runtime.store.watchdogRuns.last()
   return { ...watchdogView(views(runtime), at, staleMinutes), state: stateView(runtime),
-    watchdog: runtime.store.settings().watchdog, audit: runtime.store.watchdog.recent(20),
     lastRun: last ? { at: last.at, ageMinutes: Math.max(0, Math.floor((Date.parse(at) - Date.parse(last.at)) / 60_000)),
-      mode: last.mode, paused: last.paused, open: last.open, flagged: last.flagged, ...(last.note ? { note: last.note } : {}) } : null }
+      paused: last.paused, open: last.open, flagged: last.flagged, ...(last.note ? { note: last.note } : {}) } : null }
 }
 export type WatchdogPageView = ReturnType<typeof watchdogPage>
 /** A delivered Watchdog report: the Feishu chat, the rendered observation and when the server sent it. */
@@ -163,12 +162,6 @@ const offset = z.coerce.number().int().nonnegative().catch(0)
 const limit = (fallback: number, max: number) => z.coerce.number().int().positive().catch(fallback).transform(value => Math.min(max, value))
 const TicketsQuery = z.object({ state: z.enum(TICKET_FILTERS).catch('open'), offset, limit: limit(20, 1000) })
 const WatchdogQuery = z.object({ stale_minutes: limit(30, 1440) })
-const WatchdogBody = z.object({
-  reason: z.string().trim().min(1).max(1000),
-  evidence: z.record(z.string(), z.unknown()).optional(),
-  snapshotAt: z.string().refine(value => Number.isFinite(Date.parse(value)), 'A parseable snapshot timestamp'),
-  idempotencyKey: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/, 'A stable idempotency key'),
-})
 const WatchdogReportBody = z.object({
   chatId: z.string().trim().regex(/^oc_[a-zA-Z0-9]+$/, 'A Feishu chat id (oc_...)'),
   idempotencyKey: z.string().trim().min(1).max(50).regex(/^[A-Za-z0-9._:-]+$/, 'A stable idempotency key'),
@@ -189,7 +182,7 @@ const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.litera
 const count = z.coerce.number().int().nonnegative()
 const PromptsQuery = z.object({ revision: count.optional(), offset: count.default(0) })
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*$/)])
-const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor', 'watchdog']), SourceBlock])
+const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
 const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
 const ActivateBody = z.object({ revision: z.number().int().nonnegative(), confirm: z.string().trim().min(1).optional() })
 
@@ -200,12 +193,6 @@ function routes(runtime: HttpHost): Routes {
   return {
     'GET state': () => stateView(runtime),
     'GET watchdog': ({ query }) => watchdogPage(runtime, WatchdogQuery.parse(query).stale_minutes),
-    'POST watchdog/tickets/:id/:action': async ({ params, body }) => {
-      const action = z.enum(['retry', 'stop']).parse(params.action)
-      const request: WatchdogRequest = { ...WatchdogBody.parse(await body()), ticketId: params.id, action }
-      return watchdogAction({ store: runtime.store, engine: runtime.engine, view: views(runtime), configured: () => runtime.configured(),
-        setupProblem: runtime.setupProblem }, request)
-    },
     'POST watchdog/report': async ({ body }) => {
       const request = WatchdogReportBody.parse(await body())
       const source = runtime.sources.instance('feishu')
@@ -213,17 +200,17 @@ function routes(runtime: HttpHost): Routes {
       if (!source.enabled) throw new RouteError(400, 'The Feishu Source is off')
       if (runtime.feishuProblem) throw new RouteError(400, runtime.feishuProblem.detail)
       if (!runtime.configured()) throw new RouteError(400, 'dsh-superagent is waiting for setup')
-      const page = watchdogPage(runtime, runtime.store.settings().watchdog.staleMinutes)
+      const page = watchdogPage(runtime, WATCHDOG_STALE_MINUTES)
       const text = watchdogSummary({ view: page, paused: page.state.paused, load: page.state.load, health: page.state.health,
-        config: page.watchdog, audit: page.audit, ...request.note ? { note: request.note } : {} })
+        ...request.note ? { note: request.note } : {} })
       await runtime.sources.sendChat('feishu', request.chatId, text, request.idempotencyKey, runtime.commands)
       return { sent: true as const, at: new Date().toISOString(), chatId: request.chatId, text }
     },
     'POST watchdog/runs': async ({ body }) => {
       const request = WatchdogRunBody.parse(await body())
       const state = stateView(runtime)
-      return watchdogRun({ store, engine: runtime.engine, view: views(runtime), configured: () => runtime.configured(),
-        setupProblem: runtime.setupProblem }, { paused: state.paused, load: state.load, health: state.health }, request)
+      return watchdogRun({ store, view: views(runtime) },
+        { paused: state.paused, load: state.load, health: state.health }, request)
     },
     'GET watchdog/runs': ({ query }) => {
       const { limit, before } = WatchdogRunsQuery.parse(query)

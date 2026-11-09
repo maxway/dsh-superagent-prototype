@@ -17,6 +17,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const PLATFORM = process.platform
@@ -194,10 +195,53 @@ export function outcome(pids, current) {
 async function status(args) {
   const pids = processes(args.profile)
   const current = pids.length ? await state(args.url) : null
-  const value = { pids, cwd: ROOT, url: args.url, manually_stopped: stopped(args.profile), health: current ? current.health : null,
+  const value = { pids, cwd: ROOT, url: args.url, profile: args.profile, manually_stopped: stopped(args.profile),
+    deployment: deploymentFacts(args.profile, args.home), health: current ? current.health : null,
     errors: current ? current.errors : null, setup: current ? current.setup : null, feishu: current ? current.feishu : null }
   process.stdout.write(JSON.stringify(value, null, 2) + '\n')
   return outcome(pids, current)
+}
+
+/** Run a read-only Git command in the checkout; undefined when Git cannot answer. */
+function gitFact(...args) {
+  try {
+    const result = spawnSync('git', ['-C', ROOT, ...args], { encoding: 'utf8' })
+    return result.status === 0 ? result.stdout.trim() : undefined
+  } catch { return undefined }
+}
+
+/** The configured state directory from the profile's patch, read without loading or changing the profile. */
+function configuredStateDir(home, profile) {
+  try {
+    const text = readFileSync(join(home, 'profiles', profile, 'cordis.patch.yml'), 'utf8')
+    return /^\s*stateDir:\s*["']?([^"'\r\n]+)["']?\s*$/m.exec(text)?.[1]?.trim()
+  } catch { return undefined }
+}
+
+/**
+ * The stable deployment facts a release supervisor would otherwise rediscover: the DSH home and profile directory, the
+ * service script, the configured state directory, the bundle link and its target, the checkout revision and the built
+ * `lib`. Read-only; a missing path or an unavailable Git answer is omitted rather than guessed.
+ */
+export function deploymentFacts(profile, home = process.env.DSH_HOME || join(homedir(), '.dsh')) {
+  const profileDir = join(home, 'profiles', profile)
+  const bundleLink = join(profileDir, 'node_modules', 'dsh-superagent')
+  let bundle
+  try { bundle = realpathSync(bundleLink) } catch {}
+  const lib = join(ROOT, 'lib')
+  let libFacts
+  try {
+    const stat = statSync(lib)
+    libFacts = { path: lib, modifiedAt: stat.mtime.toISOString(), files: readdirSync(lib).length }
+  } catch {}
+  const head = gitFact('rev-parse', 'HEAD'), branch = gitFact('rev-parse', '--abbrev-ref', 'HEAD')
+  const changed = gitFact('status', '--porcelain')
+  return {
+    profile, home, profileDir, serviceScript: existsSync(join(home, 'service.ps1')) ? join(home, 'service.ps1') : undefined,
+    stateDir: configuredStateDir(home, profile), bundleLink, ...bundle ? { bundleTarget: bundle } : {},
+    git: head ? { head, branch, dirty: changed === undefined ? undefined : changed.length > 0 } : undefined,
+    ...libFacts ? { lib: libFacts } : {},
+  }
 }
 
 /** Fetch the Watchdog snapshot, or an error message the caller can report. */
@@ -213,49 +257,6 @@ async function watchdogSnapshot(url, staleMinutes) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return { error: 'The management API answer is not a Watchdog snapshot.' }
     return { value }
   } catch { return { error: 'The management API answer is not JSON.' } }
-}
-
-/** The supervision facts the server audits with an action request; the server re-reads the Ticket and decides itself. */
-function watchdogEvidence(ticket) {
-  return { stage: ticket.stage, ...(ticket.action ? { action: ticket.action } : {}), silentMinutes: ticket.silentMinutes,
-    signals: ticket.signals, ...(ticket.lastReport ? { lastReport: ticket.lastReport } : {}), attempts: ticket.attempts }
-}
-
-/**
- * Ask the management API to record or execute one retry or stop. The server owns the mode, safety checks, cooldown, limits
- * and audit; the command only supplies the reason and the snapshot it was based on, with a fresh idempotency key.
- */
-async function watchdogAction(args) {
-  const action = args.watchdog_action
-  if (!args.ticket) throw new Error(`watchdog ${action} needs a ticket id`)
-  const reason = (args.reason ?? '').trim()
-  if (!reason) throw new Error(`watchdog ${action} needs --reason`)
-  if (reason.length > 1000) throw new Error('--reason must be at most 1000 characters')
-  const snapshot = await watchdogSnapshot(args.url, args.stale_minutes)
-  if (snapshot.error) { process.stderr.write(snapshot.error + '\n'); return 1 }
-  const ticket = snapshot.value.tickets?.find(item => item.id === args.ticket)
-  if (!ticket) {
-    process.stderr.write(`Ticket ${args.ticket} is not open; read the snapshot before asking for an action.\n`)
-    return 1
-  }
-  const payload = JSON.stringify({ reason, evidence: watchdogEvidence(ticket), snapshotAt: snapshot.value.at, idempotencyKey: randomUUID() })
-  const response = await apiRequest(args.url, 'POST', `/orchestrator/api/watchdog/tickets/${encodeURIComponent(args.ticket)}/${action}`,
-    { 'x-orchestrator-request': '1' }, 10_000, payload)
-  if (response === null) {
-    process.stderr.write(`No management API answer at ${args.url}; the service may be down.\n`)
-    return 1
-  }
-  if (response.status < 200 || response.status >= 300) {
-    process.stderr.write(`The management API answered ${response.status}: ${response.body.trim().slice(0, 300)}\n`)
-    return 1
-  }
-  let value
-  try { value = JSON.parse(response.body) } catch {
-    process.stderr.write('The management API answer is not JSON.\n')
-    return 1
-  }
-  process.stdout.write(JSON.stringify(value, null, 2) + '\n')
-  return 0
 }
 
 /**
@@ -333,7 +334,7 @@ async function watchdogRuns(args) {
 
 /**
  * Print the read-only snapshot an external Watchdog reads: service state, every open Ticket's stage, latest report,
- * silence and signals, the current Watchdog settings and the last decisions. The command only sends GET requests.
+ * silence and signals, and the last recorded observation. The command only sends GET requests.
  */
 async function watchdog(args) {
   const snapshot = await watchdogSnapshot(args.url, args.stale_minutes)
@@ -528,16 +529,16 @@ async function start(args) {
 
 /** Parse the command line the way the previous `argparse` interface did, including options before the action. */
 export function parseArgv(argv, env = process.env) {
-  const args = { action: undefined, watchdog_action: undefined, ticket: undefined, reason: undefined, chat: undefined, note: undefined,
+  const args = { action: undefined, watchdog_action: undefined, chat: undefined, note: undefined,
     profile: env.DSH_SUPERAGENT_PROFILE || 'superagent', url: env.DSH_SUPERAGENT_URL || 'http://127.0.0.1:3082',
-    timeout: 60, stop_timeout: 300, stale_minutes: 30, limit: 20, respect_stop: false }
+    home: env.DSH_HOME || join(homedir(), '.dsh'), timeout: 60, stop_timeout: 300, stale_minutes: 30, limit: 20, respect_stop: false }
   const positionals = []
   const value = (index, name) => {
     const next = argv[index + 1]
     if (next === undefined || next.startsWith('-')) throw new Error(`${name} needs a value`)
     return next
   }
-  /** A value that may itself start with `-`, such as a reason written as a sentence. */
+  /** A value that may itself start with `-`, such as a note written as a sentence. */
   const text = (index, name) => {
     const next = argv[index + 1]
     if (next === undefined) throw new Error(`${name} needs a value`)
@@ -547,14 +548,14 @@ export function parseArgv(argv, env = process.env) {
     const word = argv[index]
     if (word === '--profile') { args.profile = value(index, '--profile'); index++ }
     else if (word.startsWith('--profile=')) args.profile = word.slice('--profile='.length)
+    else if (word === '--home') { args.home = value(index, '--home'); index++ }
+    else if (word.startsWith('--home=')) args.home = word.slice('--home='.length)
     else if (word === '--url') { args.url = value(index, '--url'); index++ }
     else if (word.startsWith('--url=')) args.url = word.slice('--url='.length)
     else if (word === '--timeout') { args.timeout = Number(value(index, '--timeout')); index++ }
     else if (word === '--stop-timeout') { args.stop_timeout = Number(value(index, '--stop-timeout')); index++ }
     else if (word === '--stale-minutes') { args.stale_minutes = Number(value(index, '--stale-minutes')); index++ }
     else if (word.startsWith('--stale-minutes=')) args.stale_minutes = Number(word.slice('--stale-minutes='.length))
-    else if (word === '--reason') { args.reason = text(index, '--reason'); index++ }
-    else if (word.startsWith('--reason=')) args.reason = word.slice('--reason='.length)
     else if (word === '--chat') { args.chat = value(index, '--chat'); index++ }
     else if (word.startsWith('--chat=')) args.chat = word.slice('--chat='.length)
     else if (word === '--note') { args.note = text(index, '--note'); index++ }
@@ -569,19 +570,11 @@ export function parseArgv(argv, env = process.env) {
   args.action = positionals[0]
   if (args.action === 'watchdog') {
     args.watchdog_action = positionals[1]
-    args.ticket = positionals[2]
-    const actions = ['retry', 'stop', 'report', 'run', 'runs']
+    const actions = ['report', 'run', 'runs']
     if (args.watchdog_action !== undefined && !actions.includes(args.watchdog_action)) {
-      throw new Error('watchdog action must be retry, stop, report, run or runs')
+      throw new Error('watchdog action must be report, run or runs')
     }
-    if (positionals.length > 3) throw new Error(`unexpected argument: ${positionals[3]}`)
-    if (args.watchdog_action === 'report' && args.ticket) throw new Error('watchdog report takes no ticket id')
-    if ((args.watchdog_action === 'run' || args.watchdog_action === 'runs') && args.ticket) {
-      throw new Error(`watchdog ${args.watchdog_action} takes no ticket id`)
-    }
-    if ((args.watchdog_action === 'retry' || args.watchdog_action === 'stop') && !args.ticket) {
-      throw new Error(`watchdog ${args.watchdog_action} needs a ticket id`)
-    }
+    if (positionals.length > 2) throw new Error(`unexpected argument: ${positionals[2]}`)
     if (args.watchdog_action === 'report') {
       if (!args.chat) throw new Error('watchdog report needs --chat')
       if (!/^oc_[a-zA-Z0-9]+$/.test(args.chat)) throw new Error('--chat must be a Feishu chat id (oc_...)')
@@ -601,6 +594,7 @@ export function parseArgv(argv, env = process.env) {
     throw new Error('--stale-minutes must be an integer between 1 and 1440')
   }
   if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(args.profile)) throw new Error('--profile must be a DSH profile name')
+  args.home = resolve(args.home)
   return args
 }
 
@@ -625,21 +619,19 @@ const USAGE = `Usage: dsh-superagent [--respect-stop] <start|stop|restart|status
 
 Manage a local dsh-superagent service (one DSH profile, default \`superagent\`).
 
-\`watchdog\` prints a read-only JSON snapshot of the service, its open Tickets, the Watchdog settings and recent decisions;
+\`watchdog\` prints a read-only JSON snapshot of the service, its open Tickets and the last recorded observation;
 \`watchdog run [--note <text>]\` records one observation run from the live snapshot, even when nothing is flagged;
 \`watchdog runs [--limit <n>]\` prints recent observation runs, newest first;
-\`watchdog retry|stop <ticket> --reason <text>\` asks the server to record or execute one action under those settings;
 \`watchdog report --chat <chat id> [--note <text>]\` asks the server to send the current observation summary to that
 Feishu chat through the Feishu Source's bot.
-The server owns the mode (off, observe, report or enforce), safety checks, cooldown, limits and audit.
 
 Options:
   --profile <name>       DSH profile that loads dsh-superagent (default: $DSH_SUPERAGENT_PROFILE or superagent).
+  --home <path>          DSH home holding that profile (default: $DSH_HOME or ~/.dsh); \`status\` reports it.
   --url <url>            Health-check URL (default: $DSH_SUPERAGENT_URL or http://127.0.0.1:3082).
   --timeout <seconds>    Startup timeout (default: 60).
   --stop-timeout <s>     Graceful shutdown timeout (default: 300).
   --stale-minutes <n>    Watchdog signal threshold in minutes (default: 30, at most 1440).
-  --reason <text>        Why \`watchdog retry|stop\` asks for an action (required, at most 1000 characters).
   --chat <chat id>       Feishu chat that \`watchdog report\` posts to (required, an \`oc_\` id the bot is in).
   --note <text>          The Watchdog's one-sentence judgement for \`watchdog run\` or \`watchdog report\` (at most 500 characters).
   --limit <n>            How many recent runs \`watchdog runs\` prints (default: 20, at most 100).
@@ -651,7 +643,6 @@ async function main(argv = process.argv.slice(2)) {
   process.umask(0o077)
   // A Watchdog only reads the management API, so a control operation in progress must not block it.
   if (args.action === 'watchdog') {
-    if (args.watchdog_action === 'retry' || args.watchdog_action === 'stop') return await watchdogAction(args)
     if (args.watchdog_action === 'run') return await watchdogRecord(args)
     if (args.watchdog_action === 'runs') return await watchdogRuns(args)
     return args.watchdog_action === 'report' ? await watchdogReport(args) : await watchdog(args)

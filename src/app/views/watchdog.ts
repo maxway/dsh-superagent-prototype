@@ -1,8 +1,6 @@
 /** Read-only supervision facts for an external Watchdog and the observation summary it can send to a person. */
-import { canRetry, latestAssignment, latestReport, ticketStage, type Assignment, type Ticket } from '../../core/index.ts'
+import { latestAssignment, latestReport, ticketStage, type Assignment, type Ticket } from '../../core/index.ts'
 import { workerSessionId } from '../../executor/dsh.ts'
-import type { WatchdogConfig } from '../../policy.ts'
-import type { WatchdogAudit } from '../store.ts'
 import { threadFacts, snapshot, type Snapshot, type ViewHost } from './records.ts'
 import { markdown } from './text.ts'
 
@@ -75,7 +73,7 @@ export function watchdogView(host: ViewHost, at: string, staleMinutes: number) {
       ...ticket.attention ? { attention: { id: ticket.attention.id, question: markdown(ticket.attention.question),
         ...ticket.attention.triggerId ? { triggerId: ticket.attention.triggerId } : {} } } : {},
       ...ticket.delivery ? { deliveryError: ticket.delivery.error } : {}, undelivered: ticket.undelivered.length,
-      ...ticket.offPeak ? { offPeak: true } : {}, actions: { retry: canRetry(ticket), stop: true },
+      ...ticket.offPeak ? { offPeak: true } : {},
       ...ticket.execution ? { directory: ticket.execution.directory } : {},
       ...ticket.assignments.some(item => item.startedAt) ? { sessionId: workerSessionId(ticket.id) } : {},
       threads: threadsOf(view, ticket), signals: ordered }
@@ -89,9 +87,7 @@ export interface WatchdogSummaryInput {
   paused: boolean
   load: { running: number; maxWorkers: number }
   health: Record<string, { state: string; detail?: string }>
-  config: WatchdogConfig
-  audit: readonly WatchdogAudit[]
-  /** The Watchdog's own one-sentence judgement, appended when it reports a finding. */
+  /** The Watchdog's own one-sentence judgement, appended when it reports a finding or a quiet daily summary. */
   note?: string
 }
 /** A person stage's action label; the Watchdog view stores the action separately from the coarse `person` stage. */
@@ -119,13 +115,13 @@ function localTime(at: string): string {
 /** At most this many flagged Tickets are listed; the rest become one count so a busy deployment stays within one message. */
 const REPORT_TICKETS = 10
 /**
- * Renders the Watchdog's observation as Feishu Markdown for the Feishu report route: service state, the open Tickets that
- * carry mechanical signals with their silence and latest report, the Watchdog settings and the recent decisions. It reads
- * the same facts as the snapshot, so the person receiving it sees the current observation; `note` adds the Watchdog's
- * judgement. The message is plain operator text, not a worker reply, so the 100-word IM limit does not apply.
+ * Renders the Watchdog's observation as Feishu Markdown for the Feishu report route: service state and the open Tickets
+ * that carry mechanical signals with their silence and latest report. It reads the same facts as the snapshot, so the
+ * person receiving it sees the current observation; `note` adds the Watchdog's judgement. The message is plain operator
+ * text, not a worker reply, so the 100-word IM limit does not apply.
  */
 export function watchdogSummary(input: WatchdogSummaryInput): string {
-  const { view, paused, load, health, config, audit, note } = input
+  const { view, paused, load, health, note } = input
   const runtime = health.runtime
   const service = runtime ? runtime.state === 'ready' ? '服务 ready'
     : `服务 ${runtime.state}${runtime.detail ? `（${oneLine(runtime.detail, 80)}）` : ''}` : '服务状态未知'
@@ -147,12 +143,6 @@ export function watchdogSummary(input: WatchdogSummaryInput): string {
     if (flagged.length > REPORT_TICKETS) lines.push(`- 另有 ${flagged.length - REPORT_TICKETS} 个工单需要关注。`)
     const quiet = view.open - flagged.length
     if (quiet) lines.push(`其余 ${quiet} 个工单没有机械信号。`)
-  }
-  lines.push(`Watchdog ${config.mode}，允许动作 ${config.actions.length ? config.actions.join('、') : '无'}，静默阈值 ${config.staleMinutes} 分钟。`)
-  if (audit.length) {
-    const recent = audit.slice(0, 3).map(entry => `${entry.action} \`${entry.ticketId.slice(0, 8)}\` ${entry.result}`
-      + `${entry.reason ? `（${oneLine(entry.reason, 40)}）` : ''}`)
-    lines.push(`最近决定：${recent.join('；')}。`)
   }
   if (note?.trim()) lines.push('', `**Watchdog 判断**：${oneLine(note, 500)}`)
   return lines.join('\n')

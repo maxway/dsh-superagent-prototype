@@ -15,7 +15,7 @@ import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, Source
   TicketRow, TicketStage,
   TriggerRow } from '../../src/client/api.ts'
 import { SETUP_FIELDS } from '../../src/deployment.ts'
-import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema, WatchdogConfigSchema } from '../../src/policy.ts'
+import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema } from '../../src/policy.ts'
 import { SetupError, type SetupCode } from '../../src/setup.ts'
 import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
 import { githubChannel } from '../../src/sources/github-trigger.ts'
@@ -177,8 +177,7 @@ const settingsView = (): ApiResponse<'GET settings'> => ({
   git: { source: server.setup.accounts?.provider ?? null, repository: server.setup.accounts?.repository ?? '' },
   blocks: { policy: { value: server.settings.policy, revision: server.revisions.policy ?? 0 },
     eval: { value: server.settings.eval, revision: server.revisions.eval ?? 0 },
-    executor: { value: server.settings.executor, revision: server.revisions.executor ?? 0 },
-    watchdog: { value: server.settings.watchdog, revision: server.revisions.watchdog ?? 0 } },
+    executor: { value: server.settings.executor, revision: server.revisions.executor ?? 0 } },
   sources: sourceSettings(),
   environment: { root: '/srv/dsh-superagent/work', variables: [
     { owner: 'executor', enabled: true, variables: [{ key: 'DSH_SUPERAGENT_DIR', description: { zh: '工单的执行目录',
@@ -305,17 +304,11 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET state': { answer: stateView },
   'GET watchdog': { query: ['stale_minutes'], answer: ({ query }) =>
     ({ at: '2026-11-07T00:00:00.000Z', staleMinutes: Number(query.stale_minutes ?? 30), open: 0, tickets: [], state: stateView(),
-      watchdog: server.settings.watchdog, audit: [], lastRun: null }) },
+      lastRun: null }) },
   'POST watchdog/runs': { body: true, answer: ({ body }) =>
-    ({ id: 'watchdog-run-1', idempotency: body.idempotencyKey, at: '2026-11-07T00:00:00.000Z', mode: server.settings.watchdog.mode,
+    ({ id: 'watchdog-run-1', idempotency: body.idempotencyKey, at: '2026-11-07T00:00:00.000Z',
       paused: false, open: 0, flagged: 0, ...(body.note ? { note: body.note } : {}), text: '**Watchdog 观察汇总**' }) },
   'GET watchdog/runs': { query: ['limit', 'before'], answer: () => ({ runs: [] }) },
-  'POST watchdog/tickets/:id/:action': { body: true, answer: ({ params, body }) => {
-    if (!ticketOf(params.id)) return refuse(404, 'Ticket not found')
-    return { id: 'watchdog-audit-1', idempotency: body.idempotencyKey, at: '2026-11-07T00:00:00.000Z', snapshotAt: body.snapshotAt,
-      ticketId: params.id, action: params.action === 'stop' ? 'stop' as const : 'retry' as const, mode: server.settings.watchdog.mode,
-      initiator: 'watchdog' as const, reason: body.reason, result: 'observed' as const }
-  } },
   'POST watchdog/report': { body: true, answer: ({ body }) =>
     ({ sent: true as const, at: '2026-11-07T00:00:00.000Z', chatId: body.chatId, text: '**Watchdog 观察汇总**' }) },
   'GET overview': { answer: overviewView },
@@ -388,14 +381,13 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   } },
   'PUT settings/:block': { body: true, answer: ({ params: { block }, body }) => {
     const source = block.startsWith('source:') ? KINDS.find(kind => `source:${kind.kind}` === block) : undefined
-    if (!['policy', 'eval', 'executor', 'watchdog'].includes(block) && !source) return block.startsWith('source:') ? refuse(404, 'Source not found')
+    if (!['policy', 'eval', 'executor'].includes(block) && !source) return block.startsWith('source:') ? refuse(404, 'Source not found')
       : refuse(400, 'Invalid settings: block')
     if (body.revision !== (server.revisions[block] ?? 0)) return refuse(409, 'Settings changed. Reload before saving.')
     let restarting = false
     if (block === 'policy') server.settings = { ...server.settings, policy: PolicyConfigSchema.parse(body.value) }
     else if (block === 'executor') server.settings = { ...server.settings, executor: ExecutorConfigSchema.parse(body.value) }
     else if (block === 'eval') server.settings = { ...server.settings, eval: EvalConfigSchema.parse(body.value) }
-    else if (block === 'watchdog') server.settings = { ...server.settings, watchdog: WatchdogConfigSchema.parse(body.value) }
     else if (source) {
       const { enabled, config: value } = SourceSave.parse(body.value)
       const config = source.schema.parse(value)

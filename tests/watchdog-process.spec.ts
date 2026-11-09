@@ -73,6 +73,8 @@ it('validates configuration, finds mechanical problems and keeps finding identit
     collectFindings: (snapshot: unknown) => Record<string, unknown>[]
     gateFindings: (snapshot: unknown) => Record<string, unknown>[]
     fingerprint: (findings: Record<string, unknown>[]) => string
+    localClock: (timeZone: string, now: Date) => { date: string, hour: number }
+    dailyReportDue: (config: Record<string, unknown>, state: Record<string, unknown>, now?: Date) => boolean
   }
   directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-watchdog-config-'))
   const path = join(directory, 'watchdog.json')
@@ -84,8 +86,26 @@ it('validates configuration, finds mechanical problems and keeps finding identit
   expect(() => module.loadConfig(path)).toThrow(/Unknown watchdog configuration field/)
   writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', intervalSeconds: 5 }))
   expect(() => module.loadConfig(path)).toThrow(/intervalSeconds/)
+  // A daily report is only meaningful with Feishu reporting on, and its schedule must be a valid local hour and zone.
+  writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', stateDir: 'state', dailyReport: { hour: 9 } }))
+  expect(() => module.loadConfig(path)).toThrow(/dailyReport requires report true/)
+  writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', report: true, chatId: 'oc_test', stateDir: 'state',
+    dailyReport: { hour: 24 } }))
+  expect(() => module.loadConfig(path)).toThrow(/dailyReport.hour/)
+  writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', report: true, chatId: 'oc_test', stateDir: 'state',
+    dailyReport: { hour: 9, timezone: 'Mars/Olympus' } }))
+  expect(() => module.loadConfig(path)).toThrow(/IANA time zone/)
+  writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', report: true, chatId: 'oc_test', stateDir: 'state',
+    dailyReport: { hour: 9, timezone: 'Asia/Shanghai' } }))
+  expect(module.loadConfig(path)).toMatchObject({ dailyReport: { hour: 9, timezone: 'Asia/Shanghai' } })
   const config = module.loadConfig((writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9/', stateDir: 'state' })), path))
   expect(config).toMatchObject({ url: 'http://127.0.0.1:9', intervalSeconds: 900, staleMinutes: 30, report: false })
+  const morning = new Date('2026-11-09T01:30:00.000Z')
+  expect(module.localClock('Asia/Shanghai', morning)).toEqual({ date: '2026-11-09', hour: 9 })
+  expect(module.dailyReportDue({ report: true, dailyReport: { hour: 9, timezone: 'Asia/Shanghai' } }, {}, morning)).toBe(true)
+  expect(module.dailyReportDue({ report: true, dailyReport: { hour: 10, timezone: 'Asia/Shanghai' } }, {}, morning)).toBe(false)
+  expect(module.dailyReportDue({ report: true, dailyReport: { hour: 9, timezone: 'Asia/Shanghai' } },
+    { quietReportDate: '2026-11-09' }, morning)).toBe(false)
 
   const findings = module.collectFindings(snapshot({ tickets: [
     { id: 't1', title: 'Stuck', signals: ['no-progress'] },
@@ -151,6 +171,34 @@ it('records every observation and reports a finding only when it changes', async
   const status = await run(['--config', config, '--status'])
   expect(status.code).toBe(0)
   expect(JSON.parse(status.stdout)).toMatchObject({ reachable: true, reportedFingerprint: expect.any(String), current: ['t1 waiting-person'] })
+})
+
+it('sends a quiet daily report once per local day and not again on later quiet cycles', async () => {
+  const { calls, url } = await fakeService(() => snapshot())
+  const config = configure(url, { dailyReport: { hour: 0, timezone: 'UTC' } })
+  expect((await run(['--config', config, '--once'])).code).toBe(0)
+  const reports = calls.filter(call => call.url === '/orchestrator/api/watchdog/report')
+  expect(reports).toHaveLength(1)
+  expect(JSON.parse(reports[0]!.body!)).toMatchObject({ chatId: 'oc_test' })
+  expect(JSON.parse(reports[0]!.body!).note).toContain('每日巡检')
+  expect(JSON.parse(readFileSync(join(directory!, 'state', 'state.json'), 'utf8')))
+    .toMatchObject({ reachable: true, quietReportDate: expect.any(String) })
+  // The same local date suppresses the heartbeat; a findings cycle does not replace it and still reports on change.
+  expect((await run(['--config', config, '--once'])).code).toBe(0)
+  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(1)
+})
+
+it('sends the quiet daily report from a quiet gate but never from a risk gate', async () => {
+  const answers: unknown[] = []
+  const { calls, url } = await fakeService(() => answers[0])
+  answers[0] = snapshot()
+  const config = configure(url, { dailyReport: { hour: 0, timezone: 'UTC' } })
+  expect((await run(['--config', config, '--gate'])).code).toBe(0)
+  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(1)
+  answers[0] = snapshot({ tickets: [{ id: 't1', title: 'Stuck', stage: 'working', silentMinutes: 90, signals: ['no-progress'],
+    attempts: ['running'] }] })
+  expect((await run(['--config', config, '--gate'])).code).toBe(2)
+  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(1)
 })
 
 it('reports a missing run route once, logs an unreachable service, and exits 1 without a state from status', async () => {
