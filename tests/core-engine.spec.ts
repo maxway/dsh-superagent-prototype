@@ -835,6 +835,23 @@ describe('worker reports', () => {
     expect(cleared).not.toHaveProperty('attention')
     expect(h.withdrawn).toEqual([key('attention-reply', asked.attention!.id), key('attention-reply', replaced.attention!.id)])
   })
+  it('takes a person\'s message on the ticket\'s own thread as the answer to its question', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    const asked = h.engine.report(ticketId, { state: 'progress', summary: 'need a call', question: 'Which color?', askedBy: '1' })
+    expect(h.repo.tickets.get(ticketId)!.attention).toBeDefined()
+    // The person's follow-up on the Ticket's Thread answers it, and the question's unsent message is withdrawn.
+    h.engine.receive(trigger('3')); h.pump()
+    expect(h.repo.tickets.get(ticketId)!.attention).toBeUndefined()
+    expect(h.withdrawn).toEqual([key('attention-reply', asked.attention!.id)])
+    // A bot's message, or a person's on a Thread the ticket only follows for context, does not answer it.
+    const again = h.engine.report(ticketId, { state: 'progress', summary: 'ask again', question: 'Which size?' })
+    h.engine.receive(trigger('4', { human: false })); h.pump()
+    expect(h.repo.tickets.get(ticketId)!.attention).toEqual(again.attention)
+    h.engine.followForContext(ticketId, { source: 'chat', id: 'ctx' })
+    h.engine.receive(trigger('5', { threads: [{ source: 'chat', id: 'ctx' }] })); h.pump()
+    expect(h.repo.tickets.get(ticketId)!.attention).toEqual(again.attention)
+  })
   it('ends the ticket on a final report: dropped drops it, ready completes it unless it follows a Source\'s Thread that is open', () => {
     const outcome = (state: 'ready' | 'dropped' | 'failed', follows: boolean, closed = false) => {
       const h = harness()
