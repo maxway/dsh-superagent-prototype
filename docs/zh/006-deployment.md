@@ -358,7 +358,14 @@ agent 必须运行在自己的工作区，而不是 checkout。不需要人工�
 }
 ```
 
-Watchdog 快照还会在“运行中的 Assignment 没有存活的 worker Session”时报告 `session-missing`。这是观测，不是自动恢复：P3 的有界 retry/重启与宿主机检查仍需要第 8 节的决策，本增量只报告故障并保持独立告警文件。
+Watchdog 快照还会在“运行中的 Assignment 没有存活的 worker Session”时报告 `session-missing`。恢复默认关闭；在服务环境中设置 `DSH_SUPERAGENT_WATCHDOG_RECOVERY=enforce`（并重启一次服务）后，完整 Watchdog agent 可为这类工单请求一次 retry：
+
+```
+node scripts\dsh-superagent --profile superagent --url http://127.0.0.1:3082 watchdog recover ^
+  --ticket <工单 id> --reason "<一句证据>" --snapshot-at "<snapshot.at>"
+```
+
+服务会重新检查存活的 Session、快照新鲜度（十分钟）、执行器暂停状态和每个 Session 最多一次的恢复上限，写入审计行，并且绝不重启服务。被拒绝或失败的尝试只报告，不得再次 retry；agent 提示词只允许对 `session-missing` 使用这条命令，绝不调用原始 retry/stop。提示词和包装随 Watchdog 制品版本化，修改行为后需重新构建并安装制品。P3 的服务/宿主机检查与独立飞书投递仍待完成。
 
 ## 设置
 

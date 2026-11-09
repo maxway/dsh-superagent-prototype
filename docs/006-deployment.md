@@ -356,7 +356,14 @@ The independent observer can leave a local alert when the management API stays u
 }
 ```
 
-The Watchdog snapshot also reports `session-missing` when a running Assignment has no live worker Session in the service. That is an observation, not an automatic recovery: P3's bounded retry/restart and host checks still need the design decisions in section 8, so this increment only reports the fault and keeps the alert file independent.
+The Watchdog snapshot also reports `session-missing` when a running Assignment has no live worker Session in the service. Recovery is disabled by default; set `DSH_SUPERAGENT_WATCHDOG_RECOVERY=enforce` in the service environment (then restart the service once) to let the full Watchdog agent request one retry for such a Ticket:
+
+```
+node scripts\dsh-superagent --profile superagent --url http://127.0.0.1:3082 watchdog recover ^
+  --ticket <ticket id> --reason "<one-sentence evidence>" --snapshot-at "<snapshot.at>"
+```
+
+The server rechecks the live Session registry, the snapshot freshness (ten minutes), the executor pause and the per-Session ceiling of one retry, records an audit row, and never restarts the service. A refused or failed attempt is reported and must not be retried; the agent prompt allows exactly this command for `session-missing`, never the raw retry/stop API. The prompt and wrapper are versioned in the Watchdog artifact, so rebuild and install the artifact after changing this behavior. P3's service/host checks and independent Feishu delivery are still open.
 
 ## Settings
 

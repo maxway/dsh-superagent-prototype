@@ -13,6 +13,7 @@ import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, b
   from './prompts.ts'
 import { policyVersion } from '../policy.ts'
 import { SettingsConflict, type Settings } from './settings.ts'
+import { MAX_RECOVERY_ATTEMPTS, recoverWatchdogSession, recoveryMode } from './watchdog-recovery.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
 import { UserError, type EngineForPeople, type Ticket } from '../core/index.ts'
 import type { Deployment, Machine } from '../deployment.ts'
@@ -159,6 +160,7 @@ function watchdogPage(runtime: HttpHost, staleMinutes: number) {
   const lifecycle = typeof runtime.sessions?.lifecycle === 'function' ? runtime.sessions.lifecycle() : undefined
   const sessionOf = lifecycle ? (ticketId: string) => lifecycle.find(item => item.ticketId === ticketId) : undefined
   return { ...watchdogView(views(runtime), at, staleMinutes, sessionOf), state: stateView(runtime),
+    recovery: { mode: recoveryMode(), maxAttempts: MAX_RECOVERY_ATTEMPTS },
     install: watchdogInstallView(),
     lastRun: last ? { at: last.at, ageMinutes: Math.max(0, Math.floor((Date.parse(at) - Date.parse(last.at)) / 60_000)),
 paused: last.paused, open: last.open, flagged: last.flagged, ...(last.note ? { note: last.note } : {}),
@@ -281,6 +283,13 @@ const WatchdogRunBody = z.object({
   version: z.string().trim().max(200).regex(/^[A-Za-z0-9._:-]+$/, 'An artifact version').optional(),
   commit: z.string().trim().max(200).regex(/^[A-Za-z0-9._:-]+$/, 'A commit id').optional(),
 })
+const WatchdogRecoveryBody = z.object({
+  ticketId: z.string().trim().min(1).max(64),
+  action: z.literal('retry'),
+  reason: z.string().trim().min(1).max(2000),
+  snapshotAt: z.string().refine(value => Number.isFinite(Date.parse(value)), 'A parseable snapshot time'),
+  idempotencyKey: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/, 'A stable idempotency key'),
+})
 const WatchdogRunsQuery = z.object({
   limit: limit(20, 100),
   before: z.string().refine(value => Number.isFinite(Date.parse(value)), 'A parseable timestamp').optional(),
@@ -329,6 +338,12 @@ function routes(runtime: HttpHost): Routes {
     'GET watchdog/runs': ({ query }) => {
       const { limit, before } = WatchdogRunsQuery.parse(query)
       return { runs: store.watchdogRuns.recent(limit, before) }
+    },
+    'POST watchdog/recoveries': async ({ body }) => {
+      const request = WatchdogRecoveryBody.parse(await body())
+      const state = stateView(runtime)
+      return recoverWatchdogSession({ store, engine: runtime.engine, sessions: runtime.sessions,
+        paused: state.paused, mode: recoveryMode() }, request)
     },
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),

@@ -358,6 +358,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/views/tickets.ts` | 按阶段划分的工单列表、工单页面、授权依据事实和执行器负载 |
 | `src/app/views/watchdog.ts` | 只读的 Watchdog 视图与 `watchdogSummary`：每个进行中工单的阶段、最近派工与报告、静默时长和机械信号（包括运行中的 Assignment 没有存活 worker Session 时的 `session-missing`），并渲染成飞书观察报告 |
 | `src/app/watchdog.ts` | 只读的 Watchdog 观测：从实时快照记录一次运行，并把渲染出的观测保存为“最近运行”心跳 |
+| `src/app/watchdog-recovery.ts` | enforce 模式下的有界恢复：重新检查缺失 worker Session、快照新鲜度、暂停状态和每 Session 恢复上限，然后 retry 一次并写审计行；绝不重启服务 |
 | `scripts/watchdog` | 独立的 Watchdog 进程：自有配置、状态、日志与 pid；挂一个带版本号的等待请求，等待返回后读取面板快照、每轮记录一次运行、把发生变化的机械发现报告到飞书，发送配置好的安静日报，并可在服务不可达时写独立本地告警/恢复记录；`--gate` 提供一次性两段式形态：普通轮次记录后退出 0，风险轮次记录后退出 2，交给完整 agent 做模型判定 |
 | `scripts/watchdog-agent/` | agent 包装、机械 gate、提示词与配置/模型模板，与观察器同版本：普通 gate 记录运行后退出，风险轮次从同一制品启动完整 DSH agent |
 | `scripts/watchdog` | 独立的 Watchdog 进程：自有配置、状态、日志与 pid；挂一个带版本号的等待请求，等待返回后读取面板快照、每轮记录一次运行、把发生变化的机械发现报告到飞书，并发送配置好的安静日报；`--gate` 提供一次性两段式形态：普通轮次记录后退出 0，风险轮次记录后退出 2，交给完整 agent 做模型判定 |
@@ -468,6 +469,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/watchdog-process.spec.ts` | 独立 Watchdog 进程：配置校验、机械发现及其稳定标识、运行记录、报告去重、安静日报、服务不可达时的独立告警与恢复、带版本等待与状态命令；gate 的 quiet/risk/unreachable 出口 |
 | `tests/watchdog-artifact.spec.ts` | 版本化 Watchdog 制品：文件集与 manifest、稳定摘要、自包含观察器/gate 冒烟与篡改检测 |
 | `tests/watchdog-agent.spec.ts` | Watchdog agent 包装：完整 agent 在配置的独立工作区启动并使用 checkout 绝对路径命令、checkout 内的工作区被拒绝、未配置时按 service profile 使用 `watchdog_superagent`/`watchdog_sheepdoku` 等工作区 |
+| `tests/watchdog-recovery.spec.ts` | 有界 Watchdog 恢复：默认关闭；只对“运行中 Assignment 没有存活 Session”做一次审计 retry；幂等重放；每 Session 上限；Session 存在、快照过期或 Assignment 未运行均拒绝 |
 | `tests/watchdog-launch.spec.ts` | 计划任务的无窗口启动器：以隐藏窗口和任务参数启动同目录的 PowerShell 启动器，并保留 agent 的退出码 |
 | `tests/watchdog-update.spec.ts` | 独立 Watchdog 更新：制品校验、smoke、安装与指针切换、已记录运行心跳、幂等、回滚与 staging 根拒绝 |
 | `tests/timeline.spec.ts` | 线程的页面，以及触发按时间再按 id 排序的邻近项，每个已接收触发的时间都采用同一种形式 |
@@ -505,6 +507,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `effect` | 副作用队列：按种类和键，保存负载、顺序、失败尝试及最后一次错误，以及何时到期 | Effects；schema 11 迁移会把较早版本为主 Session 保留的内容入队 |
 | `outbox` | 每条发往渠道的消息的回执，按 id 保存，带上它所指向的工单及其 `status`（`pending`、`sent` 或 `dropped`），保存它以便同一个 id 永远不会入队两次；对于被丢弃的消息，何时、为何，以生成列 `dropped`、其时间和原因代码表示。等待中的消息有一个 `reply` 副作用，保存它的尝试 | Outbox |
 | `watchdog_run` | 每次记录下来的 Watchdog 观测，按其 id 和唯一幂等键保存：时间、暂停状态、进行中与带信号的工单数、调用方的一句话判断和渲染出的观测，以及报告方知道时的 Watchdog 制品 `version` 和 `commit`；只保留最近 30 天，因此有新的运行记录就能证明巡检还活着 | `src/app/watchdog.ts` |
+| `watchdog_recovery` | 每次有界恢复尝试，按其 id 和唯一幂等键保存：工单、快照时间、原因、结果和可选错误；每个 Session 只允许一次非拒绝尝试，审计行既证明也封顶该动作 | `src/app/watchdog-recovery.ts` |
 | `kv` | 其他所有记录，按键 | 为它命名的部件 |
 
 生成列由其所在行的 JSON 计算得出，在其集合之外为空，每个生成列都在其集合上有索引，因此一轮只需读取处于活动状态的工作。早于某个列的数据库会在 Store 打开它时获得该列。

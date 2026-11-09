@@ -2,7 +2,7 @@
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { PromptConfig, Prompts } from './prompts.ts'
 import type { PromptsView, StateView, TicketPageView, WatchdogPageView, WatchdogReportView, WatchdogWaitView } from './http.ts'
-import type { WatchdogRun } from './store.ts'
+import type { WatchdogRecovery, WatchdogRun } from './store.ts'
 import type { HistoryView } from './settings-history.ts'
 import type { OverviewView } from './views/overview.ts'
 import type { SettingsView } from './views/settings.ts'
@@ -25,6 +25,8 @@ export interface Api {
   'POST watchdog/report': { body: { chatId: string; idempotencyKey: string; note?: string }; response: WatchdogReportView }
   'POST watchdog/runs': { body: { idempotencyKey: string; note?: string; version?: string; commit?: string }; response: WatchdogRun }
   'GET watchdog/runs': { query?: { limit?: number; before?: string }; response: { runs: WatchdogRun[] } }
+  'POST watchdog/recoveries': { body: { ticketId: string; action: 'retry'; reason: string; snapshotAt: string; idempotencyKey: string };
+    response: WatchdogRecovery }
   'GET overview': { response: OverviewView }
   'GET search': { query: { q: string }; response: SearchView }
   'GET sources': { response: SourceStatusView[] }
