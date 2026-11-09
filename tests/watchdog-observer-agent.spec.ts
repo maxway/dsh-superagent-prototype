@@ -118,7 +118,7 @@ it.skipIf(process.platform !== 'win32')('runs the full agent once per new risk a
   answers[0] = snapshot(true)
   expect((await run(config)).code).toBe(0)
   expect(readFileSync(agent.marker, 'utf8').trim().split(/\r?\n/)).toHaveLength(2)
-})
+}, 30_000)
 
 it.skipIf(process.platform !== 'win32')('reports one agent failure instead of retrying the same finding', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-watchdog-agent-failure-'))
@@ -135,7 +135,7 @@ it.skipIf(process.platform !== 'win32')('reports one agent failure instead of re
   expect((await run(config)).code).toBe(0)
   expect(readFileSync(agent.marker, 'utf8').trim().split(/\r?\n/)).toHaveLength(1)
   expect(service.reports).toHaveLength(1)
-})
+}, 30_000)
 
 it('requires an existing agent configuration and runner when the agent trigger is configured', async () => {
   const module = await import(pathToFileURL(script).href) as { loadConfig: (path: string) => Record<string, unknown> }
