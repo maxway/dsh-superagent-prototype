@@ -541,8 +541,8 @@ function apiRequest(url, method, path, headers, timeout, content) {
 }
 
 /** Fetch health and setup status from the management API, or return null if unreachable. */
-export async function state(url) {
-  const response = await apiRequest(url, 'GET', '/orchestrator/api/state', { 'x-orchestrator-request': '1' }, 2_000)
+export async function state(url, timeout = 2_000) {
+  const response = await apiRequest(url, 'GET', '/orchestrator/api/state', { 'x-orchestrator-request': '1' }, timeout)
   if (response === null || response.status < 200 || response.status >= 300) return null
   let value
   try { value = JSON.parse(response.body) } catch { return null }
@@ -577,10 +577,15 @@ export function outcome(pids, current) {
 }
 
 /** Read the service's process, health and ownership facts without printing them. */
-async function statusValue(args) {
+async function statusValue(args, stateTimeout = 2_000, stateAttempts = 1) {
   const found = target(args)
   const pids = found.pids
-  const current = pids.length ? await state(args.url) : null
+  let current = pids.length ? await state(args.url, stateTimeout) : null
+  // A deployment survival check must not fail on one slow answer while the process still owns the URL.
+  for (let attempt = 1; attempt < stateAttempts && pids.length && !current; attempt++) {
+    await sleep(500)
+    current = await state(args.url, stateTimeout)
+  }
   const job = WINDOWS && pids.length === 1 ? processJobFacts(pids[0]) : null
   const inJob = job ? job.inJob : null
   const foreignJob = job ? job.foreignJob : null
@@ -664,7 +669,7 @@ async function verify(args) {
     }
     return undefined
   }
-  const first = await statusValue(args)
+  const first = await statusValue(args, 5_000, 2)
   if (first.identity !== 'listener') {
     return fail('Cannot prove which process owns the management URL; the listener lookup is unavailable.')
   }
@@ -680,7 +685,7 @@ async function verify(args) {
   }
   const pid = first.pids[0]
   if (args.survival_seconds > 0) await sleep(args.survival_seconds * 1_000)
-  const second = await statusValue(args)
+  const second = await statusValue(args, 5_000, 2)
   if (second.pids.length !== 1 || second.pids[0] !== pid || !(second.listener ?? []).includes(pid)) {
     return fail(`The service did not keep its process and management URL across the ${args.survival_seconds}s survival window; it was ${pid}.`)
   }
