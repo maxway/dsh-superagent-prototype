@@ -2,7 +2,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { join } from 'node:path'
 import { z } from 'zod'
 import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
 import { sourceSkills } from './context.ts'
@@ -126,11 +128,36 @@ const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources:
 const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.configured() ? runtime.deployment : undefined,
   problem: runtime.setupProblem, feishuProblem: runtime.feishuProblem })
 export type StateView = ReturnType<typeof stateView>
+/**
+ * Read the installed Watchdog's pointers and its last update result. The home and result path are operator
+ * configuration; without a home the panel shows that the install is not configured. Unreadable or malformed files are
+ * reported as absent, never guessed.
+ */
+export function watchdogInstallView(home = process.env.DSH_SUPERAGENT_WATCHDOG_HOME) {
+  if (!home) return null
+  const pointer = (name: string): string | null => {
+    try {
+      const value = readFileSync(join(home, name), 'utf8').trim()
+      return /^[A-Za-z0-9._-]+$/.test(value) ? value : null
+    } catch { return null }
+  }
+  let update: Record<string, unknown> | undefined
+  const resultPath = process.env.DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT || join(home, 'watchdog-update-result.json')
+  try { update = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown> } catch { update = undefined }
+  const target = update?.request && typeof update.request === 'object'
+    ? (update.request as { target?: { version?: unknown } }).target : undefined
+  return { current: pointer('current.txt'), previous: pointer('previous.txt'),
+    candidate: typeof target?.version === 'string' ? target.version : typeof update?.version === 'string' ? update.version : null,
+    at: typeof update?.at === 'string' ? update.at : null,
+    ok: typeof update?.ok === 'boolean' ? update.ok : null,
+    phase: typeof update?.phase === 'string' ? update.phase : null }
+}
 /** Build the read-only `/orchestrator/api/watchdog` response: service state plus every open Ticket's supervision facts. */
 function watchdogPage(runtime: HttpHost, staleMinutes: number) {
   const at = new Date().toISOString()
   const last = runtime.store.watchdogRuns.last()
   return { ...watchdogView(views(runtime), at, staleMinutes), state: stateView(runtime),
+    install: watchdogInstallView(),
     lastRun: last ? { at: last.at, ageMinutes: Math.max(0, Math.floor((Date.parse(at) - Date.parse(last.at)) / 60_000)),
 paused: last.paused, open: last.open, flagged: last.flagged, ...(last.note ? { note: last.note } : {}),
       ...(last.version ? { version: last.version } : {}), ...(last.commit ? { commit: last.commit } : {}) } : null }

@@ -62,6 +62,28 @@ it('shows the Superagent and Watchdog versions and a fresh heartbeat, and warns 
   expect(text()).toContain(zh.watchdogNoHeartbeat)
 })
 
+it('shows the installed Watchdog current, previous, candidate and last update, or that it is not configured', async () => {
+  server.watchdogInstall = { current: 'v2', previous: 'v1', candidate: 'v2', at: '2026-11-09T04:00:00.000Z',
+    ok: true, phase: 'updated' }
+  await mount()
+  await click(zh['tab.execution'])
+  expect(text()).toContain(zh.watchdogCurrent)
+  expect(text()).toContain('v2')
+  expect(text()).toContain(zh.watchdogPrevious)
+  expect(text()).toContain('v1')
+  expect(text()).toContain(zh.watchdogCandidate)
+  expect(text()).toContain(zh.watchdogLastUpdate)
+  server.watchdogInstall = server.watchdogInstall ? { ...server.watchdogInstall, ok: false } : null
+  await remount(zh)
+  await click(zh['tab.execution'])
+  expect(text()).toContain(zh.watchdogUpdateFailed)
+  expect(document.querySelector('.dt-watchdog-install [data-state="warning"]')).not.toBeNull()
+  server.watchdogInstall = null
+  await remount(zh)
+  await click(zh['tab.execution'])
+  expect(text()).toContain(zh.watchdogInstallUnconfigured)
+})
+
 it('stops an open Ticket from its page after confirmation', async () => {
   await mount()
   await click('修复回归')

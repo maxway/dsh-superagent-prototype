@@ -1,6 +1,6 @@
 /** The independent Watchdog update installs, switches and rolls back an artifact without touching the superagent service. */
 import { execFile, execFileSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -115,4 +115,34 @@ if (!response.ok) process.exit(1)
   request('v2', 'update-3', home)
   expect(await apply(configPath)).toMatchObject({ code: 2 })
   expect(readFileSync(requestPath, 'utf8')).toContain('update-3')
+
+  // A persistent observer is stopped before the pointer switches and started from the new version afterwards.
+  writeFileSync(join(home, 'current.txt'), 'v1\n')
+  const order = join(root, 'observer-order.log')
+  const observer = join(root, 'observer.mjs')
+  writeFileSync(observer, `import { appendFileSync, readFileSync } from 'node:fs'
+const action = process.argv[2]
+const home = process.argv[3]
+const current = readFileSync(home + '/current.txt', 'utf8').trim()
+appendFileSync(process.argv[4], action + ' ' + current + '\\n')
+if (action === 'start') {
+  const response = await fetch(process.env.DSH_WATCHDOG_SERVICE_URL + '/orchestrator/api/watchdog/runs', {
+    method: 'POST', headers: { 'x-orchestrator-request': '1', 'content-type': 'application/json' },
+    body: JSON.stringify({ idempotencyKey: 'observer-' + current, note: 'observer', version: current }),
+  })
+  if (!response.ok) process.exit(1)
+}
+`)
+  const observerConfig = join(root, 'update-observer.json')
+  writeFileSync(observerConfig, JSON.stringify({ watchdogHome: home, stagingRoot: join(root, 'staging'), requestPath,
+    serviceUrl, observerStopCommand: `"${process.execPath}" "${observer}" stop "${home}" "${order}"`,
+    observerStartCommand: `"${process.execPath}" "${observer}" start "${home}" "${order}"`,
+    logFile: join(root, 'update.log'), resultFile: resultPath, heartbeatTimeoutSeconds: 10, pollSeconds: 1,
+    lockStaleSeconds: 60 }))
+  request('v2', 'update-observer', join(root, 'staging', 'v2'))
+  expect(await apply(observerConfig)).toMatchObject({ code: 0 })
+  const observed = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>
+  expect(observed).toMatchObject({ ok: true, phase: 'updated', version: 'v2', previousVersion: 'v1', heartbeat: 'recorded' })
+  expect(readFileSync(order, 'utf8').trim().split(/\r?\n/)).toEqual(['stop v1', 'start v2'])
+  expect(readFileSync(join(home, 'current.txt'), 'utf8').trim()).toBe('v2')
 }, 60_000)

@@ -44,7 +44,11 @@ export function loadConfig(path) {
   if (!serviceUrl) throw new Error('The update configuration needs serviceUrl')
   const triggerCommand = typeof value.triggerCommand === 'string' ? value.triggerCommand : ''
   const agentTask = typeof value.agentTask === 'string' ? value.agentTask : ''
-  if (!triggerCommand && !agentTask) throw new Error('The update configuration needs triggerCommand or agentTask')
+  const observerStopCommand = typeof value.observerStopCommand === 'string' ? value.observerStopCommand : ''
+  const observerStartCommand = typeof value.observerStartCommand === 'string' ? value.observerStartCommand : ''
+  if (!triggerCommand && !agentTask && !observerStartCommand) {
+    throw new Error('The update configuration needs triggerCommand, agentTask or observerStartCommand')
+  }
   return {
     watchdogHome,
     stagingRoot: value.stagingRoot ? resolve(String(value.stagingRoot)) : dirname(requestPath),
@@ -52,6 +56,8 @@ export function loadConfig(path) {
     serviceUrl: serviceUrl.replace(/\/+$/, ''),
     triggerCommand,
     agentTask,
+    observerStopCommand,
+    observerStartCommand,
     serviceVersion: typeof value.serviceVersion === 'string' ? value.serviceVersion : '',
     reportChat: typeof value.reportChat === 'string' ? value.reportChat : '',
     logFile: required('logFile'),
@@ -150,14 +156,32 @@ function acquireLock(config) {
   return () => rmSync(lock, { recursive: true, force: true })
 }
 
-function runTrigger(config, manifest) {
-  const command = config.triggerCommand || (config.agentTask ? `schtasks /run /tn ${config.agentTask}` : '')
-  if (!command) throw new Error('The update configuration needs triggerCommand or agentTask')
+/** Run one operator-configured observer or agent command with the target version in its environment. */
+function runCommand(config, command, version) {
   const result = spawnSync(command, { shell: true, encoding: 'utf8', timeout: 30_000, windowsHide: true,
-    env: { ...process.env, DSH_WATCHDOG_VERSION: manifest.version, DSH_WATCHDOG_SERVICE_URL: config.serviceUrl } })
+    env: { ...process.env, DSH_WATCHDOG_VERSION: version, DSH_WATCHDOG_SERVICE_URL: config.serviceUrl } })
   if (result.error) throw result.error
-  if (result.status !== 0) throw new Error(`The Watchdog trigger failed (exit ${result.status}): ${(result.stderr ?? '').trim()}`)
+  if (result.status !== 0) throw new Error(`The Watchdog command failed (exit ${result.status}): ${(result.stderr ?? '').trim()}`)
   return { command, at: new Date().toISOString() }
+}
+
+/** Start the new observer when configured, otherwise trigger the scheduled agent task. */
+function runTrigger(config, manifest) {
+  const command = config.observerStartCommand || config.triggerCommand || (config.agentTask ? `schtasks /run /tn ${config.agentTask}` : '')
+  if (!command) throw new Error('The update configuration needs triggerCommand, agentTask or observerStartCommand')
+  return runCommand(config, command, manifest.version)
+}
+
+/** Stop the old observer before the pointer switches; without this command the scheduled agent owns the lifecycle. */
+function stopObserver(config, version) {
+  if (!config.observerStopCommand) return undefined
+  return runCommand(config, config.observerStopCommand, version)
+}
+
+/** After a rollback, start the previous observer again; a scheduled agent needs no immediate start. */
+function restartPrevious(config, version) {
+  if (!config.observerStartCommand || !version) return undefined
+  return runCommand(config, config.observerStartCommand, version)
 }
 
 /** Ask the service for its newest recorded runs; an unavailable service is reported, not treated as a bad artifact. */
@@ -233,6 +257,14 @@ export async function update(config, rawRequest, dependencies = {}) {
     logLine(`smoke passed version=${artifact.version}`)
     const installed = installArtifact(config.watchdogHome, request.target.artifactPath, artifact)
     logLine(`artifact ${installed.installed ? 'installed' : 'reused'} at ${installed.destination}`)
+    let stopped
+    try {
+      stopped = stopObserver(config, current ?? '')
+    } catch (error) {
+      return finish({ at: now().toISOString(), ok: false, phase: 'failed', version: artifact.version,
+        previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence,
+        error: `The old observer could not be stopped, so the switch was not attempted: ${error instanceof Error ? error.message : String(error)}` })
+    }
     writePointer(config.watchdogHome, 'previous.txt', current ?? null)
     writePointer(config.watchdogHome, 'current.txt', artifact.version)
     const triggerAt = Date.now()
@@ -241,8 +273,13 @@ export async function update(config, rawRequest, dependencies = {}) {
       triggerEvidence = trigger(config, artifact)
     } catch (error) {
       writePointer(config.watchdogHome, 'current.txt', current ?? null)
+      let restarted
+      try { restarted = restartPrevious(config, current ?? '') } catch (restartError) {
+        restarted = { error: restartError instanceof Error ? restartError.message : String(restartError) }
+      }
       return finish({ at: now().toISOString(), ok: false, phase: 'rolled-back', version: artifact.version,
-        previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence, error: error instanceof Error ? error.message : String(error) })
+        previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence, stop: stopped, restart: restarted,
+        error: error instanceof Error ? error.message : String(error) })
     }
     let heartbeat = 'unverified'
     let reachable = true
@@ -253,16 +290,20 @@ export async function update(config, rawRequest, dependencies = {}) {
         heartbeat = 'recorded'
       } catch (error) {
         writePointer(config.watchdogHome, 'current.txt', current ?? null)
+        let restarted
+        try { restarted = restartPrevious(config, current ?? '') } catch (restartError) {
+          restarted = { error: restartError instanceof Error ? restartError.message : String(restartError) }
+        }
         return finish({ at: now().toISOString(), ok: false, phase: 'rolled-back', version: artifact.version,
-          previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence, trigger: triggerEvidence,
-          error: error instanceof Error ? error.message : String(error) })
+          previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence, stop: stopped, trigger: triggerEvidence,
+          restart: restarted, error: error instanceof Error ? error.message : String(error) })
       }
     } else {
       heartbeat = 'unreachable'
       logLine('the management API is unreachable; installed the artifact without a recorded-run proof')
     }
     const result = finish({ at: now().toISOString(), ok: true, phase: 'updated', version: artifact.version, commit: artifact.commit,
-      previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence, trigger: triggerEvidence, heartbeat })
+      previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence, stop: stopped, trigger: triggerEvidence, heartbeat })
     if (config.reportChat) {
       const note = `Watchdog 已更新到 ${artifact.version}${current ? `（上一版 ${current}）` : ''}；服务未重启；心跳 ${heartbeat === 'recorded' ? '已记录' : '未验证'}。`
       if (!(await report(config, note, `watchdog-update-${request.idempotencyKey}`))) logLine('the update report could not be sent')

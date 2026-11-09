@@ -23,6 +23,10 @@ export function ExecutionStatus({ filter: current, state, reload }: {
   const heartbeatStale = !lastRun || lastRun.ageMinutes > (pulse.data?.staleMinutes ?? 30) * 2
   const heartbeat = lastRun ? t(heartbeatStale ? 'watchdogHeartbeatStale' : 'watchdogHeartbeat', { minutes: lastRun.ageMinutes })
     : t('watchdogNoHeartbeat')
+  const install = pulse.data?.install
+  const updatedAt = install?.at && Number.isFinite(Date.parse(install.at))
+    ? new Date(install.at).toLocaleString(t('lang') === 'en' ? 'en-US' : 'zh-CN', { dateStyle: 'short', timeStyle: 'short' })
+    : undefined
   const { paused, load: { maxWorkers } } = state
   // Pausing uses its own block revision so toggling pause does not invalidate an open Execution settings draft.
   const pause = async () => { await call('POST executor/pause', { body: { paused: !paused } }); await reload() }
@@ -46,6 +50,15 @@ export function ExecutionStatus({ filter: current, state, reload }: {
       <LabelValue label={t('superagentVersion')} value={state.version} />
       <LabelValue label={t('watchdogVersion')} value={lastRun?.version ?? t('watchdogVersionUnknown')} />
       <span className="dt-status-text" data-state={heartbeatStale ? 'warning' : 'ongoing'}>{heartbeat}</span>
+    </div>
+    <div className="dt-row-meta dt-watchdog-install">
+      {install ? <>
+        <LabelValue label={t('watchdogCurrent')} value={install.current ?? t('watchdogNone')} />
+        <LabelValue label={t('watchdogPrevious')} value={install.previous ?? t('watchdogNone')} />
+        <LabelValue label={t('watchdogCandidate')} value={install.candidate ?? t('watchdogNone')} />
+        <LabelValue label={t('watchdogLastUpdate')} value={updatedAt ?? t('watchdogNoUpdate')} />
+        {install.ok === false && <span className="dt-status-text" data-state="warning">{t('watchdogUpdateFailed')}</span>}
+      </> : <span className="dt-hint">{t('watchdogInstallUnconfigured')}</span>}
     </div>
     <div className="dt-filters">
       {TICKET_FILTERS.map(value => <Pill key={value} active={current === value}

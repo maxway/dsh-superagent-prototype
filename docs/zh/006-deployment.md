@@ -325,6 +325,8 @@ Watchdog 不再通过拉取 superagent 检出更新：仓库构建不可变制�
   "requestPath": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-request.json",
   "serviceUrl": "http://127.0.0.1:3083",
   "triggerCommand": "schtasks /run /tn dsh-superagent-watchdog-agent",
+  "observerStopCommand": "",
+  "observerStartCommand": "",
   "logFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update.log",
   "resultFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-result.json",
   "heartbeatTimeoutSeconds": 180,
@@ -335,6 +337,8 @@ Watchdog 不再通过拉取 superagent 检出更新：仓库构建不可变制�
 ```
 
 首次安装是操作员步骤：构建或复制制品到 staging 根目录，安装稳定启动器与 agent 配置，把计划任务指向 `launch-agent.ps1`，并写入 `current.txt`。执行页现在显示 Superagent 版本、最近一次 Watchdog 记录中的制品版本和该次心跳；没有心跳或心跳过期会显示为警告。部署可用 DSH_SUPERAGENT_VERSION 命名运行版本，未设置时回退到包版本。
+
+面板还显示已安装的当前与上一版、最近一次请求的候选版本，以及那次更新的时间和结果。安装信息来自 `DSH_SUPERAGENT_WATCHDOG_HOME` 下的 `current.txt`、`previous.txt` 和 `watchdog-update-result.json`（可用 `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT` 覆盖结果路径）；未设置该目录时面板显示未配置安装。若使用持久 observer，在更新配置中设置 `observerStopCommand` 与 `observerStartCommand`：更新任务先停止旧 observer、再切换指针、启动新版本；启动失败时恢复指针并重新启动上一版。未设置这两个命令时仍按原方式触发计划任务 agent。命令会收到 `DSH_WATCHDOG_VERSION` 与 `DSH_WATCHDOG_SERVICE_URL`，并在 superagent 服务之外运行。
 
 ## 设置
 

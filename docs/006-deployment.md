@@ -323,6 +323,8 @@ The independent `dsh-superagent-watchdog-update` task runs `node scripts/watchdo
   "requestPath": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-request.json",
   "serviceUrl": "http://127.0.0.1:3083",
   "triggerCommand": "schtasks /run /tn dsh-superagent-watchdog-agent",
+  "observerStopCommand": "",
+  "observerStartCommand": "",
   "logFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update.log",
   "resultFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-result.json",
   "heartbeatTimeoutSeconds": 180,
@@ -333,6 +335,8 @@ The independent `dsh-superagent-watchdog-update` task runs `node scripts/watchdo
 ```
 
 The first installation is an operator step: build or copy the artifact into the staging root, install the stable launcher and agent configuration, point the scheduled task at `launch-agent.ps1`, and write `current.txt`. The Execution page now shows the Superagent version, the Watchdog artifact version from its latest recorded run, and that run's heartbeat; a missing or stale heartbeat is shown as a warning. The deployment can name the running build with DSH_SUPERAGENT_VERSION; the package version is the fallback.
+
+The panel also shows the installed current and previous versions, the candidate from the last update request, and that update's time and result. The install facts come from `DSH_SUPERAGENT_WATCHDOG_HOME` and its `current.txt`, `previous.txt` and `watchdog-update-result.json` (override the result with `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT`); without the home the panel says the install is not configured. For a persistent observer, set `observerStopCommand` and `observerStartCommand` in the update configuration: the updater stops the old observer before switching the pointer, starts the new version, and on a failed start restores the pointer and starts the previous version again. Without these commands the scheduled Watchdog agent task is triggered, as before. The commands receive `DSH_WATCHDOG_VERSION` and `DSH_WATCHDOG_SERVICE_URL`, and run outside the superagent service.
 
 ## Settings
 
