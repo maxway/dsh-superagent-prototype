@@ -318,6 +318,32 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 `dsh-superagent-deploy` 任务随后运行 `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`。**上线说明（2026-11-09）。** 把生产服务从 Desktop DSH Job 迁移到这条路径需要操作员维护窗口：拉取已合并提交、把任务指向带版本的脚本，并在 DSH 之外重启一次当前生产实例，使它的进程不再位于该 Job 中。目标关系与剩余阶段见 `docs/zh/references/watchdog-superagent-mutual-assist.md`。
 
+### 版本化 Watchdog 制品与更新任务
+
+Watchdog 不再通过拉取 superagent 检出更新：仓库构建不可变制品，观察器、agent 包装与 gate 只从同一版本导入。`node scripts/watchdog-artifact.mjs --out <dir> --version <id> --commit <sha>` 把 `scripts/watchdog`、`scripts/watchdog-agent/*` 和稳定启动器复制到制品，并写入包含文件哈希、总摘要、`apiVersion` 与 `minServiceVersion` 的 `manifest.json`。`node scripts/watchdog-smoke.mjs <dir>` 用本地 mock 管理 API 验证制品，不接触生产服务或飞书。
+
+把制品安装到 `<watchdogHome>\versions\<version>`，用 `<watchdogHome>\current.txt` 表示当前版本；`previous.txt` 是回滚点。计划任务运行稳定的 `<watchdogHome>\launch-agent.ps1 -Config <agent.json>`，它读取 `current.txt` 并启动该版本的 `agent\run.ps1`；切换版本不需要改写任务动作，也从不重启 superagent 服务。agent 配置（服务 URL、chat id、checkout、DSH home、模型 patch、日志）留在仓库外；`scripts/watchdog-agent/config.example.json` 与 `model.patch.example.yml` 是模板。
+
+独立的 `dsh-superagent-watchdog-update` 任务运行 `node scripts/watchdog-update.mjs --config <update.json>`。主会话或操作员写入 `watchdog-update-request.json`，包含操作者确认、目标版本、制品路径、可选摘要和幂等键。任务校验制品位于 staging 根目录内且与 manifest 一致，做 smoke、安装、切换 `current.txt`、触发计划任务，并等待带新版本的已记录运行。smoke、触发或心跳失败时恢复上一个指针；锁让并发更新被拒绝，重复幂等键返回已记录结果。更新任务不自行启动观察器，也从不备份、重启或替换 superagent。快照的 `lastRun` 与已记录运行携带 Watchdog 的 `version` 和 `commit`，供面板与审计使用。
+
+```json
+{
+  "watchdogHome": "C:\\Users\\me\\.dsh\\watchdog",
+  "stagingRoot": "C:\\Users\\me\\.dsh\\watchdog\\staging",
+  "requestPath": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-request.json",
+  "serviceUrl": "http://127.0.0.1:3083",
+  "triggerCommand": "schtasks /run /tn dsh-superagent-watchdog-agent",
+  "logFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update.log",
+  "resultFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-result.json",
+  "heartbeatTimeoutSeconds": 180,
+  "pollSeconds": 5,
+  "smokeTimeoutSeconds": 30,
+  "lockStaleSeconds": 900
+}
+```
+
+首次安装是操作员步骤：构建或复制制品到 staging 根目录，安装稳定启动器与 agent 配置，把计划任务指向 `launch-agent.ps1`，并写入 `current.txt`。面板显示双方版本与心跳是 P2 的下一个增量。
+
 ## 设置
 
 安装配置必须成功，轮询或工作才会开始。概览会列出缺失的要求，并链接到对应的设置。更改设置会再次运行安装配置。如果你在应用之外修复了某些东西，例如 CLI 登录，请选择 **重新检查**。

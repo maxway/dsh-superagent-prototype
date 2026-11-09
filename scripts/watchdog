@@ -175,10 +175,19 @@ export function noteFor(findings) {
   return oneLine(`独立 Watchdog：${[...tickets, ...others].join('；')}。`, 500)
 }
 
+/** The installed artifact's version, read from the manifest beside this script; a checkout run has none. */
+export function artifactFacts() {
+  try {
+    const manifest = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'manifest.json'), 'utf8'))
+    const version = typeof manifest.version === 'string' ? manifest.version : typeof manifest.commit === 'string' ? manifest.commit : undefined
+    return { ...(version ? { version } : {}), ...(typeof manifest.commit === 'string' ? { commit: manifest.commit } : {}) }
+  } catch { return {} }
+}
+
 /** Record this observation as a run; an older service without the route is logged once and otherwise tolerated. */
 async function recordRun(config, note) {
   const response = await apiRequest(config.url, 'POST', '/orchestrator/api/watchdog/runs',
-    JSON.stringify({ note, idempotencyKey: randomUUID() }))
+    JSON.stringify({ note, idempotencyKey: randomUUID(), ...artifactFacts() }))
   if (response === null) throw new Unreachable('No management API answer while recording the Watchdog run.')
   if (response.status === 404 || response.status === 405) return { recorded: false }
   answerJson(response, 'Watchdog run record')

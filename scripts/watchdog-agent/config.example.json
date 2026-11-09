@@ -1,0 +1,13 @@
+{
+  "url": "http://127.0.0.1:3083",
+  "staleMinutes": 30,
+  "chatId": "oc_...",
+  "checkout": "C:\\path\\to\\dsh-superagent",
+  "dshHome": "C:\\Users\\me\\.dsh",
+  "node": "C:\\Program Files\\nodejs\\node.exe",
+  "dsh": "C:\\path\\to\\@deepseek-ai\\dsh\\lib\\bin.js",
+  "modelPatch": "C:\\path\\to\\watchdog\\model.patch.yml",
+  "logFile": "C:\\path\\to\\watchdog\\watchdog-agent.log",
+  "serviceProfile": "superagent",
+  "agentProfile": "headless"
+}

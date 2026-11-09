@@ -1,0 +1,35 @@
+# Model patch for the full Watchdog agent. Copy it outside the repository and fill in the provider, endpoint and model
+# used by the host; the agent wrapper passes this path to DSH with --patch. Keep credentials in the environment named by
+# apiKeyEnv, never in this file.
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: __PROVIDER__
+    model: __MODEL__
+    reasoningEffort: high
+- id: llm-pi-ai
+  config:
+    providers:
+      __PROVIDER__:
+        displayName: __PROVIDER_DISPLAY_NAME__
+        apiKeyEnv: LUMOS_API_KEY
+        api: openai-completions
+        baseURL: https://__ENDPOINT__/v1
+        compat:
+          maxTokensField: max_tokens
+          supportsDeveloperRole: false
+        models:
+          - id: __MODEL__
+            name: __MODEL_DISPLAY_NAME__
+            contextWindow: 1048576
+            maxTokens: 384000
+            input:
+              - text
+- id: permission
+  name: "@deepseek-ai/dsh-permission-presets"
+  config:
+    presets:
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+    defaultPreset: danger-full-access

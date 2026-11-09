@@ -316,6 +316,32 @@ The independent task runs `scripts/deploy.ps1` from this repository with a JSON 
 
 The `dsh-superagent-deploy` task then runs `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`. **Rollout note (2026-11-09).** Moving a production service from the Desktop DSH Job to this path needs an operator maintenance window: pull the merged commit, point the task at the versioned script, and restart the current production instance once from outside DSH so its process is no longer in that Job. See `docs/zh/references/watchdog-superagent-mutual-assist.md` (in Chinese) for the target relationship and the remaining phases.
 
+### Versioned Watchdog artifact and update task
+
+The Watchdog is not updated by pulling the superagent checkout: the repository builds an immutable artifact whose observer, agent wrapper and gate import only from the same version. `node scripts/watchdog-artifact.mjs --out <dir> --version <id> --commit <sha>` copies `scripts/watchdog`, `scripts/watchdog-agent/*` and the stable launcher into the artifact and writes `manifest.json` with the file hashes, one combined digest, `apiVersion` and `minServiceVersion`. `node scripts/watchdog-smoke.mjs <dir>` proves the artifact against a local mock management API, without the production service or Feishu.
+
+Install the artifact under `<watchdogHome>\versions\<version>` and keep `<watchdogHome>\current.txt` as the active version; `previous.txt` is the rollback point. The scheduled task runs the stable `<watchdogHome>\launch-agent.ps1 -Config <agent.json>`, which reads `current.txt` and starts that version's `agent\run.ps1`; changing the version does not rewrite the task action and never restarts the superagent service. The agent configuration (service URL, chat id, checkout, DSH home, model patch, log) stays outside the repository; `scripts/watchdog-agent/config.example.json` and `model.patch.example.yml` are templates.
+
+The independent `dsh-superagent-watchdog-update` task runs `node scripts/watchdog-update.mjs --config <update.json>`. The main Session or operator writes `watchdog-update-request.json` with the operator's confirmation, target version, artifact path, optional digest and an idempotency key. The task validates that the artifact is inside the staging root and matches its manifest, smokes it, installs it, switches `current.txt`, triggers the scheduled agent and waits for a recorded run carrying the new version. A failed smoke, trigger or heartbeat restores the previous pointer; a lock makes concurrent updates refuse, and a repeated idempotency key returns the recorded result. The update task does not start the observer itself and never backs up, restarts or replaces superagent. The snapshot's `lastRun` and the recorded runs carry the Watchdog `version` and `commit` for the panel and audit.
+
+```json
+{
+  "watchdogHome": "C:\\Users\\me\\.dsh\\watchdog",
+  "stagingRoot": "C:\\Users\\me\\.dsh\\watchdog\\staging",
+  "requestPath": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-request.json",
+  "serviceUrl": "http://127.0.0.1:3083",
+  "triggerCommand": "schtasks /run /tn dsh-superagent-watchdog-agent",
+  "logFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update.log",
+  "resultFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-result.json",
+  "heartbeatTimeoutSeconds": 180,
+  "pollSeconds": 5,
+  "smokeTimeoutSeconds": 30,
+  "lockStaleSeconds": 900
+}
+```
+
+The first installation is an operator step: build or copy the artifact into the staging root, install the stable launcher and agent configuration, point the scheduled task at `launch-agent.ps1`, and write `current.txt`. Updating the panel to show both versions and heartbeats is the next P2 increment.
+
 ## Settings
 
 Setup must succeed before polling or work starts. Overview lists missing requirements and links to their settings. A settings change runs setup again. If you fix something outside the application, such as CLI authentication, choose **Check again**.

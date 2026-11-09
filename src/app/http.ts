@@ -131,7 +131,8 @@ function watchdogPage(runtime: HttpHost, staleMinutes: number) {
   return { ...watchdogView(views(runtime), at, staleMinutes), state: stateView(runtime),
     watchdog: runtime.store.settings().watchdog, audit: runtime.store.watchdog.recent(20),
     lastRun: last ? { at: last.at, ageMinutes: Math.max(0, Math.floor((Date.parse(at) - Date.parse(last.at)) / 60_000)),
-      mode: last.mode, paused: last.paused, open: last.open, flagged: last.flagged, ...(last.note ? { note: last.note } : {}) } : null }
+      mode: last.mode, paused: last.paused, open: last.open, flagged: last.flagged, ...(last.note ? { note: last.note } : {}),
+      ...(last.version ? { version: last.version } : {}), ...(last.commit ? { commit: last.commit } : {}) } : null }
 }
 export type WatchdogPageView = ReturnType<typeof watchdogPage>
 /** A delivered Watchdog report: the Feishu chat, the rendered observation and when the server sent it. */
@@ -177,6 +178,8 @@ const WatchdogReportBody = z.object({
 const WatchdogRunBody = z.object({
   idempotencyKey: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/, 'A stable idempotency key'),
   note: z.string().trim().max(500).optional(),
+  version: z.string().trim().max(200).regex(/^[A-Za-z0-9._:-]+$/, 'An artifact version').optional(),
+  commit: z.string().trim().max(200).regex(/^[A-Za-z0-9._:-]+$/, 'A commit id').optional(),
 })
 const WatchdogRunsQuery = z.object({
   limit: limit(20, 100),

@@ -191,10 +191,12 @@ it('records and lists Watchdog observation runs without changing a Ticket', asyn
       machine: { stateDir: '/tmp/state', promptMaxChars: { get: () => 100_000 }, admissionContextMaxPages: { get: () => 1 },
         admissionContextTimeoutMs: { get: () => 1_000 } },
       health: { runtime: { state: 'ready', detail: '' } }, masterId: 'master' })
-    const response = await call('POST', 'watchdog/runs', { idempotencyKey: 'run-1', note: 'One stuck Ticket' })
+    const response = await call('POST', 'watchdog/runs', { idempotencyKey: 'run-1', note: 'One stuck Ticket',
+      version: 'artifact-1', commit: 'abcdef1234567890' })
     expect(response.status).toBe(200)
     const recorded = response.body as { id: string, text: string }
-    expect(recorded).toMatchObject({ mode: 'report', open: 1, flagged: 1, note: 'One stuck Ticket', paused: false })
+    expect(recorded).toMatchObject({ mode: 'report', open: 1, flagged: 1, note: 'One stuck Ticket', paused: false,
+      version: 'artifact-1', commit: 'abcdef1234567890' })
     expect(recorded.text).toContain('**Watchdog 观察汇总**')
     expect(recorded.text).toContain('One stuck Ticket')
     // The same idempotency key returns the recorded run instead of writing a second one.
@@ -203,7 +205,8 @@ it('records and lists Watchdog observation runs without changing a Ticket', asyn
     expect(await call('GET', 'watchdog/runs?limit=5')).toMatchObject({ status: 200,
       body: { runs: [expect.objectContaining({ id: recorded.id })] } })
     expect(await call('GET', 'watchdog?stale_minutes=30')).toMatchObject({ status: 200,
-      body: { lastRun: { open: 1, flagged: 1, mode: 'report', note: 'One stuck Ticket' } } })
+      body: { lastRun: { open: 1, flagged: 1, mode: 'report', note: 'One stuck Ticket',
+        version: 'artifact-1', commit: 'abcdef1234567890' } } })
     // A recorded observation reads the Ticket; it does not change it.
     expect(store.tickets.get('t1')?.updatedAt).toBe(old)
     expect(await call('POST', 'watchdog/runs', { note: 'no key' })).toMatchObject({ status: 400 })

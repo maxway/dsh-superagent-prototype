@@ -24,7 +24,7 @@ export interface Api {
   'POST watchdog/tickets/:id/:action': { body: { reason: string; evidence?: Record<string, unknown>; snapshotAt: string;
     idempotencyKey: string }; response: WatchdogAudit }
   'POST watchdog/report': { body: { chatId: string; idempotencyKey: string; note?: string }; response: WatchdogReportView }
-  'POST watchdog/runs': { body: { idempotencyKey: string; note?: string }; response: WatchdogRun }
+  'POST watchdog/runs': { body: { idempotencyKey: string; note?: string; version?: string; commit?: string }; response: WatchdogRun }
   'GET watchdog/runs': { query?: { limit?: number; before?: string }; response: { runs: WatchdogRun[] } }
   'GET overview': { response: OverviewView }
   'GET search': { query: { q: string }; response: SearchView }

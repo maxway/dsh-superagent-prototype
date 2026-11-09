@@ -142,6 +142,9 @@ export interface WatchdogRunState {
 /** One recorded observation: the live snapshot, the rendered observation and an optional one-sentence judgement. */
 export interface WatchdogRunRequest {
   note?: string
+  /** The installed artifact's version and commit; a service-only check may omit them. */
+  version?: string
+  commit?: string
   idempotencyKey: string
 }
 /**
@@ -165,6 +168,8 @@ export function watchdogRun(host: WatchdogHost, state: WatchdogRunState, request
       open: view.open,
       flagged: view.tickets.filter(ticket => ticket.signals.length).length,
       ...(note ? { note } : {}),
+      ...(request.version ? { version: request.version } : {}),
+      ...(request.commit ? { commit: request.commit } : {}),
       text: watchdogSummary({ view, paused: state.paused, load: state.load, health: state.health, config: settings.watchdog,
         audit: host.store.watchdog.recent(20), ...(note ? { note } : {}) }),
     }
