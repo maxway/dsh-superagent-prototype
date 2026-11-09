@@ -284,7 +284,7 @@ Windows 上用 `node scripts\dsh-superagent ...`。`--stale-minutes` 只改变�
 
 ### 在 Windows Job 之外启动服务
 
-DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Windows Job；从其中启动的服务会在命令结束时被终止，而命令内部此前的健康检查可能已经通过。`scripts/dsh-superagent start` 会检测这一状态，让 WMI 提供程序在 Job 之外创建 `scripts/service-start.ps1`，并等待健康检查。该包装脚本从受限文件中恢复服务环境、启动分离的服务后退出；它从不启动 observer。从普通终端或独立任务启动仍走原路径，`status` 会报告实时的 `inJob` 值以及 `start` 中最近一次启动的方式。无法证明服务位于所有 Windows Job 之外的启动会失败，而不是留下一个可能被关闭命令杀死的服务。
+DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Windows Job；从其中启动的服务会在命令结束时被终止，而命令内部此前的健康检查可能已经通过。`scripts/dsh-superagent start` 会检测这一状态，让 WMI 提供程序在 Job 之外创建 `scripts/service-start.ps1`，并等待健康检查。该包装脚本从受限文件中恢复服务环境、启动分离的服务后退出；它从不启动 observer。不在 Job 中的普通终端启动仍走原路径；计划任务所在的 Job 也按同样方式离开，`status` 会报告实时的 `inJob` 值以及 `start` 中最近一次启动的方式。无法证明服务位于所有 Windows Job 之外的启动会失败，而不是留下一个可能被关闭命令杀死的服务。
 
 操作员的 `service.ps1` 仍是服务入口：它设置生产 home 并调用控制脚本，因此服务在进程位于 Job 之外时仍使用自己的 profile home 和凭据。`scripts/service-start.ps1` 也可以由独立计划任务直接运行。
 
@@ -307,7 +307,6 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
   "node": "D:\\Program Files\\nodejs\\node.exe",
   "dsh": "C:\\Users\\dd\\.local\\opt\\dsh-0.2.2-rc.1\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
   "home": "C:\\Users\\dd\\.dsh",
-  "agentsHome": "C:\\Users\\dd\\.dsh-superagent\\agents",
   "agentProfile": "headless",
   "serviceProfile": "superagent",
   "url": "http://127.0.0.1:3083",

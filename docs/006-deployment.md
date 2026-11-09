@@ -282,7 +282,7 @@ To keep the model cost out of ordinary cycles, run the process as a gate with `-
 
 ### Starting the service outside a Windows Job
 
-A tool command run by DSH belongs to a Windows Job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; a service started from it is terminated when the command ends, after a health check inside the command has already passed. `scripts/dsh-superagent start` detects that state, asks the WMI provider to create `scripts/service-start.ps1` outside every Job, and waits for health. The wrapper restores the service environment from an access-restricted file, starts the detached service and exits; it never starts the observer. A start from a normal terminal or an independent task keeps the ordinary path, and `status` reports the live `inJob` value plus the newest start's method in `start`. A start that cannot prove the service is outside every Job fails instead of leaving a service that a closing command could kill.
+A tool command run by DSH belongs to a Windows Job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; a service started from it is terminated when the command ends, after a health check inside the command has already passed. `scripts/dsh-superagent start` detects that state, asks the WMI provider to create `scripts/service-start.ps1` outside every Job, and waits for health. The wrapper restores the service environment from an access-restricted file, starts the detached service and exits; it never starts the observer. A start from a normal terminal that is not inside a Job keeps the ordinary path, and a scheduled task leaves its Job the same way; `status` reports the live `inJob` value plus the newest start's method in `start`. A start that cannot prove the service is outside every Job fails instead of leaving a service that a closing command could kill.
 
 The operator's `service.ps1` remains the service entry point: it sets the production home and calls the control script, so the service keeps its own profile home and credentials while its process is outside the Job. `scripts/service-start.ps1` can also run directly from an independent scheduled task.
 
@@ -305,7 +305,6 @@ The independent task runs `scripts/deploy.ps1` from this repository with a JSON 
   "node": "D:\\Program Files\\nodejs\\node.exe",
   "dsh": "C:\\Users\\dd\\.local\\opt\\dsh-0.2.2-rc.1\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
   "home": "C:\\Users\\dd\\.dsh",
-  "agentsHome": "C:\\Users\\dd\\.dsh-superagent\\agents",
   "agentProfile": "headless",
   "serviceProfile": "superagent",
   "url": "http://127.0.0.1:3083",
