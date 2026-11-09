@@ -271,13 +271,13 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 ### 部署最新 superagent
 
-主会话可以把操作者明确的部署请求发给独立 Watchdog，而不是自己发布任何东西。`orchestrator_deploy` 工具把请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST` 指定的文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` 中的命令（例如 `schtasks /run /tn dsh-superagent-deploy`）；两个值未设置时工具关闭。独立的部署任务读取请求、核验操作者的原话，并在自己的进程里发布最新提交，主实例只负责停机；外层任务在 agent 退出后启动并核验它。只有操作者明确要求部署 superagent（“部署superagent”）时才使用该工具；普通请求不会触发部署，主会话也从不自己备份、发布或重启。
+主会话可以把操作者明确的部署请求发给独立 Watchdog，而不是自己发布任何东西。`orchestrator_deploy` 工具把请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST` 指定的文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` 中的命令（例如 `schtasks /run /tn dsh-superagent-deploy`）；两个值未设置时工具关闭。独立的部署任务读取请求、核验操作者的原话，并在自己的进程里发布最新提交，主实例只负责停机；外层任务在 agent 退出后启动并核验它。请求文件路径必须与部署任务配置里的 `requestPath` 一致，否则任务会以 `no deploy request` 正常退出而不会发布；本部署使用 `C:\Users\dd\.dsh\watchdog-deploy\deploy-request.json`。只有操作者明确要求部署 superagent（“部署superagent”）时才使用该工具；普通请求不会触发部署，主会话也从不自己备份、发布或重启。
 
 部署尽量只做最必要的内容。还没有预构建候选的首次部署走完整受控发布（候选构建与验证、一致性备份、启动检查与回滚路径），会更慢。稳定期由 Watchdog 预构建并预验证最新提交，部署只做停机、切换构建好的 `lib` 与 `prompts`（以及 `scripts/watchdog`、`locale/` 等实际运行的变更文件）、启动和基础健康检查，保留上一版用于回滚，目标控制在一分钟内。代码质量由仓库检查和外部维护通道保证，因此跳过重复的全量测试与大范围检查。结果由 Watchdog 报告。首次部署（也就是安装这个命令本身）由操作员或 Watchdog 直接带上确认发起；运行中的 superagent 具备该工具和两个环境变量后，后续请求由主会话发送。
 
 #### 部署复盘与提速
 
-2026-11-09 的部署历史在 `C:\Users\dd\.dsh\watchdog\watchdog-deploy.log` 里，能看出时间花在哪。两次部署端到端都约十分钟：08:46:58 那次到 08:56:53，10:33:47 那次到 10:43:09。第二次服务约 10:40:56 停止、约 10:41:50 就绪，实际切换约 54 秒；其余时间几乎都在前期准备，而不是发布本身。准备阶段重复了部署早就知道的事：运行中的服务用哪个 DSH home 和 profile 目录、stateDir 与 bundle 链接在哪、已有的候选构建是否已经匹配目标树、哪些 watchdog 写入者需要暂停。请求本身也有歧义（“部署 !43 并设置两个环境变量”），监督器要先还原意图才能开始。
+2026-11-09 的部署历史在 `C:\Users\dd\.dsh\watchdog-archive-20261109-2234\watchdog-deploy.log` 里（旧目录已归档），能看出时间花在哪。两次部署端到端都约十分钟：08:46:58 那次到 08:56:53，10:33:47 那次到 10:43:09。第二次服务约 10:40:56 停止、约 10:41:50 就绪，实际切换约 54 秒；其余时间几乎都在前期准备，而不是发布本身。准备阶段重复了部署早就知道的事：运行中的服务用哪个 DSH home 和 profile 目录、stateDir 与 bundle 链接在哪、已有的候选构建是否已经匹配目标树、哪些 watchdog 写入者需要暂停。请求本身也有歧义（“部署 !43 并设置两个环境变量”），监督器要先还原意图才能开始。
 
 下次按这几点缩短前期准备：
 
@@ -286,7 +286,7 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 3. 用同一份 `status` 输出确认服务空闲，并记录进行中与排队工单数。做一致性备份前暂停独立 Watchdog 的写入，服务恢复后按原方式恢复并核验。
 4. 在“文件已切换、服务已停止”的状态停下。`scripts/dsh-superagent start` 会检测 Windows Job，并通过 `service-start.ps1` 在 Job 之外创建服务；不要在 agent 的 shell 工具里直接启动一个裸子进程。DSH agent 退出后，外层部署任务运行 `verify --survival-seconds 30`；只有服务仍存活、在所有 Job 之外且管理 API 回答 ready，才算成功。
 5. 把实测的停机、启动和就绪时间写进部署日志。日志就是复盘材料：慢的那次可以和上一次比较，切换本身应保持在一分钟内。
-6. 部署 `scripts/watchdog` 的改动后，在独立 Watchdog 的 `watchdog.json` 里加上 `dailyReport` 并重启该进程；如果计划任务仍运行旧的 `gate.mjs`，把它改为 `scripts/watchdog --gate`，让安静日报走已部署的版本。
+6. 部署 `scripts/watchdog` 的改动后，在独立 Watchdog 的 `watchdog.json` 里加上 `dailyReport` 并重启该进程；计划任务应运行版本化制品的 `launch-agent.vbs`，不要再从 checkout 运行旧的 `gate.mjs`。需要一次性门控时用同一制品的 `agent\gate.mjs`（或 `scripts/watchdog --gate`），让安静日报走已部署的版本。
 
 身份核验、备份、回滚准备与维护窗口仍由发布监督器负责；这些事实只缩短发现过程，不替代那些步骤。汇总的时间记录见[部署提速证据](../evidence/deployment-speed/)。
 
@@ -294,9 +294,9 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 ```json
 {
-  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-request.json",
-  "promptPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-prompt.md",
-  "modelPatch": "C:\\Users\\dd\\.dsh\\watchdog\\model.patch.yml",
+  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-request.json",
+  "promptPath": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-prompt.md",
+  "modelPatch": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\model.patch.yml",
   "workdir": "F:\\code\\superagent-ops",
   "node": "D:\\Program Files\\nodejs\\node.exe",
   "dsh": "C:\\Users\\dd\\.local\\opt\\dsh-0.2.2-rc.1\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
@@ -304,13 +304,13 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
   "agentProfile": "headless",
   "serviceProfile": "superagent",
   "url": "http://127.0.0.1:3083",
-  "logFile": "C:\\Users\\dd\\.dsh\\watchdog\\watchdog-deploy.log",
-  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-result.json",
+  "logFile": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy.log",
+  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-result.json",
   "survivalSeconds": 30
 }
 ```
 
-`dsh-superagent-deploy` 任务随后运行 `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`。**上线说明（2026-11-09）。** 把生产服务从 Desktop DSH Job 迁移到这条路径需要操作员维护窗口：拉取已合并提交、把任务指向带版本的脚本，并在 DSH 之外重启一次当前生产实例，使它的进程不再位于该 Job 中。目标关系与剩余阶段见 `docs/zh/references/watchdog-superagent-mutual-assist.md`。
+`dsh-superagent-deploy` 任务随后运行 `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`。**上线状态（2026-11-09）。** 生产服务已由独立部署任务切到 `0cf6a69`，2026-11-10 00:39 的 `verify --survival-seconds 3` 以 `foreignJob=false` 通过：服务不在外部 Job 中，`recovery=enforce`，管理 API ready。任务指向带版本的控制脚本与本文的 `requestPath` 仍是操作员步骤；部署执行器退出后的存活校验会写进 `deploy-result.json`。目标关系与剩余阶段见 `docs/zh/references/watchdog-superagent-mutual-assist.md`。
 
 ### 版本化 Watchdog 制品与更新任务
 
@@ -324,15 +324,15 @@ agent 必须运行在自己的工作区，而不是 checkout。不需要人工�
 
 ```json
 {
-  "watchdogHome": "C:\\Users\\me\\.dsh\\watchdog",
-  "stagingRoot": "C:\\Users\\me\\.dsh\\watchdog\\staging",
-  "requestPath": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-request.json",
+  "watchdogHome": "C:\\Users\\dd\\.dsh\\watchdog-independent",
+  "stagingRoot": "C:\\Users\\dd\\.dsh\\watchdog-independent\\staging",
+  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update-request.json",
   "serviceUrl": "http://127.0.0.1:3083",
   "triggerCommand": "schtasks /run /tn dsh-superagent-watchdog-agent",
   "observerStopCommand": "",
   "observerStartCommand": "",
-  "logFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update.log",
-  "resultFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-result.json",
+  "logFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update.log",
+  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update-result.json",
   "heartbeatTimeoutSeconds": 180,
   "pollSeconds": 5,
   "smokeTimeoutSeconds": 30,
@@ -342,7 +342,7 @@ agent 必须运行在自己的工作区，而不是 checkout。不需要人工�
 
 首次安装是操作员步骤：构建或复制制品到 staging 根目录，安装两个稳定启动器与 agent 配置，把计划任务的 `wscript.exe` 指向 `launch-agent.vbs`，并写入 `current.txt`。执行页现在显示 Superagent 版本、最近一次 Watchdog 记录中的制品版本和该次心跳；没有心跳或心跳过期会显示为警告。部署可用 DSH_SUPERAGENT_VERSION 命名运行版本，未设置时回退到包版本。
 
-面板还显示已安装的当前与上一版、最近一次请求的候选版本，以及那次更新的时间和结果。安装信息来自 `DSH_SUPERAGENT_WATCHDOG_HOME` 下的 `current.txt`、`previous.txt` 和 `watchdog-update-result.json`（可用 `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT` 覆盖结果路径）；未设置该目录时面板显示未配置安装。若使用持久 observer，在更新配置中设置 `observerStopCommand` 与 `observerStartCommand`：更新任务先停止旧 observer、再切换指针、启动新版本；启动失败时恢复指针并重新启动上一版。未设置这两个命令时仍按原方式触发计划任务 agent。命令会收到 `DSH_WATCHDOG_VERSION` 与 `DSH_WATCHDOG_SERVICE_URL`，并在 superagent 服务之外运行。
+面板还显示已安装的当前与上一版、最近一次请求的候选版本，以及那次更新的时间和结果。安装信息来自 `DSH_SUPERAGENT_WATCHDOG_HOME` 下的 `current.txt`、`previous.txt` 和 `watchdog-update-result.json`（可用 `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT` 覆盖结果路径）；未设置该目录时面板显示未配置安装。本机安装在 `C:\Users\dd\.dsh\watchdog-independent`，因此服务环境应把 `DSH_SUPERAGENT_WATCHDOG_HOME` 指向该目录，否则安装信息为 null。若使用持久 observer，在更新配置中设置 `observerStopCommand` 与 `observerStartCommand`：更新任务先停止旧 observer、再切换指针、启动新版本；启动失败时恢复指针并重新启动上一版。未设置这两个命令时仍按原方式触发计划任务 agent。命令会收到 `DSH_WATCHDOG_VERSION` 与 `DSH_WATCHDOG_SERVICE_URL`，并在 superagent 服务之外运行。
 
 ### 独立告警与 Session 观测
 
@@ -352,8 +352,8 @@ agent 必须运行在自己的工作区，而不是 checkout。不需要人工�
 {
   "url": "http://127.0.0.1:3083",
   "report": false,
-  "stateDir": "C:\\Users\\me\\.dsh\\watchdog\\state",
-  "alertFile": "C:\\Users\\me\\.dsh\\watchdog\\alerts.jsonl",
+  "stateDir": "C:\\Users\\dd\\.dsh\\watchdog-independent\\observer-state",
+  "alertFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\alerts.jsonl",
   "alertAfterFailures": 2
 }
 ```
@@ -365,7 +365,7 @@ node scripts\dsh-superagent --profile superagent --url http://127.0.0.1:3082 wat
   --ticket <工单 id> --reason "<一句证据>" --snapshot-at "<snapshot.at>"
 ```
 
-服务会重新检查存活的 Session、快照新鲜度（十分钟）、执行器暂停状态和每个 Session 最多一次的恢复上限，写入审计行，并且绝不重启服务。被拒绝或失败的尝试只报告，不得再次 retry；agent 提示词只允许对 `session-missing` 使用这条命令，绝不调用原始 retry/stop。提示词和包装随 Watchdog 制品版本化，修改行为后需重新构建并安装制品。P3 的服务/宿主机检查与独立飞书投递仍待完成。
+服务会重新检查存活的 Session、快照新鲜度（十分钟）、执行器暂停状态和每个 Session 最多一次的恢复上限，写入审计行，并且绝不重启服务。被拒绝或失败的尝试只报告，不得再次 retry；agent 提示词只允许对 `session-missing` 使用这条命令，绝不调用原始 retry/stop。提示词和包装随 Watchdog 制品版本化，修改行为后需重新构建并安装制品。P3 的服务/宿主机检查与独立飞书投递仍待完成；持久 observer 尚未安装为常驻任务，当前监控由每 30 分钟一次的门控 agent 承担。
 
 ## 设置
 

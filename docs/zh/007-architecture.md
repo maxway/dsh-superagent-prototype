@@ -467,6 +467,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/views.spec.ts` | 管理视图从 Store 推导出的内容，例如被丢弃的消息属于哪个线程 |
 | `tests/watchdog.spec.ts` | Watchdog 视图及其飞书观察汇总：阶段、最近报告、静默时长、故障、谷价与评审等待、来自输入的活跃度、缺失的 worker Session，以及渲染出的报告 |
 | `tests/watchdog-process.spec.ts` | 独立 Watchdog 进程：配置校验、机械发现及其稳定标识、运行记录、报告去重、安静日报、服务不可达时的独立告警与恢复、带版本等待与状态命令；gate 的 quiet/risk/unreachable 出口 |
+| `tests/watchdog-gate.spec.ts` | 制品 gate：真实快照形状（`person` + `review`）下等待评审超过一天的结果与连续失败会被升级，安静轮次不调用模型并记录观测，风险轮次先记录机械风险再交给完整 agent |
 | `tests/watchdog-artifact.spec.ts` | 版本化 Watchdog 制品：文件集与 manifest、稳定摘要、自包含观察器/gate 冒烟与篡改检测 |
 | `tests/watchdog-agent.spec.ts` | Watchdog agent 包装：完整 agent 在配置的独立工作区启动并使用 checkout 绝对路径命令、checkout 内的工作区被拒绝、未配置时按 service profile 使用 `watchdog_superagent`/`watchdog_sheepdoku` 等工作区 |
 | `tests/watchdog-recovery.spec.ts` | 有界 Watchdog 恢复：默认关闭；只对“运行中 Assignment 没有存活 Session”做一次审计 retry；幂等重放；每 Session 上限；Session 存在、快照过期或 Assignment 未运行均拒绝 |

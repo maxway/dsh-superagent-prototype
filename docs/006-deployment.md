@@ -271,13 +271,13 @@ The operator's `service.ps1` remains the service entry point: it sets the produc
 
 ### Deploying the latest superagent
 
-The main Session can send the operator's explicit deployment request to the independent Watchdog instead of releasing anything itself. The `orchestrator_deploy` tool writes the request to the file named by `DSH_SUPERAGENT_DEPLOY_REQUEST` and starts the command in `DSH_SUPERAGENT_DEPLOY_COMMAND` (for example `schtasks /run /tn dsh-superagent-deploy`); unset values disable the tool. The independent deployment task reads the request, verifies the operator's words, and releases the latest commit in its own process, so the main instance only stops; the outer task starts and verifies it after the agent exits. The tool is used when the operator explicitly asks to deploy superagent ("部署superagent"); ordinary requests never deploy, and the main Session never backs up, releases or restarts itself.
+The main Session can send the operator's explicit deployment request to the independent Watchdog instead of releasing anything itself. The `orchestrator_deploy` tool writes the request to the file named by `DSH_SUPERAGENT_DEPLOY_REQUEST` and starts the command in `DSH_SUPERAGENT_DEPLOY_COMMAND` (for example `schtasks /run /tn dsh-superagent-deploy`); unset values disable the tool. The independent deployment task reads the request, verifies the operator's words, and releases the latest commit in its own process, so the main instance only stops; the outer task starts and verifies it after the agent exits. The request path must match the deployment task's configured `requestPath`, otherwise the task exits normally with `no deploy request` and nothing is released; this deployment uses `C:\Users\dd\.dsh\watchdog-deploy\deploy-request.json`. The tool is used when the operator explicitly asks to deploy superagent ("部署superagent"); ordinary requests never deploy, and the main Session never backs up, releases or restarts itself.
 
 The deployment keeps to the minimum. A first deployment, before a candidate is staged, follows the full controlled release (candidate build and validation, a consistent backup, the start check and the rollback path) and is slower. In the stable period the Watchdog pre-builds and pre-validates the latest commit, and a deployment only stops the service, switches the built `lib` and `prompts` plus any other changed runtime file such as `scripts/watchdog` or `locale/`, starts it and runs a basic health check, keeping the previous build for rollback and targeting under a minute. The repository checks and the external maintenance channel cover code quality, so the deployment skips repeated test runs and broad checks. The Watchdog reports the result. The first deployment, which installs this command itself, is started by the operator or the Watchdog directly with the operator's confirmation; once the running superagent has the tool and the two environment values, the main Session sends later requests.
 
 #### Deployment retrospective and a faster preflight
 
-The 2026-11-09 deployment history in `C:\Users\dd\.dsh\watchdog\watchdog-deploy.log` shows where the time went. Two deployments each took about ten minutes end to end: the 08:46:58 run ended at 08:56:53, and the 10:33:47 run ended at 10:43:09. In the second run the service was stopped at about 10:40:56 and was ready at about 10:41:50, so the actual switch took about 54 seconds; almost all the remaining time was preflight, not release. The preflight repeated work the deployment already knew: which DSH home and profile directory the running service used, where its state directory and bundle link were, whether a candidate build already matched the target tree, and which watchdog writers had to pause. The request was also ambiguous ("deploy !43 and set two environment variables"), so the supervisor had to reconstruct the intent before it could start.
+The 2026-11-09 deployment history in `C:\Users\dd\.dsh\watchdog-archive-20261109-2234\watchdog-deploy.log` (the old directory is archived) shows where the time went. Two deployments each took about ten minutes end to end: the 08:46:58 run ended at 08:56:53, and the 10:33:47 run ended at 10:43:09. In the second run the service was stopped at about 10:40:56 and was ready at about 10:41:50, so the actual switch took about 54 seconds; almost all the remaining time was preflight, not release. The preflight repeated work the deployment already knew: which DSH home and profile directory the running service used, where its state directory and bundle link were, whether a candidate build already matched the target tree, and which watchdog writers had to pause. The request was also ambiguous ("deploy !43 and set two environment variables"), so the supervisor had to reconstruct the intent before it could start.
 
 Use these facts to keep the next preflight short:
 
@@ -286,7 +286,7 @@ Use these facts to keep the next preflight short:
 3. Confirm the service is idle with the same `status` output and record open and queued Ticket counts. Pause the independent Watchdog writers before the consistent backup, then restore and verify them after the service is ready.
 4. Stop at the switched, stopped state. `scripts/dsh-superagent start` detects a Windows Job and creates the service outside it through `service-start.ps1`, so do not start a raw detached child from the agent's shell tool. After the DSH agent exits, the outer deployment task runs `verify --survival-seconds 30`; only a service that is alive, in no Job it did not create, and answering ready counts as success.
 5. Write the measured stop, start and ready times into the deployment log. The log is the retrospective: a slow run can be compared with the previous one, and the switch target stays under a minute.
-6. After deploying a change to `scripts/watchdog`, add `dailyReport` to the independent watchdog's `watchdog.json` and restart that process; if its scheduled gate still runs the old `gate.mjs`, point it at `scripts/watchdog --gate` so the quiet daily report uses the deployed version.
+6. After deploying a change to `scripts/watchdog`, add `dailyReport` to the independent watchdog's `watchdog.json` and restart that process; the scheduled task should run the versioned artifact's `launch-agent.vbs`, not the old `gate.mjs` from the checkout. Use that artifact's `agent\gate.mjs` (or `scripts/watchdog --gate`) for a one-shot gate, so the quiet daily report uses the deployed version.
 
 The release supervisor still owns identity checks, the backup, rollback readiness and the maintenance window; these facts shorten discovery, they do not replace those steps. The summarized timing record is in [the deployment-speed evidence](evidence/deployment-speed/).
 
@@ -294,9 +294,9 @@ The independent task runs `scripts/deploy.ps1` from this repository with a JSON 
 
 ```json
 {
-  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-request.json",
-  "promptPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-prompt.md",
-  "modelPatch": "C:\\Users\\dd\\.dsh\\watchdog\\model.patch.yml",
+  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-request.json",
+  "promptPath": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-prompt.md",
+  "modelPatch": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\model.patch.yml",
   "workdir": "F:\\code\\superagent-ops",
   "node": "D:\\Program Files\\nodejs\\node.exe",
   "dsh": "C:\\Users\\dd\\.local\\opt\\dsh-0.2.2-rc.1\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
@@ -304,13 +304,13 @@ The independent task runs `scripts/deploy.ps1` from this repository with a JSON 
   "agentProfile": "headless",
   "serviceProfile": "superagent",
   "url": "http://127.0.0.1:3083",
-  "logFile": "C:\\Users\\dd\\.dsh\\watchdog\\watchdog-deploy.log",
-  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-result.json",
+  "logFile": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy.log",
+  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-result.json",
   "survivalSeconds": 30
 }
 ```
 
-The `dsh-superagent-deploy` task then runs `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`. **Rollout note (2026-11-09).** Moving a production service from the Desktop DSH Job to this path needs an operator maintenance window: pull the merged commit, point the task at the versioned script, and restart the current production instance once from outside DSH so its process is no longer in that Job. See `docs/zh/references/watchdog-superagent-mutual-assist.md` (in Chinese) for the target relationship and the remaining phases.
+The `dsh-superagent-deploy` task then runs `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`. **Rollout status (2026-11-09).** The production service has been switched to `0cf6a69` by the independent deployment task, and `verify --survival-seconds 3` passed on 2026-11-10 00:39 with `foreignJob=false`: the service is outside any external Job, `recovery=enforce`, and the management API is ready. Pointing the task at the versioned control script and this document's `requestPath` remains an operator step; the executor's post-exit survival check records the result in `deploy-result.json`. See `docs/zh/references/watchdog-superagent-mutual-assist.md` (in Chinese) for the target relationship and the remaining phases.
 
 ### Versioned Watchdog artifact and update task
 
@@ -324,15 +324,15 @@ The independent `dsh-superagent-watchdog-update` task runs `node scripts/watchdo
 
 ```json
 {
-  "watchdogHome": "C:\\Users\\me\\.dsh\\watchdog",
-  "stagingRoot": "C:\\Users\\me\\.dsh\\watchdog\\staging",
-  "requestPath": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-request.json",
+  "watchdogHome": "C:\\Users\\dd\\.dsh\\watchdog-independent",
+  "stagingRoot": "C:\\Users\\dd\\.dsh\\watchdog-independent\\staging",
+  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update-request.json",
   "serviceUrl": "http://127.0.0.1:3083",
   "triggerCommand": "schtasks /run /tn dsh-superagent-watchdog-agent",
   "observerStopCommand": "",
   "observerStartCommand": "",
-  "logFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update.log",
-  "resultFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-result.json",
+  "logFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update.log",
+  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update-result.json",
   "heartbeatTimeoutSeconds": 180,
   "pollSeconds": 5,
   "smokeTimeoutSeconds": 30,
@@ -342,7 +342,7 @@ The independent `dsh-superagent-watchdog-update` task runs `node scripts/watchdo
 
 The first installation is an operator step: build or copy the artifact into the staging root, install both stable launchers and the agent configuration, point the scheduled task's `wscript.exe` at `launch-agent.vbs`, and write `current.txt`. The Execution page now shows the Superagent version, the Watchdog artifact version from its latest recorded run, and that run's heartbeat; a missing or stale heartbeat is shown as a warning. The deployment can name the running build with DSH_SUPERAGENT_VERSION; the package version is the fallback.
 
-The panel also shows the installed current and previous versions, the candidate from the last update request, and that update's time and result. The install facts come from `DSH_SUPERAGENT_WATCHDOG_HOME` and its `current.txt`, `previous.txt` and `watchdog-update-result.json` (override the result with `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT`); without the home the panel says the install is not configured. For a persistent observer, set `observerStopCommand` and `observerStartCommand` in the update configuration: the updater stops the old observer before switching the pointer, starts the new version, and on a failed start restores the pointer and starts the previous version again. Without these commands the scheduled Watchdog agent task is triggered, as before. The commands receive `DSH_WATCHDOG_VERSION` and `DSH_WATCHDOG_SERVICE_URL`, and run outside the superagent service.
+The panel also shows the installed current and previous versions, the candidate from the last update request, and that update's time and result. The install facts come from `DSH_SUPERAGENT_WATCHDOG_HOME` and its `current.txt`, `previous.txt` and `watchdog-update-result.json` (override the result with `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT`); without the home the panel says the install is not configured. This host installs under `C:\Users\dd\.dsh\watchdog-independent`, so the service environment should point `DSH_SUPERAGENT_WATCHDOG_HOME` there; otherwise the install facts are null. For a persistent observer, set `observerStopCommand` and `observerStartCommand` in the update configuration: the updater stops the old observer before switching the pointer, starts the new version, and on a failed start restores the pointer and starts the previous version again. Without these commands the scheduled Watchdog agent task is triggered, as before. The commands receive `DSH_WATCHDOG_VERSION` and `DSH_WATCHDOG_SERVICE_URL`, and run outside the superagent service.
 
 ### Independent alerts and Session observation
 
@@ -352,8 +352,8 @@ The independent observer can leave a local alert when the management API stays u
 {
   "url": "http://127.0.0.1:3083",
   "report": false,
-  "stateDir": "C:\\Users\\me\\.dsh\\watchdog\\state",
-  "alertFile": "C:\\Users\\me\\.dsh\\watchdog\\alerts.jsonl",
+  "stateDir": "C:\\Users\\dd\\.dsh\\watchdog-independent\\observer-state",
+  "alertFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\alerts.jsonl",
   "alertAfterFailures": 2
 }
 ```
@@ -365,7 +365,7 @@ node scripts\dsh-superagent --profile superagent --url http://127.0.0.1:3082 wat
   --ticket <ticket id> --reason "<one-sentence evidence>" --snapshot-at "<snapshot.at>"
 ```
 
-The server rechecks the live Session registry, the snapshot freshness (ten minutes), the executor pause and the per-Session ceiling of one retry, records an audit row, and never restarts the service. A refused or failed attempt is reported and must not be retried; the agent prompt allows exactly this command for `session-missing`, never the raw retry/stop API. The prompt and wrapper are versioned in the Watchdog artifact, so rebuild and install the artifact after changing this behavior. P3's service/host checks and independent Feishu delivery are still open.
+The server rechecks the live Session registry, the snapshot freshness (ten minutes), the executor pause and the per-Session ceiling of one retry, records an audit row, and never restarts the service. A refused or failed attempt is reported and must not be retried; the agent prompt allows exactly this command for `session-missing`, never the raw retry/stop API. The prompt and wrapper are versioned in the Watchdog artifact, so rebuild and install the artifact after changing this behavior. P3's service/host checks and independent Feishu delivery are still open; a persistent observer is not installed as a standing task, so monitoring currently runs as a gate agent every 30 minutes.
 
 ## Settings
 

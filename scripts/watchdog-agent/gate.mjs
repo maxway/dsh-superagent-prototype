@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
-import { artifactFacts, collectFindings, gateFindings, readSnapshot } from '../watchdog'
+import { artifactFacts, gateFindings, readSnapshot } from '../watchdog'
 
 const args = process.argv.slice(2)
 const option = (name, fallback) => {
@@ -53,32 +53,20 @@ function post(path, content) {
   })
 }
 
-/** Mechanical findings plus the slow risks a signal threshold does not raise by itself. */
-function assess(snapshot) {
-  const findings = collectFindings(snapshot)
-  const extra = []
-  for (const ticket of snapshot.tickets ?? []) {
-    if (ticket.stage === 'ready' && Number(ticket.silentMinutes) > 1440) extra.push(`${String(ticket.id)} ready-unreviewed`)
-    const failed = (Array.isArray(ticket.attempts) ? ticket.attempts : []).filter(state => state === 'failed' || state === 'blocked').length
-    if (failed >= 2) extra.push(`${String(ticket.id)} repeated-failures`)
-  }
-  return { findings, extra }
-}
-
-function describe(findings, extra) {
-  const parts = findings.map(finding => finding.kind === 'ticket'
+/** One-line mechanical summary for the log and the recorded risk note. */
+function describe(findings) {
+  return findings.map(finding => finding.kind === 'ticket'
     ? `${String(finding.id).slice(0, 8)} ${finding.signals.join('/')}`
-    : finding.kind === 'health' ? `${finding.part} ${finding.state}` : `setup ${finding.code}`)
-  return [...parts, ...extra].join('; ').slice(0, 400)
+    : finding.kind === 'health' ? `${finding.part} ${finding.state}` : `setup ${finding.code}`).join('; ').slice(0, 400)
 }
 
 async function main() {
   try {
     const snapshot = await readSnapshot({ url, staleMinutes })
-    const { findings, extra } = assess(snapshot)
-    if (findings.length > 0 || extra.length > 0) {
-      const summary = describe(findings, extra)
-      console.log(`RISK findings=${findings.length + extra.length} ${summary}`)
+    const findings = gateFindings(snapshot)
+    if (findings.length > 0) {
+      const summary = describe(findings)
+      console.log(`RISK findings=${findings.length} ${summary}`)
       // Record the mechanical risk first: the heartbeat exists even if the full agent fails.
       await post('/orchestrator/api/watchdog/runs', {
         idempotencyKey: randomUUID(),
