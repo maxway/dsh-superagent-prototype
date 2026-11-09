@@ -4,14 +4,17 @@
  * through the management API, reports changed mechanical findings to Feishu, sends one quiet report each morning when a
  * `dailyReport` schedule is configured, and keeps its configuration, state and log independent of the service and of DSH.
  * A long-running process holds one versioned management wait and reads the snapshot when a Ticket, health or silence
- * deadline changes, using `intervalSeconds` only as the maximum fallback gap. `--gate` runs the cheap two-stage form: it
- * records a quiet observation and exits 0, or records the risk and exits 2 so a full DSH agent can perform the detailed
- * model judgement. The host and deployment checks of roadmap workflows K and L are meant to plug into this process later.
+ * deadline changes, using `intervalSeconds` only as the maximum fallback gap. With `agentConfig`, new mechanical risk is
+ * handed to the full DSH agent from the same artifact, so the long connection drives model judgement instead of a timed
+ * gate. `--gate` keeps the cheap one-shot form for diagnostics: it records a quiet observation and exits 0, or records
+ * the risk and exits 2 so a caller can run the full DSH agent. The host and deployment checks of roadmap workflows K and
+ * L are meant to plug into this process later.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -24,9 +27,11 @@ const USAGE = `Usage: watchdog --config <path> [--once|--gate|--status|--help]
 Watch dsh-superagent from an independent process: a long-running process holds one versioned wait request and reads
 the read-only snapshot when a Ticket, health or silence deadline changes, records the observation as a run, reports
 changed mechanical findings to Feishu, and keeps its own state and log. intervalSeconds is the maximum fallback gap;
-the API caps one wait at 240 seconds. With "dailyReport": {"hour": 9, "timezone": "Asia/Shanghai"} it also sends one
-quiet report in the morning when nothing is wrong, so a healthy deployment still proves it is checked; a findings
-report is not suppressed by it.
+the API caps one wait at 240 seconds. With "agentConfig", new mechanical risk runs the full DSH agent from the same
+artifact instead of sending a mechanical finding report, so model judgement is driven by the long connection rather
+than a timer. With "dailyReport": {"hour": 9, "timezone": "Asia/Shanghai"} it also sends one quiet report in the
+morning when nothing is wrong, so a healthy deployment still proves it is checked; a findings report is not suppressed
+by it.
 
 Options:
   --config <path>   JSON configuration (default: ./watchdog.json).
@@ -43,6 +48,18 @@ class ConfigError extends Error {}
 /** The management API could not be reached or answered unusably. */
 class Unreachable extends Error {}
 
+/**
+ * The agent runner beside this observer: `agent/run.ps1` in a versioned artifact, or `watchdog-agent/run.ps1` in the
+ * repository checkout. The observer and the agent wrapper therefore always come from the same version.
+ */
+function agentRunnerBesideObserver() {
+  const directory = dirname(fileURLToPath(import.meta.url))
+  for (const candidate of [join(directory, 'agent', 'run.ps1'), join(directory, 'watchdog-agent', 'run.ps1')]) {
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
+}
+
 /** Read a JSON file, with a configuration error naming the path when it is missing or malformed. */
 function readJson(path, what) {
   let text
@@ -55,7 +72,7 @@ export function loadConfig(path) {
   const value = readJson(path, 'watchdog configuration')
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ConfigError('The watchdog configuration must be a JSON object')
   const unknown = Object.keys(value).filter(key => !['url', 'chatId', 'intervalSeconds', 'staleMinutes', 'report', 'dailyReport', 'stateDir', 'logFile',
-    'alertFile', 'alertAfterFailures'].includes(key))
+    'alertFile', 'alertAfterFailures', 'agentConfig', 'agentRunner', 'agentTimeoutSeconds', 'powershell'].includes(key))
   if (unknown.length) throw new ConfigError(`Unknown watchdog configuration field: ${unknown.join(', ')}`)
   let url
   try { url = new URL(String(value.url)) } catch { throw new ConfigError('url must be an absolute http or https address') }
@@ -86,8 +103,26 @@ export function loadConfig(path) {
     throw new ConfigError('alertAfterFailures must be an integer between 1 and 100')
   }
   if (value.alertAfterFailures !== undefined && !alertFile) throw new ConfigError('alertAfterFailures requires alertFile')
+  const agentConfig = typeof value.agentConfig === 'string' && value.agentConfig.trim() ? resolve(base, value.agentConfig) : undefined
+  if (value.agentConfig !== undefined && !agentConfig) throw new ConfigError('agentConfig must be a non-empty path')
+  const agentTimeoutSeconds = value.agentTimeoutSeconds ?? 900
+  if (!Number.isInteger(agentTimeoutSeconds) || agentTimeoutSeconds < 60 || agentTimeoutSeconds > 86_400) {
+    throw new ConfigError('agentTimeoutSeconds must be an integer between 60 and 86400')
+  }
+  if ((value.agentTimeoutSeconds !== undefined || value.agentRunner !== undefined) && !agentConfig) {
+    throw new ConfigError('agentTimeoutSeconds and agentRunner require agentConfig')
+  }
+  const agentRunner = agentConfig
+    ? (typeof value.agentRunner === 'string' && value.agentRunner.trim() ? resolve(base, value.agentRunner) : agentRunnerBesideObserver())
+    : undefined
+  if (agentConfig && !agentRunner) throw new ConfigError('Cannot find the Watchdog agent runner beside this observer; set agentRunner')
+  if (agentConfig && !existsSync(agentRunner)) throw new ConfigError(`The Watchdog agent runner does not exist: ${agentRunner}`)
+  if (agentConfig && !existsSync(agentConfig)) throw new ConfigError(`The Watchdog agent configuration does not exist: ${agentConfig}`)
+  const powershell = typeof value.powershell === 'string' && value.powershell.trim()
+    ? value.powershell : process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
   return { url: url.toString().replace(/\/+$/, ''), ...(chatId ? { chatId } : {}), intervalSeconds, staleMinutes, report,
-    ...(dailyReport ? { dailyReport } : {}), ...(alertFile ? { alertFile } : {}), alertAfterFailures, stateDir, logFile }
+    ...(dailyReport ? { dailyReport } : {}), ...(alertFile ? { alertFile } : {}), alertAfterFailures, stateDir, logFile,
+    ...(agentConfig ? { agentConfig, agentRunner, agentTimeoutSeconds, powershell } : {}) }
 }
 
 /**
@@ -275,6 +310,42 @@ async function sendReport(config, note) {
   answerJson(response, 'Watchdog Feishu report')
 }
 
+/**
+ * Run the full DSH agent wrapper from the same artifact when the observer sees new mechanical risk. The wrapper's gate
+ * rechecks the snapshot and only starts the model on risk, so a change between the observer's check and the agent run
+ * cannot spend a model call. Resolves with the exit code; a timeout or spawn error is a failed run, not a restart loop.
+ */
+function runAgent(config) {
+  return new Promise(resolveAgent => {
+    let settled = false
+    let timer
+    const finish = value => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolveAgent(value)
+    }
+    let child
+    try {
+      child = spawn(config.powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', config.agentRunner,
+        '-Config', config.agentConfig], { stdio: 'ignore', windowsHide: true })
+    } catch (error) {
+      finish({ code: -1, detail: error instanceof Error ? error.message : String(error) })
+      return
+    }
+    timer = setTimeout(() => {
+      try {
+        // The wrapper starts the DSH agent as a child; kill the whole tree so a hung model run cannot outlive the timeout.
+        if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true })
+        else child.kill('SIGKILL')
+      } catch {}
+      finish({ code: -1, detail: `timed out after ${config.agentTimeoutSeconds}s` })
+    }, config.agentTimeoutSeconds * 1000)
+    child.on('error', error => finish({ code: -1, detail: error.message }))
+    child.on('close', code => finish({ code: code ?? -1 }))
+  })
+}
+
 /** Read the state file, or return an empty state when there is none or it is unreadable. */
 export function readState(stateDir) {
   const path = join(stateDir, 'state.json')
@@ -396,7 +467,7 @@ export async function cycle(config, state, now = new Date()) {
     alertUnreachable(config, state, message, at)
     writeState(config.stateDir, state)
     log(config, 'error', message)
-    return { ok: false, findings: [] }
+    return { ok: false, findings: [], snapshot: undefined }
   }
   const findings = collectFindings(snapshot)
   const note = noteFor(findings)
@@ -419,7 +490,9 @@ export async function cycle(config, state, now = new Date()) {
   const identity = fingerprint(findings)
   let reported = false
   let daily = false
-  if (config.report && findings.length && identity !== state.reportedFingerprint) {
+  // With an agent configured, the full agent owns the judgement and the Feishu report; the observer only records its
+  // observation. Reporting the same mechanical finding here as well would duplicate the person-facing message.
+  if (config.report && !config.agentConfig && findings.length && identity !== state.reportedFingerprint) {
     try {
       await sendReport(config, note)
       state.reportedFingerprint = identity
@@ -441,9 +514,10 @@ export async function cycle(config, state, now = new Date()) {
   }
   writeState(config.stateDir, state)
   log(config, 'info', findings.length
-    ? `${reported ? 'Reported' : config.report ? 'Observed' : 'Observed (reporting off)'} ${findings.length} finding(s): ${note}`
+    ? config.agentConfig ? `Observed ${findings.length} finding(s); the agent will judge: ${note}`
+      : `${reported ? 'Reported' : config.report ? 'Observed' : 'Observed (reporting off)'} ${findings.length} finding(s): ${note}`
     : daily ? `Daily quiet report sent: ${DAILY_QUIET_NOTE}` : 'Observation recorded; nothing to report.')
-  return { ok: true, findings }
+  return { ok: true, findings, snapshot }
 }
 
 /** The stable one-line description of findings used in gate notes and the recorded state. */
@@ -565,6 +639,45 @@ export function parseArgv(argv) {
   return args
 }
 
+/**
+ * Hand new mechanical risk to the full agent when one is configured. The fingerprint covers the same finding identities
+ * the report uses, so an unchanged finding never spends another model call; when the risk clears the marker is dropped
+ * so a later recurrence runs the agent again. A failed agent is reported once, not retried in a loop.
+ */
+export async function maybeRunAgent(config, state, snapshot, now = new Date()) {
+  if (!config.agentConfig) return { ran: false }
+  const findings = gateFindings(snapshot)
+  const identity = fingerprint(findings)
+  if (!findings.length) {
+    if (state.agentFingerprint) {
+      delete state.agentFingerprint
+      delete state.agentAt
+      delete state.agentExit
+      writeState(config.stateDir, state)
+    }
+    return { ran: false }
+  }
+  if (identity === state.agentFingerprint) return { ran: false }
+  const at = now.toISOString()
+  const note = noteFor(findings)
+  log(config, 'info', `agent start for ${findings.length} finding(s): ${note}`)
+  const result = await runAgent(config)
+  state.agentFingerprint = identity
+  state.agentAt = at
+  state.agentExit = result.code
+  writeState(config.stateDir, state)
+  log(config, result.code === 0 ? 'info' : 'error',
+    `agent end exit=${result.code}${result.detail ? ` (${result.detail})` : ''}`)
+  if (result.code !== 0 && config.report) {
+    try {
+      await sendReport(config, oneLine(`Watchdog agent 执行失败（exit ${result.code}${result.detail ? `：${result.detail}` : ''}）；机械发现：${note}`, 500))
+    } catch (error) {
+      log(config, 'error', `Could not send the agent-failure report: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  return { ran: true, code: result.code }
+}
+
 /** Run the independent Watchdog until stopped, or one cycle with `--once`. */
 export async function main(argv = process.argv.slice(2)) {
   let args
@@ -611,6 +724,7 @@ export async function main(argv = process.argv.slice(2)) {
     do {
       if (Date.now() >= nextCycleAt) {
         const result = await cycle(config, state)
+        if (result.ok && result.snapshot) await maybeRunAgent(config, state, result.snapshot)
         if (args.once) return result.ok ? 0 : 1
         if (!result.ok) log(config, 'warn', `The service was unreachable; retrying in ${config.intervalSeconds}s.`)
         nextCycleAt = Date.now() + config.intervalSeconds * 1000

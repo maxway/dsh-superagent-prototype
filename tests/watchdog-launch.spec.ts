@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 
 const launcher = join(import.meta.dirname, '..', 'scripts', 'watchdog-launch.vbs')
+const observerLauncher = join(import.meta.dirname, '..', 'scripts', 'watchdog-launch-observer.vbs')
 let directory: string | undefined
 
 afterEach(() => {
@@ -25,6 +26,24 @@ it.skipIf(process.platform !== 'win32')('starts the sibling launch-agent.ps1 wit
   const config = join(dir, 'agent config.json')
   const code = await new Promise<number | null>(resolve => {
     execFile('wscript.exe', [join(dir, 'launch-agent.vbs'), '-Config', config], { timeout: 30_000 }, error =>
+      resolve(error ? (typeof error.code === 'number' ? error.code : null) : 0))
+  })
+  expect(code).toBe(7)
+  expect(readFileSync(join(dir, 'args.txt'), 'utf8').trim()).toBe(`config=${config}`)
+}, 30_000)
+
+it.skipIf(process.platform !== 'win32')('starts the sibling launch-observer.ps1 and keeps the observer exit code', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-launch-observer-'))
+  directory = dir
+  copyFileSync(observerLauncher, join(dir, 'launch-observer.vbs'))
+  writeFileSync(join(dir, 'launch-observer.ps1'), [
+    'param([string]$Config)',
+    '"config=$Config" | Set-Content -LiteralPath (Join-Path $PSScriptRoot "args.txt")',
+    'exit 7',
+  ].join('\n'))
+  const config = join(dir, 'observer config.json')
+  const code = await new Promise<number | null>(resolve => {
+    execFile('wscript.exe', [join(dir, 'launch-observer.vbs'), '-Config', config], { timeout: 30_000 }, error =>
       resolve(error ? (typeof error.code === 'number' ? error.code : null) : 0))
   })
   expect(code).toBe(7)

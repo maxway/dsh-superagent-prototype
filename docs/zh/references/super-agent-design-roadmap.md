@@ -8,14 +8,14 @@
 
 - 双层架构、两级过滤、订阅直通、Inline & Spill 与链式召回（GitHub/GitLab）、异步后台作业、飞书/GitHub/GitLab 多信道交互。
 - Watchdog 阶段 1：只读 `GET /orchestrator/api/watchdog`、`scripts/dsh-superagent watchdog`、观测记录与独立进程（MR !28）；随后加入带版本号的长等待、`--gate` 机械预检、安静日报与独立不可达告警。阶段 2 的 retry/stop 介入（MR !30、!32）已随外部独立 Watchdog 的启用而移除。
-- Watchdog 制品与门控 agent（P2/P3）：版本化制品、独立更新任务、隐藏启动器、独立 workspace、`session-missing` 观测与有界恢复已落地；生产已安装 `p3-0cf6a69` 并通过完整 agent 运行验证。
+- Watchdog 制品与常驻 observer/风险 agent（P2/P3）：版本化制品、独立更新任务、隐藏启动器、独立 workspace、`session-missing` 观测与有界恢复已落地；常驻 observer 用 HTTP 长连接监控，新风险时触发完整 agent；生产已安装 `p3-0cf6a69` 并通过完整 agent 运行验证。
 - 多 Git 来源：[011 多 Git 来源](../011-multi-git-sources.md) 记录改动面与分阶段建议；方案 A（强化切换）已实现（MR !34），部署仍只保留一个生效的 Git 来源。
 - Windows 原生部署：服务控制、worker 命令层、prepare、router 工具、飞书来源与 CI 均在 Windows 上落地（MR !10–!19），部署现状见 [009 Windows 部署](../009-windows-deployment.md)；它不改变本计划的设计差距，但决定了 5.1/5.2 的现状描述。
 
 尚未完成：
 
 - Watchdog 阶段 3：从 Watchdog 修改设置或提示词。
-- Superagent 内的部署入口，以及由独立 Watchdog 执行受控发布和主机服务看护（检查项与有界恢复）：`orchestrator_deploy`、独立 `dsh-superagent-deploy` 任务与 `scripts/deploy.ps1` 已落地（MR !43），部署执行器改为在 agent 退出后做存活校验，P1 已由生产 `verify`（`foreignJob=false`）验证；Watchdog 制品已脱离 checkout。仍未完成：主机检查项、持续 observer 的安装、独立飞书投递，以及部署请求路径与服务环境的一致性（当前生产服务仍指向旧 `watchdog` 路径）。设计与分阶段方案见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)。
+- Superagent 内的部署入口，以及由独立 Watchdog 执行受控发布和主机服务看护（检查项与有界恢复）：`orchestrator_deploy`、独立 `dsh-superagent-deploy` 任务与 `scripts/deploy.ps1` 已落地（MR !43），部署执行器改为在 agent 退出后做存活校验，P1 已由生产 `verify`（`foreignJob=false`）验证；Watchdog 制品已脱离 checkout。常驻 observer 已取代定时 gate，并由长连接触发完整 agent。仍未完成：主机检查项、独立飞书投递，以及运行中服务的部署请求路径加载（配置已修正，需下次启动生效）。设计与分阶段方案见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)。
 - 设计第 5 节的两个模块：计算与状态分离（5.1）、计算与执行环境分离（5.2）。
 - 投机执行（3.4）、飞书线程上下文、架构级评测、安全与隐私加固，以及可选的邮件/文档信道。
 - 多 Git 的 B（同宿主多项目）和 C（跨宿主并发）；D（一个工单跨项目）不在第一版。
@@ -230,7 +230,7 @@
 
 ### L. 独立 Watchdog 的主机服务看护
 
-> 状态：基础独立进程已落地（`scripts/watchdog`：工单观测、运行记录、飞书报告、安静日报与独立不可达告警；长期进程用版本化等待跟随工单、健康与静默阈值变化）；`session-missing` 观测与有界恢复也已落地。主机检查项、自监督与 K 的持久部署监督仍待做；持久 observer 尚未安装为常驻任务，当前监控由 30 分钟一次的门控 agent 承担。服务内的 Watchdog 介入设置与审计已移除，只保留只读工单与 service 各部分健康快照；主机侧另有一个计划任务在登录状态下检查 CI runner 的进程（进程缺失时重启，只写本地日志），两者尚未打通。与 Superagent 互相看护、Session 级信号和双向心跳见 M。
+> 状态：基础独立进程已落地（`scripts/watchdog`：工单观测、运行记录、飞书日报与独立不可达告警；长期进程用版本化等待跟随工单、健康与静默阈值变化）；`session-missing` 观测与有界恢复也已落地。常驻 observer 已安装为登录启动的任务，长连接发现新风险时触发同版本完整 agent；每 30 分钟的门控 agent 已删除。主机检查项、自监督与 K 的持久部署监督仍待做。服务内的 Watchdog 介入设置与审计已移除，只保留只读工单与 service 各部分健康快照；主机侧另有一个计划任务在登录状态下检查 CI runner 的进程（进程缺失时重启，只写本地日志），两者尚未打通。与 Superagent 互相看护、Session 级信号和双向心跳见 M。
 
 **目标。** 当 Watchdog 以独立进程（而不是 DSH 服务内的定时会话）运行时，除工单与部署外，还能按运营者预配置的检查项看护宿主机上的外部服务，例如项目 CI runner：发现进程缺失、健康检查失败或长时间不轮询时，在允许的范围内做有界恢复并留下审计与报告；主服务停止或重启时 Watchdog 仍能工作。
 

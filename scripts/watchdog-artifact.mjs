@@ -26,6 +26,8 @@ const FILES = [
   ['scripts/watchdog-agent/model.patch.example.yml', 'agent/model.patch.example.yml'],
   ['scripts/watchdog-launch.ps1', 'launch-agent.ps1'],
   ['scripts/watchdog-launch.vbs', 'launch-agent.vbs'],
+  ['scripts/watchdog-launch-observer.ps1', 'launch-observer.ps1'],
+  ['scripts/watchdog-launch-observer.vbs', 'launch-observer.vbs'],
 ]
 
 const sha256 = buffer => createHash('sha256').update(buffer).digest('hex')
