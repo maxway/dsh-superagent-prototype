@@ -314,7 +314,7 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 Watchdog 不再通过拉取 superagent 检出更新：仓库构建不可变制品，观察器、agent 包装与 gate 只从同一版本导入。`node scripts/watchdog-artifact.mjs --out <dir> --version <id> --commit <sha>` 把 `scripts/watchdog`、`scripts/watchdog-agent/*` 和稳定启动器复制到制品，并写入包含文件哈希、总摘要、`apiVersion` 与 `minServiceVersion` 的 `manifest.json`。`node scripts/watchdog-smoke.mjs <dir>` 用本地 mock 管理 API 验证制品，不接触生产服务或飞书。
 
-把制品安装到 `<watchdogHome>\versions\<version>`，用 `<watchdogHome>\current.txt` 表示当前版本；`previous.txt` 是回滚点。计划任务运行稳定的 `<watchdogHome>\launch-agent.ps1 -Config <agent.json>`，它读取 `current.txt` 并启动该版本的 `agent\run.ps1`；切换版本不需要改写任务动作，也从不重启 superagent 服务。agent 配置（服务 URL、chat id、checkout、workspace、DSH home、模型 patch、日志）留在仓库外；`scripts/watchdog-agent/config.example.json` 与 `model.patch.example.yml` 是模板。
+把制品安装到 `<watchdogHome>\versions\<version>`，用 `<watchdogHome>\current.txt` 表示当前版本；`previous.txt` 是回滚点。计划任务通过 `wscript.exe` 运行 `<watchdogHome>\launch-agent.vbs -Config <agent.json>`；`wscript.exe` 自身没有控制台窗口，因此定时检查不会在桌面上闪出 PowerShell 窗口。VBS 以隐藏窗口启动稳定的 `<watchdogHome>\launch-agent.ps1 -Config <agent.json>` 并等待其退出码；PowerShell 启动器读取 `current.txt` 并启动该版本的 `agent\run.ps1`。切换版本不需要改写任务动作，也从不重启 superagent 服务。agent 配置（服务 URL、chat id、checkout、workspace、DSH home、模型 patch、日志）留在仓库外；`scripts/watchdog-agent/config.example.json` 与 `model.patch.example.yml` 是模板。
 
 agent 必须运行在自己的工作区，而不是 checkout。不需要人工填写路径：未设置 `workspace` 时，包装脚本使用 `<配置目录>\workspaces\watchdog_<service profile>` —— 本部署是 `watchdog_superagent`，service profile 为 `sheepdoku` 时是 `watchdog_sheepdoku` —— 因此同一主机上的多个 Watchdog 不会共用工作区。只有想换名字或位置时才需要设置 `workspace`。`run.ps1` 在目录缺失时创建它，拒绝等于 checkout 或位于 checkout 内的路径，并在运行 gate 和完整 agent 前切换进去。提示词用绝对路径引用 checkout，因此 agent 仍能读取部署文档并运行 `node <checkout>\scripts\dsh-superagent ...`。DSH 按工作目录把 Session 归入工作区，因此 Watchdog 的 Session 不再进入 checkout 的 Desktop DSH 工作区；把该工作区目录添加为 DSH 项目即可在自己的工作区下查看，否则它们保持未分组。已有安装必须使用重新构建的制品；superagent 发布不会更新当前本机部署的旧包装脚本。这只隔离工作区，不是安全边界：agent 仍可完全访问 checkout，共享 DSH home 时仍共享其 Session 与工作区存储。
 
@@ -338,7 +338,7 @@ agent 必须运行在自己的工作区，而不是 checkout。不需要人工�
 }
 ```
 
-首次安装是操作员步骤：构建或复制制品到 staging 根目录，安装稳定启动器与 agent 配置，把计划任务指向 `launch-agent.ps1`，并写入 `current.txt`。执行页现在显示 Superagent 版本、最近一次 Watchdog 记录中的制品版本和该次心跳；没有心跳或心跳过期会显示为警告。部署可用 DSH_SUPERAGENT_VERSION 命名运行版本，未设置时回退到包版本。
+首次安装是操作员步骤：构建或复制制品到 staging 根目录，安装两个稳定启动器与 agent 配置，把计划任务的 `wscript.exe` 指向 `launch-agent.vbs`，并写入 `current.txt`。执行页现在显示 Superagent 版本、最近一次 Watchdog 记录中的制品版本和该次心跳；没有心跳或心跳过期会显示为警告。部署可用 DSH_SUPERAGENT_VERSION 命名运行版本，未设置时回退到包版本。
 
 面板还显示已安装的当前与上一版、最近一次请求的候选版本，以及那次更新的时间和结果。安装信息来自 `DSH_SUPERAGENT_WATCHDOG_HOME` 下的 `current.txt`、`previous.txt` 和 `watchdog-update-result.json`（可用 `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT` 覆盖结果路径）；未设置该目录时面板显示未配置安装。若使用持久 observer，在更新配置中设置 `observerStopCommand` 与 `observerStartCommand`：更新任务先停止旧 observer、再切换指针、启动新版本；启动失败时恢复指针并重新启动上一版。未设置这两个命令时仍按原方式触发计划任务 agent。命令会收到 `DSH_WATCHDOG_VERSION` 与 `DSH_WATCHDOG_SERVICE_URL`，并在 superagent 服务之外运行。
 

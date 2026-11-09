@@ -363,6 +363,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `scripts/watchdog-artifact.mjs` | 构建不可变 Watchdog 制品及 manifest（文件哈希、总摘要、`apiVersion`、`minServiceVersion`），并在安装前校验制品 |
 | `scripts/watchdog-smoke.mjs` | 用本地 mock 管理 API 验证未安装的制品：观察器与 agent gate 必须记录带 manifest 版本的运行，不接触生产服务或飞书 |
 | `scripts/watchdog-launch.ps1` | 计划任务运行的稳定启动器：读取 `current.txt` 并启动该版本的 agent 包装，因此切换版本不需要改写任务动作 |
+| `scripts/watchdog-launch.vbs` | 该计划任务的无窗口入口：`wscript.exe` 没有控制台，VBS 以隐藏窗口运行 `launch-agent.ps1` 并等待其退出码，因此定时检查不会闪出 PowerShell 窗口 |
 | `scripts/watchdog-update.mjs` | 独立 Watchdog 更新：请求与 staging 根校验、锁、smoke、安装、原子指针切换、agent 心跳、幂等与回滚；从不重启 superagent |
 | `src/app/views/threads.ts` | 线程列表、线程时间线、搜索和决定列表 |
 | `src/app/views/sources.ts` | 来源状态：每个来源实例的状态、它最后一天的计数，以及它在那一天过滤和丢弃的内容 |
@@ -465,6 +466,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/watchdog-process.spec.ts` | 独立 Watchdog 进程：配置校验、机械发现及其稳定标识、运行记录、报告去重、安静日报、服务不可达、带版本等待与状态命令；gate 的 quiet/risk/unreachable 出口 |
 | `tests/watchdog-artifact.spec.ts` | 版本化 Watchdog 制品：文件集与 manifest、稳定摘要、自包含观察器/gate 冒烟与篡改检测 |
 | `tests/watchdog-agent.spec.ts` | Watchdog agent 包装：完整 agent 在配置的独立工作区启动并使用 checkout 绝对路径命令、checkout 内的工作区被拒绝、未配置时按 service profile 使用 `watchdog_superagent`/`watchdog_sheepdoku` 等工作区 |
+| `tests/watchdog-launch.spec.ts` | 计划任务的无窗口启动器：以隐藏窗口和任务参数启动同目录的 PowerShell 启动器，并保留 agent 的退出码 |
 | `tests/watchdog-update.spec.ts` | 独立 Watchdog 更新：制品校验、smoke、安装与指针切换、已记录运行心跳、幂等、回滚与 staging 根拒绝 |
 | `tests/timeline.spec.ts` | 线程的页面，以及触发按时间再按 id 排序的邻近项，每个已接收触发的时间都采用同一种形式 |
 | `tests/migration.spec.ts` | schema 11 迁移：每条已存储记录都处于当前形状，以及拒绝更旧的 schema |
