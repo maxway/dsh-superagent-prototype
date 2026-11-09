@@ -257,7 +257,7 @@ Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --
 
 ### 部署最新 superagent
 
-主会话可以把操作者明确的部署请求发给独立 Watchdog，而不是自己发布任何东西。`orchestrator_deploy` 工具把请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST` 指定的文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` 中的命令（例如 `schtasks /run /tn dsh-superagent-deploy`）；两个值未设置时工具关闭。独立的部署任务读取请求、核验操作者的原话，并在自己的进程里发布最新提交，主实例只负责重启。只有操作者明确要求部署 superagent（“部署superagent”）时才使用该工具；普通请求不会触发部署，主会话也从不自己备份、发布或重启。
+主会话可以把操作者明确的部署请求发给独立 Watchdog，而不是自己发布任何东西。`orchestrator_deploy` 工具把请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST` 指定的文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` 中的命令（例如 `schtasks /run /tn dsh-superagent-deploy`）；两个值未设置时工具关闭。独立的部署任务读取请求、核验操作者的原话，并在自己的进程里发布最新提交，主实例只负责停机；外层任务在 agent 退出后启动并核验它。只有操作者明确要求部署 superagent（“部署superagent”）时才使用该工具；普通请求不会触发部署，主会话也从不自己备份、发布或重启。
 
 部署尽量只做最必要的内容。还没有预构建候选的首次部署走完整受控发布（候选构建与验证、一致性备份、启动检查与回滚路径），会更慢。稳定期由 Watchdog 预构建并预验证最新提交，部署只做停机、切换构建好的 `lib` 与 `prompts`（以及 `scripts/watchdog`、`locale/` 等实际运行的变更文件）、启动和基础健康检查，保留上一版用于回滚，目标控制在一分钟内。代码质量由仓库检查和外部维护通道保证，因此跳过重复的全量测试与大范围检查。结果由 Watchdog 报告。首次部署（也就是安装这个命令本身）由操作员或 Watchdog 直接带上确认发起；运行中的 superagent 具备该工具和两个环境变量后，后续请求由主会话发送。
 
@@ -267,7 +267,7 @@ Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --
 
 下次按这几点缩短前期准备：
 
-1. 先运行一次 `node scripts/dsh-superagent status --profile superagent --url <面板 URL> --home <DSH home>`。`status` 现在会报告 profile 目录、`service.ps1`、配置的 `stateDir`、bundle 链接与目标、checkout 版本与分支，以及构建出的 `lib`；直接读这些，不再重新发现。
+1. 在稳定 checkout 中先运行一次 `node scripts/dsh-superagent status --profile superagent --url <面板 URL> --home <DSH home>`。`status` 会报告 profile 目录、`service.ps1`、配置的 `stateDir`、bundle 链接与目标、checkout 版本与分支，以及构建出的 `lib`；直接读这些，不再重新发现。
 2. 每个目标版本只保留一份候选，并记录 revision、产物哈希与测试证据。候选 worktree 的 `git rev-parse HEAD^{tree}` 与目标树相同、构建产物也一致时直接复用；不要在维护窗口里重新构建或重跑全量测试。
 3. 用同一份 `status` 输出确认服务空闲，并记录进行中与排队工单数。做一致性备份前暂停独立 Watchdog 的写入，服务恢复后按原方式恢复并核验。
 4. 在“文件已切换、服务已停止”的状态停下。不要在部署 DSH agent 的 shell 工具里启动服务：Windows 上这个子进程属于 agent 的 Job 对象，会随 agent 退出被杀。外层部署任务要在 DSH 子进程退出后再启动服务，在 agent 之外等待就绪，然后才报告成功。
