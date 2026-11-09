@@ -231,6 +231,8 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 `GET /orchestrator/api/watchdog` 返回只读快照：服务状态、每个进行中工单的阶段、最近派工与报告、静默时长和机械信号，以及最近一次记录的观测（`lastRun`）。`scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog` 打印同样的 JSON。快照命令只发送 GET；`--stale-minutes` 只改变它的信号阈值。
 
+要不轮询全量快照地跟随变化，服务还提供带版本号的长等待：`GET /orchestrator/api/watchdog/wait?since=<version>&timeout=<seconds>&stale_minutes=<minutes>` 在工单、健康、暂停或安装配置变化时，在下一个静默/评审截止时刻，或超时时立即返回新的 `version`。超时上限为 240 秒。Watchdog 始终保持一个挂起请求，只在等待返回后才读取完整快照。
+
 外部 agent 读取快照后只报告需要人处理的事：`delivery-error` 或 `undelivered-inputs`；无法用 `offPeak`、服务暂停、安装配置未完成或执行器满载解释的 `no-progress` 或 `queued`；等待远超过 30 分钟的 person 阶段，或超过一天仍未评审的 ready 结果；反复失败；或最近报告与工单标题明显不符。每次运行都记录观测（包括没有异常时），其他时候保持安静。它不修改设置、提示词、数据库或 Session 文件；服务也不再提供可调用的介入路由。
 
 Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog report --chat <chat id>` 会通过飞书来源的机器人把观察汇总发到该飞书会话，让人在平时和机器人对话的地方直接看到。服务端用自己的实时快照渲染汇总：服务状态、带机械信号的进行中工单及其静默时长和最近报告；`--note "<一句话>"` 追加 Watchdog 自己的判断。目标会话必须是机器人所在的会话，飞书来源也必须已启用并配置好；报告不修改工单，也不受对话回复 100 词上限的限制。该命令调用 `POST /orchestrator/api/watchdog/report`，传入 `chatId`、`idempotencyKey` 和可选的 `note`。
@@ -253,9 +255,9 @@ Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --
 }
 ```
 
-在前台或进程管理器下运行 `node scripts/watchdog --config watchdog.json`，或由计划任务每 15 到 30 分钟运行一次 `--once`。`--status` 打印最近记录的状态；进程在 `stateDir` 下写 `state.json` 与 `watchdog.log`，运行期间持有 `watchdog.pid`。它每轮都记录一次运行，因此 `GET watchdog` 的 `lastRun` 与 `watchdog runs` 能看出它还活着；机械发现集合变化时才发报告。配置 `dailyReport` 后，无异常时每天上午还会发一次安静的日报，让人知道安静的服务仍在被检查；每本地日只发一次，有异常时的报告不受影响。它没有模型判断：报告工单信号、异常的服务部件和安装配置问题，执行器满载或服务暂停会解释掉相应的工单信号。服务停止时它只记录失败并继续检查，无法通过飞书机器人发报告（机器人属于服务）。
+在前台或进程管理器下运行 `node scripts/watchdog --config watchdog.json`，或由计划任务每 15 到 30 分钟运行一次 `--once`。`--status` 打印最近记录的状态；进程在 `stateDir` 下写 `state.json` 与 `watchdog.log`，运行期间持有 `watchdog.pid`。它每轮都记录一次运行，因此 `GET watchdog` 的 `lastRun` 与 `watchdog runs` 能看出它还活着；机械发现集合变化时才发报告。长时间运行的进程不再按 `intervalSeconds` 睡眠，而是挂一个带版本号的等待请求：工单、健康、暂停或安装配置变化，到达下一个静默/评审截止时刻，或达到 API 的 240 秒上限时返回。变化或截止时刻会立即跑完整轮次；达到上限只是重新挂起等待，只有距上次轮次已过 `intervalSeconds` 才跑兜底轮次，因此 `intervalSeconds` 是两次轮次之间的最大间隔。配置 `dailyReport` 后，无异常时每天上午还会发一次安静的日报，让人知道安静的服务仍在被检查；每本地日只发一次（在兜底间隔内），有异常时的报告不受影响。它没有模型判断：报告工单信号、异常的服务部件和安装配置问题，执行器满载或服务暂停会解释掉相应的工单信号。服务停止时它只记录失败并继续检查，无法通过飞书机器人发报告（机器人属于服务）。
 
-要让模型成本只发生在真正需要的轮次，可以用 `--gate` 按同样的间隔把它当作门控运行。门控轮次读取快照、记录这次观测；没有风险就退出 0，有风险就退出 2：工单信号、部件报错、安装配置未完成、ready 结果等待超过一天，或连续两次失败尝试。只有退出 2 时才运行完整 DSH agent 做详细判定，由 agent 自己记录观测并报告，因此 LLM 只在风险轮次产生费用。门控只发送配置好的安静日报，不发送发现报告，也不修改其他东西；`--status`、状态文件和日志会给出它的退出原因。主机检查项、有界恢复与部署监督（路线图工作流 K、L）后续也放进这个进程。
+要让模型成本只发生在真正需要的轮次，可以在使用计划任务的一次性形态时，用 `--gate` 按同样的间隔把它当作门控运行。门控轮次读取快照、记录这次观测；没有风险就退出 0，有风险就退出 2：工单信号、部件报错、安装配置未完成、ready 结果等待超过一天，或连续两次失败尝试。只有退出 2 时才运行完整 DSH agent 做详细判定，由 agent 自己记录观测并报告，因此 LLM 只在风险轮次产生费用。门控只发送配置好的安静日报，不发送发现报告，也不修改其他东西；`--status`、状态文件和日志会给出它的退出原因。主机检查项、有界恢复与部署监督（路线图工作流 K、L）后续也放进这个进程。
 
 ### 部署最新 superagent
 

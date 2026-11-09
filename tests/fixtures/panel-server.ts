@@ -305,6 +305,9 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET watchdog': { query: ['stale_minutes'], answer: ({ query }) =>
     ({ at: '2026-11-07T00:00:00.000Z', staleMinutes: Number(query.stale_minutes ?? 30), open: 0, tickets: [], state: stateView(),
       lastRun: null }) },
+  'GET watchdog/wait': { query: ['since', 'timeout', 'stale_minutes'], answer: ({ query }) =>
+    ({ at: '2026-11-07T00:00:00.000Z', version: query.since ?? 'version-1', changed: false,
+      reason: query.since ? 'timeout' : 'initial' }) },
   'POST watchdog/runs': { body: true, answer: ({ body }) =>
     ({ id: 'watchdog-run-1', idempotency: body.idempotencyKey, at: '2026-11-07T00:00:00.000Z',
       paused: false, open: 0, flagged: 0, ...(body.note ? { note: body.note } : {}), text: '**Watchdog 观察汇总**' }) },

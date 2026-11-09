@@ -150,6 +150,57 @@ it('serves the Watchdog a read-only snapshot of the service and its open Tickets
   expect(typeof response.body.at).toBe('string')
 })
 
+it('holds a Watchdog wait until the snapshot changes, and returns a version to resume from', async () => {
+  const settings = SettingsSchema.parse({})
+  let open: Ticket[] = []
+  const call = serve({
+    store: { settings: () => settings, tickets: { open: () => open }, read: { subscribedThreads: () => [] } },
+    sources: new SourceRegistry(() => settings),
+    links: () => () => ({ url: '', label: { zh: '', en: '' } }),
+    executor: { activeCount: () => 0 },
+    machine: { stateDir: '/tmp/state', promptMaxChars: { get: () => 100_000 }, admissionContextMaxPages: { get: () => 1 },
+      admissionContextTimeoutMs: { get: () => 1_000 } },
+    health: { runtime: { state: 'ready', detail: '' } },
+    masterId: 'master',
+    configured: () => false,
+  })
+  const initial = await call('GET', 'watchdog/wait?timeout=1&stale_minutes=30')
+  expect(initial.body).toMatchObject({ changed: false, reason: 'initial' })
+  const version = String(initial.body.version)
+  const pending = call('GET', `watchdog/wait?since=${version}&timeout=5&stale_minutes=30`)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const at = '2026-11-09T00:00:00.000Z'
+  open = [{ id: 't1', title: 'Fix it', decisionId: 'd1', origin: { triggerId: 'tr1', triggerIds: ['tr1'] }, channels: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at,
+    assignments: [], mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' } }]
+  const changed = await pending
+  expect(changed.body).toMatchObject({ changed: true, reason: 'change' })
+  expect(changed.body.version).not.toBe(version)
+  // The idle fallback is one held wait, not a stream of full snapshot reads.
+  const timed = await call('GET', `watchdog/wait?since=${String(changed.body.version)}&timeout=1&stale_minutes=30`)
+  expect(timed.body).toMatchObject({ changed: false, reason: 'timeout' })
+})
+
+it('wakes the Watchdog wait at the next silence deadline, without a data change', async () => {
+  const settings = SettingsSchema.parse({})
+  const activity = new Date(Date.now() - 59_000).toISOString()
+  const ticket = { id: 't1', title: 'Quiet', decisionId: 'd1', origin: { triggerId: 'tr1', triggerIds: ['tr1'] }, channels: [], inputs: [], undelivered: [], createdAt: activity, updatedAt: activity,
+    assignments: [], mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' } }
+  const call = serve({
+    store: { settings: () => settings, tickets: { open: () => [ticket] }, read: { subscribedThreads: () => [] } },
+    sources: new SourceRegistry(() => settings),
+    links: () => () => ({ url: '', label: { zh: '', en: '' } }),
+    executor: { activeCount: () => 0 },
+    machine: { stateDir: '/tmp/state', promptMaxChars: { get: () => 100_000 }, admissionContextMaxPages: { get: () => 1 },
+      admissionContextTimeoutMs: { get: () => 1_000 } },
+    health: { runtime: { state: 'ready', detail: '' } },
+    masterId: 'master',
+    configured: () => false,
+  })
+  const initial = await call('GET', 'watchdog/wait?timeout=1&stale_minutes=1')
+  const waited = await call('GET', `watchdog/wait?since=${String(initial.body.version)}&timeout=5&stale_minutes=1`)
+  expect(waited.body).toMatchObject({ changed: false, reason: 'threshold' })
+})
+
 it('records and lists Watchdog observation runs without changing a Ticket', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-http-watchdog-run-'))
   const store = new Store(join(directory, 'orchestrator.sqlite'))

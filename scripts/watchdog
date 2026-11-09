@@ -3,9 +3,10 @@
  * Independent Watchdog process: observes a running dsh-superagent panel on its own schedule, records each observation
  * through the management API, reports changed mechanical findings to Feishu, sends one quiet report each morning when a
  * `dailyReport` schedule is configured, and keeps its configuration, state and log independent of the service and of DSH.
- * `--gate` runs the cheap two-stage form: it records a quiet observation and exits 0, or records the risk and exits 2 so a
- * full DSH agent can perform the detailed model judgement. The host and deployment checks of roadmap workflows K and L
- * are meant to plug into this process later.
+ * A long-running process holds one versioned management wait and reads the snapshot when a Ticket, health or silence
+ * deadline changes, using `intervalSeconds` only as the maximum fallback gap. `--gate` runs the cheap two-stage form: it
+ * records a quiet observation and exits 0, or records the risk and exits 2 so a full DSH agent can perform the detailed
+ * model judgement. The host and deployment checks of roadmap workflows K and L are meant to plug into this process later.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
@@ -16,12 +17,16 @@ import { fileURLToPath } from 'node:url'
 
 const VERSION = 1
 const MAX_LOG_BYTES = 5 * 1024 * 1024
+/** The management API holds one wait request at most this long; longer `intervalSeconds` values fall back sooner. */
+const WAIT_MAX_SECONDS = 240
 const USAGE = `Usage: watchdog --config <path> [--once|--gate|--status|--help]
 
-Watch dsh-superagent from an independent process: every interval it reads the read-only snapshot, records the
-observation as a run, reports changed mechanical findings to Feishu, and keeps its own state and log. With
-"dailyReport": {"hour": 9, "timezone": "Asia/Shanghai"} it also sends one quiet report in the morning when nothing is
-wrong, so a healthy deployment still proves it is checked; a findings report is not suppressed by it.
+Watch dsh-superagent from an independent process: a long-running process holds one versioned wait request and reads
+the read-only snapshot when a Ticket, health or silence deadline changes, records the observation as a run, reports
+changed mechanical findings to Feishu, and keeps its own state and log. intervalSeconds is the maximum fallback gap;
+the API caps one wait at 240 seconds. With "dailyReport": {"hour": 9, "timezone": "Asia/Shanghai"} it also sends one
+quiet report in the morning when nothing is wrong, so a healthy deployment still proves it is checked; a findings
+report is not suppressed by it.
 
 Options:
   --config <path>   JSON configuration (default: ./watchdog.json).
@@ -99,7 +104,7 @@ function loadDailyReport(value, report, chatId) {
 }
 
 /** One JSON request to the same management API the panel and `scripts/dsh-superagent` use. */
-function apiRequest(url, method, path, content) {
+function apiRequest(url, method, path, content, timeoutMs = 10_000, signal) {
   return new Promise(resolvePromise => {
     let settled = false
     const finish = value => { if (!settled) { settled = true; resolvePromise(value) } }
@@ -110,7 +115,7 @@ function apiRequest(url, method, path, content) {
     try {
       request = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, { method, headers: {
         'x-orchestrator-request': '1', ...payload ? { 'content-type': 'application/json', 'content-length': String(payload.length) } : {} },
-        timeout: 10_000 }, response => {
+        timeout: timeoutMs }, response => {
         let body = ''
         response.setEncoding('utf8')
         response.on('data', chunk => { body += chunk })
@@ -118,6 +123,7 @@ function apiRequest(url, method, path, content) {
         response.on('error', () => finish(null))
       })
     } catch { finish(null); return }
+    if (signal) signal.addEventListener('abort', () => { request.destroy(); finish(null) }, { once: true })
     request.on('timeout', () => { request.destroy(); finish(null) })
     request.on('error', () => finish(null))
     request.end(payload)
@@ -140,6 +146,22 @@ export async function readSnapshot(config) {
   const response = await apiRequest(config.url, 'GET', `/orchestrator/api/watchdog?stale_minutes=${config.staleMinutes}`)
   const value = answerJson(response, 'Watchdog snapshot')
   if (!value || typeof value !== 'object' || !Array.isArray(value.tickets)) throw new Unreachable('The management API did not answer with a Watchdog snapshot.')
+  return value
+}
+
+/**
+ * Hold one management request until the snapshot version changes, the next silence threshold arrives, or the server's
+ * wait timeout expires. The service returns the version to pass back next time; the Watchdog reads the full snapshot only
+ * after this returns, so an idle Watchdog keeps one request in flight instead of polling the snapshot.
+ */
+export async function waitForChange(config, since, timeoutSeconds, signal) {
+  const seconds = Math.max(1, Math.min(timeoutSeconds, WAIT_MAX_SECONDS))
+  const query = new URLSearchParams({ timeout: String(seconds), stale_minutes: String(config.staleMinutes) })
+  if (since) query.set('since', since)
+  const response = await apiRequest(config.url, 'GET', `/orchestrator/api/watchdog/wait?${query.toString()}`,
+    undefined, (seconds + 15) * 1000, signal)
+  const value = answerJson(response, 'Watchdog wait')
+  if (!value || typeof value.version !== 'string') throw new Unreachable('The management API did not answer with a Watchdog version.')
   return value
 }
 
@@ -382,7 +404,7 @@ export function gateFindings(snapshot) {
   for (const ticket of snapshot.tickets ?? []) {
     const id = String(ticket.id ?? '')
     const title = String(ticket.title ?? '')
-    if (ticket.stage === 'ready' && Number(ticket.silentMinutes) > 1440) {
+    if ((ticket.stage === 'ready' || ticket.action === 'review') && Number(ticket.silentMinutes) > 1440) {
       findings.push({ kind: 'ticket', id, title, signals: ['ready-unreviewed'] })
     }
     const failed = (Array.isArray(ticket.attempts) ? ticket.attempts : []).filter(state => state === 'failed' || state === 'blocked').length
@@ -522,11 +544,28 @@ export async function main(argv = process.argv.slice(2)) {
   process.once('SIGINT', () => stopping('SIGINT'))
   process.once('SIGTERM', () => stopping('SIGTERM'))
   try {
+    let since
+    let nextCycleAt = 0
     do {
-      const result = await cycle(config, state)
-      if (args.once) return result.ok ? 0 : 1
-      if (!result.ok) log(config, 'warn', `Retrying in ${config.intervalSeconds}s; the service was unreachable.`)
-      await sleep(config.intervalSeconds * 1000, stop.signal)
+      if (Date.now() >= nextCycleAt) {
+        const result = await cycle(config, state)
+        if (args.once) return result.ok ? 0 : 1
+        if (!result.ok) log(config, 'warn', `The service was unreachable; retrying in ${config.intervalSeconds}s.`)
+        nextCycleAt = Date.now() + config.intervalSeconds * 1000
+      }
+      let waited
+      try {
+        waited = await waitForChange(config, since, Math.min(config.intervalSeconds, WAIT_MAX_SECONDS), stop.signal)
+      } catch (error) {
+        if (stop.signal.aborted) break
+        log(config, 'warn', `Could not wait for a change: ${error instanceof Error ? error.message : String(error)}; retrying in ${config.intervalSeconds}s.`)
+        await sleep(config.intervalSeconds * 1000, stop.signal)
+        nextCycleAt = 0
+        continue
+      }
+      since = waited.version
+      // A change or a silence/review deadline needs a new cycle; a transport timeout only reconnects the wait.
+      if (waited.reason === 'change' || waited.reason === 'threshold') nextCycleAt = 0
     } while (!stop.signal.aborted)
     return 0
   } finally {

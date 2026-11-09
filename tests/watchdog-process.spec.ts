@@ -41,6 +41,8 @@ async function fakeService(answer: () => unknown) {
       response.writeHead(200, { 'content-type': 'application/json' })
       if (request.url?.startsWith('/orchestrator/api/watchdog/runs')) {
         response.end(JSON.stringify({ id: 'watchdog-run-1', text: '**Watchdog 观察汇总**' }))
+      } else if (request.url?.startsWith('/orchestrator/api/watchdog/wait')) {
+        response.end(JSON.stringify({ at: '2026-11-09T00:00:00.000Z', version: 'version-2', changed: true, reason: 'change' }))
       } else if (request.url === '/orchestrator/api/watchdog/report') {
         response.end(JSON.stringify({ sent: true, chatId: 'oc_test', text: '**Watchdog 观察汇总**' }))
       } else {
@@ -75,6 +77,8 @@ it('validates configuration, finds mechanical problems and keeps finding identit
     fingerprint: (findings: Record<string, unknown>[]) => string
     localClock: (timeZone: string, now: Date) => { date: string, hour: number }
     dailyReportDue: (config: Record<string, unknown>, state: Record<string, unknown>, now?: Date) => boolean
+    waitForChange: (config: Record<string, unknown>, since: string | undefined, timeoutSeconds: number, signal?: AbortSignal) =>
+      Promise<{ version: string, changed: boolean, reason: string }>
   }
   directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-watchdog-config-'))
   const path = join(directory, 'watchdog.json')
@@ -133,10 +137,31 @@ it('validates configuration, finds mechanical problems and keeps finding identit
   expect(module.gateFindings(snapshot({ tickets: [{ id: 'r1', title: 'Review', stage: 'ready', silentMinutes: 2000, signals: [] }],
     state: { paused: false, load: { running: 0, maxWorkers: 3 }, health: { runtime: { state: 'ready' } }, setup: { problem: null } } })))
     .toEqual([{ kind: 'ticket', id: 'r1', title: 'Review', signals: ['ready-unreviewed'] }])
+  // A real snapshot represents a ready result as the person/review stage, not as a `ready` stage.
+  expect(module.gateFindings(snapshot({ tickets: [{ id: 'r2', title: 'Review', stage: 'person', action: 'review', silentMinutes: 2000, signals: [] }],
+    state: { paused: false, load: { running: 0, maxWorkers: 3 }, health: { runtime: { state: 'ready' } }, setup: { problem: null } } })))
+    .toEqual([{ kind: 'ticket', id: 'r2', title: 'Review', signals: ['ready-unreviewed'] }])
   expect(module.gateFindings(snapshot({ tickets: [{ id: 'f1', title: 'Flaky', stage: 'working', silentMinutes: 5, signals: [],
     attempts: ['failed', 'failed', 'running'] }],
     state: { paused: false, load: { running: 0, maxWorkers: 3 }, health: { runtime: { state: 'ready' } }, setup: { problem: null } } })))
     .toEqual([{ kind: 'ticket', id: 'f1', title: 'Flaky', signals: ['repeated-failures'] }])
+})
+
+it('waits on one versioned request and returns the version to resume from', async () => {
+  const service = await fakeService(() => snapshot())
+  const config = configure(service.url)
+  const module = await import(pathToFileURL(script).href) as {
+    loadConfig: (path: string) => Record<string, unknown>
+    waitForChange: (config: Record<string, unknown>, since: string | undefined, timeoutSeconds: number) =>
+      Promise<{ version: string, changed: boolean, reason: string }>
+  }
+  const loaded = module.loadConfig(config)
+  const initial = await module.waitForChange(loaded, undefined, 1)
+  expect(initial).toMatchObject({ version: 'version-2' })
+  expect(service.calls.at(-1)?.url).toBe('/orchestrator/api/watchdog/wait?timeout=1&stale_minutes=30')
+  const changed = await module.waitForChange(loaded, 'version-1', 1)
+  expect(changed).toMatchObject({ version: 'version-2', changed: true, reason: 'change' })
+  expect(service.calls.at(-1)?.url).toBe('/orchestrator/api/watchdog/wait?timeout=1&stale_minutes=30&since=version-1')
 })
 
 it('records every observation and reports a finding only when it changes', async () => {
