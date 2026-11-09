@@ -43,7 +43,7 @@ export interface HttpHost {
   /** The deployment's command transport; a Source channel uses it to post a Watchdog report. */
   readonly commands: Commands
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged'>
-  readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
+  readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery' | 'lifecycle'>
   readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels' | 'activateSource'>
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
@@ -156,7 +156,9 @@ export function watchdogInstallView(home = process.env.DSH_SUPERAGENT_WATCHDOG_H
 function watchdogPage(runtime: HttpHost, staleMinutes: number) {
   const at = new Date().toISOString()
   const last = runtime.store.watchdogRuns.last()
-  return { ...watchdogView(views(runtime), at, staleMinutes), state: stateView(runtime),
+  const lifecycle = typeof runtime.sessions?.lifecycle === 'function' ? runtime.sessions.lifecycle() : undefined
+  const sessionOf = lifecycle ? (ticketId: string) => lifecycle.find(item => item.ticketId === ticketId) : undefined
+  return { ...watchdogView(views(runtime), at, staleMinutes, sessionOf), state: stateView(runtime),
     install: watchdogInstallView(),
     lastRun: last ? { at: last.at, ageMinutes: Math.max(0, Math.floor((Date.parse(at) - Date.parse(last.at)) / 60_000)),
 paused: last.paused, open: last.open, flagged: last.flagged, ...(last.note ? { note: last.note } : {}),

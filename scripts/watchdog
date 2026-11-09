@@ -54,7 +54,8 @@ function readJson(path, what) {
 export function loadConfig(path) {
   const value = readJson(path, 'watchdog configuration')
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ConfigError('The watchdog configuration must be a JSON object')
-  const unknown = Object.keys(value).filter(key => !['url', 'chatId', 'intervalSeconds', 'staleMinutes', 'report', 'dailyReport', 'stateDir', 'logFile'].includes(key))
+  const unknown = Object.keys(value).filter(key => !['url', 'chatId', 'intervalSeconds', 'staleMinutes', 'report', 'dailyReport', 'stateDir', 'logFile',
+    'alertFile', 'alertAfterFailures'].includes(key))
   if (unknown.length) throw new ConfigError(`Unknown watchdog configuration field: ${unknown.join(', ')}`)
   let url
   try { url = new URL(String(value.url)) } catch { throw new ConfigError('url must be an absolute http or https address') }
@@ -79,8 +80,14 @@ export function loadConfig(path) {
   const base = dirname(resolve(path))
   const stateDir = resolve(base, String(value.stateDir ?? '.watchdog'))
   const logFile = resolve(base, String(value.logFile ?? join(stateDir, 'watchdog.log')))
+  const alertFile = typeof value.alertFile === 'string' && value.alertFile.trim() ? resolve(base, value.alertFile) : undefined
+  const alertAfterFailures = value.alertAfterFailures ?? 2
+  if (!Number.isInteger(alertAfterFailures) || alertAfterFailures < 1 || alertAfterFailures > 100) {
+    throw new ConfigError('alertAfterFailures must be an integer between 1 and 100')
+  }
+  if (value.alertAfterFailures !== undefined && !alertFile) throw new ConfigError('alertAfterFailures requires alertFile')
   return { url: url.toString().replace(/\/+$/, ''), ...(chatId ? { chatId } : {}), intervalSeconds, staleMinutes, report,
-    ...(dailyReport ? { dailyReport } : {}), stateDir, logFile }
+    ...(dailyReport ? { dailyReport } : {}), ...(alertFile ? { alertFile } : {}), alertAfterFailures, stateDir, logFile }
 }
 
 /**
@@ -302,6 +309,49 @@ function log(config, level, message) {
   } catch (error) { process.stderr.write(`Cannot write ${config.logFile}: ${error.message}${line}`) }
 }
 
+/** Append one independent alert record, rotating the file once when it grows past the bound. */
+function writeAlert(config, record) {
+  if (!config.alertFile) return
+  const line = `${JSON.stringify({ schema: 1, ...record })}\n`
+  try {
+    mkdirSync(dirname(config.alertFile), { recursive: true, mode: 0o700 })
+    try {
+      if (statSync(config.alertFile).size > 1_000_000) {
+        try { unlinkSync(`${config.alertFile}.1`) } catch {}
+        renameSync(config.alertFile, `${config.alertFile}.1`)
+      }
+    } catch {}
+    appendFileSync(config.alertFile, line, { mode: 0o600 })
+  } catch (error) {
+    log(config, 'error', `Could not write the independent alert file: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+/** Count a failed service read and write the independent alert once the configured threshold is reached. */
+function alertUnreachable(config, state, message, at) {
+  state.unreachable = (Number.isInteger(state.unreachable) ? state.unreachable : 0) + 1
+  state.firstUnreachableAt ??= at
+  const threshold = config.alertAfterFailures ?? 2
+  if (config.alertFile && !state.alertedAt && state.unreachable >= threshold) {
+    state.alertedAt = at
+    writeAlert(config, { at, kind: 'unreachable', url: config.url, failures: state.unreachable,
+      since: state.firstUnreachableAt, message: oneLine(message, 500) })
+    log(config, 'error', `Independent alert written after ${state.unreachable} failed service reads: ${config.alertFile}`)
+  }
+}
+
+/** Mark the service reachable again and write one recovery record when an unreachable alert was open. */
+function alertReachable(config, state, at) {
+  state.lastReachableAt = at
+  if (state.alertedAt) {
+    writeAlert(config, { at, kind: 'recovered', url: config.url, failures: state.unreachable ?? 0,
+      since: state.firstUnreachableAt, message: 'The management API answered again.' })
+    delete state.alertedAt
+  }
+  delete state.firstUnreachableAt
+  state.unreachable = 0
+}
+
 /** Whether a pid names a live process; `EPERM` means it exists but is not ours. */
 function alive(pid) {
   try { process.kill(pid, 0); return true } catch (error) { return error.code === 'EPERM' }
@@ -343,6 +393,7 @@ export async function cycle(config, state, now = new Date()) {
     state.lastCycleAt = at
     state.reachable = false
     state.lastError = message
+    alertUnreachable(config, state, message, at)
     writeState(config.stateDir, state)
     log(config, 'error', message)
     return { ok: false, findings: [] }
@@ -351,6 +402,7 @@ export async function cycle(config, state, now = new Date()) {
   const note = noteFor(findings)
   state.lastCycleAt = at
   state.reachable = true
+  alertReachable(config, state, at)
   delete state.lastError
   state.current = findings.map(finding => finding.kind === 'ticket' ? `${finding.id.slice(0, 8)} ${finding.signals.join('/')}`
     : finding.kind === 'health' ? `${finding.part} ${finding.state}` : `setup ${finding.code}`)
@@ -437,6 +489,7 @@ export async function gateCycle(config, state, now = new Date()) {
     state.reachable = false
     state.lastError = message
     state.gate = 'unreachable'
+    alertUnreachable(config, state, message, at)
     writeState(config.stateDir, state)
     log(config, 'error', message)
     return { ok: false, risk: false, findings: [], code: 1 }
@@ -446,6 +499,7 @@ export async function gateCycle(config, state, now = new Date()) {
   const note = risk ? oneLine(`机械预检发现高风险（${summarize(findings).join('；')}），已升级完整 agent 判定。`, 500) : QUIET_GATE_NOTE
   state.lastCycleAt = at
   state.reachable = true
+  alertReachable(config, state, at)
   delete state.lastError
   state.gate = risk ? 'risk' : 'quiet'
   state.current = summarize(findings)

@@ -150,6 +150,8 @@ Windows Task Scheduler / systemd
 
 **P2 状态（2026-11-09）。** Watchdog agent 脚本已入仓并模板化；`scripts/watchdog-artifact.mjs` 构建带 manifest/摘要的不可变制品，`watchdog-smoke.mjs` 用本地 mock 验证自包含性；`watchdog-launch.ps1` 作为稳定启动器读取 `current.txt`；`watchdog-update.mjs` 实现请求校验、staging 根校验、smoke、安装、指针切换、锁、幂等、心跳和回滚，更新运行记录携带 `version`/`commit`。面板已在执行页显示双方版本、最近心跳，以及 current/候选/上一版与最近更新（缺失/过期/失败显示警告）；更新任务支持可选持久 observer 的停止、切换、启动与失败回滚。生产安装与更新任务尚未执行，完整 agent 模型路径留待维护窗口验证。P3–P4 保持方案状态，其待决策项见下一节。
 
+**P3 状态（2026-11-09）。** 已开始：快照新增 `session-missing` 信号（运行中的 Assignment 没有存活 worker Session）；Watchdog 配置 `alertFile`/`alertAfterFailures`，在管理 API 连续不可达时写独立本地告警行，恢复时写恢复行，不依赖服务或飞书。尚未实现：enforce 下的有界 retry/重启、服务/宿主机检查项、独立告警的飞书投递与操作员确认；这些仍待第 8 节决策。
+
 ## 8. 待决策与风险
 
 **待决策。**

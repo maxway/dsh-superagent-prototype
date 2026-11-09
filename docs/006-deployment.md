@@ -338,6 +338,22 @@ The first installation is an operator step: build or copy the artifact into the 
 
 The panel also shows the installed current and previous versions, the candidate from the last update request, and that update's time and result. The install facts come from `DSH_SUPERAGENT_WATCHDOG_HOME` and its `current.txt`, `previous.txt` and `watchdog-update-result.json` (override the result with `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT`); without the home the panel says the install is not configured. For a persistent observer, set `observerStopCommand` and `observerStartCommand` in the update configuration: the updater stops the old observer before switching the pointer, starts the new version, and on a failed start restores the pointer and starts the previous version again. Without these commands the scheduled Watchdog agent task is triggered, as before. The commands receive `DSH_WATCHDOG_VERSION` and `DSH_WATCHDOG_SERVICE_URL`, and run outside the superagent service.
 
+### Independent alerts and Session observation
+
+The independent observer can leave a local alert when the management API stays unreachable, without the service or Feishu. Set `alertFile` (and optionally `alertAfterFailures`, default 2) in the Watchdog configuration: after that many consecutive failed reads it appends one JSON line `{schema, at, kind: "unreachable", url, failures, since, message}` to the file, and one `{kind: "recovered"}` line when the service answers again. It writes at most one unreachable record until recovery, so an external scheduled task can send or escalate the file without duplicating messages. The same state and log are still written while the service is down, so a stopped service is visible instead of silent.
+
+```json
+{
+  "url": "http://127.0.0.1:3083",
+  "report": false,
+  "stateDir": "C:\\Users\\me\\.dsh\\watchdog\\state",
+  "alertFile": "C:\\Users\\me\\.dsh\\watchdog\\alerts.jsonl",
+  "alertAfterFailures": 2
+}
+```
+
+The Watchdog snapshot also reports `session-missing` when a running Assignment has no live worker Session in the service. That is an observation, not an automatic recovery: P3's bounded retry/restart and host checks still need the design decisions in section 8, so this increment only reports the fault and keeps the alert file independent.
+
 ## Settings
 
 Setup must succeed before polling or work starts. Overview lists missing requirements and links to their settings. A settings change runs setup again. If you fix something outside the application, such as CLI authentication, choose **Check again**.

@@ -340,6 +340,22 @@ Watchdog 不再通过拉取 superagent 检出更新：仓库构建不可变制�
 
 面板还显示已安装的当前与上一版、最近一次请求的候选版本，以及那次更新的时间和结果。安装信息来自 `DSH_SUPERAGENT_WATCHDOG_HOME` 下的 `current.txt`、`previous.txt` 和 `watchdog-update-result.json`（可用 `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT` 覆盖结果路径）；未设置该目录时面板显示未配置安装。若使用持久 observer，在更新配置中设置 `observerStopCommand` 与 `observerStartCommand`：更新任务先停止旧 observer、再切换指针、启动新版本；启动失败时恢复指针并重新启动上一版。未设置这两个命令时仍按原方式触发计划任务 agent。命令会收到 `DSH_WATCHDOG_VERSION` 与 `DSH_WATCHDOG_SERVICE_URL`，并在 superagent 服务之外运行。
 
+### 独立告警与 Session 观测
+
+独立观察器可以在管理 API 持续不可达时留下本地告警，不依赖服务或飞书。在 Watchdog 配置中设置 `alertFile`（可选 `alertAfterFailures`，默认 2）：连续失败达到该次数后，向文件追加一条 `{schema, at, kind: "unreachable", url, failures, since, message}` JSON 行；服务恢复时追加一条 `{kind: "recovered"}`。恢复前最多写一条不可达记录，外部计划任务可据此发送或升级告警而不会重复。服务不可用期间状态和日志仍会写入，因此停服是可见的而不是沉默的。
+
+```json
+{
+  "url": "http://127.0.0.1:3083",
+  "report": false,
+  "stateDir": "C:\\Users\\me\\.dsh\\watchdog\\state",
+  "alertFile": "C:\\Users\\me\\.dsh\\watchdog\\alerts.jsonl",
+  "alertAfterFailures": 2
+}
+```
+
+Watchdog 快照还会在“运行中的 Assignment 没有存活的 worker Session”时报告 `session-missing`。这是观测，不是自动恢复：P3 的有界 retry/重启与宿主机检查仍需要第 8 节的决策，本增量只报告故障并保持独立告警文件。
+
 ## 设置
 
 安装配置必须成功，轮询或工作才会开始。概览会列出缺失的要求，并链接到对应的设置。更改设置会再次运行安装配置。如果你在应用之外修复了某些东西，例如 CLI 登录，请选择 **重新检查**。
