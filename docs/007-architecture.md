@@ -361,6 +361,7 @@ Some generic modules still need provider-specific behavior:
 | `scripts/watchdog-artifact.mjs` | Builds an immutable Watchdog artifact and its manifest (file hashes, one digest, `apiVersion`, `minServiceVersion`), and verifies an artifact before installation |
 | `scripts/watchdog-smoke.mjs` | Exercises an uninstalled artifact against a local mock management API: the observer and the agent gate must record runs carrying the manifest version, without the production service or Feishu |
 | `scripts/watchdog-launch.ps1` | The stable launcher the scheduled task runs: it reads `current.txt` and starts that version's agent wrapper, so switching versions does not rewrite the task action |
+| `scripts/watchdog-launch.vbs` | The windowless entry point of that scheduled task: `wscript.exe` has no console, and the VBS runs `launch-agent.ps1` in a hidden window and waits for its exit code, so a timer-driven check never flashes a PowerShell window |
 | `scripts/watchdog-update.mjs` | The independent Watchdog update: request and staging-root validation, lock, smoke, install, atomic pointer switch, agent heartbeat, idempotency and rollback; it never restarts superagent |
 | `src/app/views/threads.ts` | The Thread lists, a Thread's timeline, the search and the Decision list |
 | `src/app/views/sources.ts` | The Source status: each Source instance's state, its last day's counts, and what it filtered and dropped in that day |
@@ -463,6 +464,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/watchdog-process.spec.ts` | The independent Watchdog process: configuration validation, mechanical findings and their stable identity, run recording, report dedupe, the quiet daily report, an unreachable service, the versioned wait and the status command; the gate's quiet, risk and unreachable exits |
 | `tests/watchdog-artifact.spec.ts` | The versioned Watchdog artifact: its file set and manifest, a stable digest, a self-contained observer/gate smoke and tamper detection |
 | `tests/watchdog-agent.spec.ts` | The Watchdog agent wrapper: the full agent starts in its own configured workspace with absolute checkout commands, a workspace inside the checkout is refused, and an unset workspace is named after its service profile (`watchdog_superagent`, `watchdog_sheepdoku`) |
+| `tests/watchdog-launch.spec.ts` | The windowless scheduled-task launcher: it starts the sibling PowerShell launcher with the task's arguments and keeps the agent's exit code |
 | `tests/watchdog-update.spec.ts` | The independent Watchdog update: artifact validation, smoke, install and pointer switch, recorded-run heartbeat, idempotency, rollback and staging-root refusal |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
