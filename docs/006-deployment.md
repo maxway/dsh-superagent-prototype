@@ -110,7 +110,7 @@ The GitLab Source polls every `pollSeconds` (60 by default), so a change waits u
 
 On Windows the npm `lark-cli` is a `.cmd`. The host resolves the shim's `%dp0%` Node entry and runs it with Node, so message text and JSON never pass through `cmd.exe`. A `.cmd` without a Node entry is refused; use the npm package or a native executable rather than a custom wrapper.
 
-1. Create a self-built app with the bot capability. Grant it the permissions to receive message events and to send messages as the bot, then publish the app version. It needs no permission to read messages, chat history, chats or chat members: the Source works from the event payload and replies only. The removed read paths called APIs that require `im:message`, `im:message:readonly` and `im:message.history:readonly` for messages, and `im:chat`, `im:chat:readonly`, `im:chat.group_info:readonly`, `im:chat:read` and `im:chat.members:read` for chats and members; this build does not call them. It therefore cannot recover messages sent while dsh-superagent was offline, cannot read a message or Thread by ID, cannot list chats or sync members, and cannot read images. Enter chat IDs and the allowed list by hand. Choosing **All** for a group additionally needs Feishu's permission to receive every group message; without it only messages that mention the bot arrive.
+1. Create a self-built app with the bot capability. Grant it the permissions to receive message events and to send messages as the bot, then publish the app version. It needs no permission to read messages, chat history, chats or chat members: the Source works from the event payload and replies only. The removed read paths called APIs that require `im:message`, `im:message:readonly` and `im:message.history:readonly` for messages, and `im:chat`, `im:chat:readonly`, `im:chat.group_info:readonly`, `im:chat:read` and `im:chat.members:read` for chats and members; this build does not call them. It therefore cannot recover messages sent while dsh-superagent was offline, cannot read a message or Thread by ID, cannot list chats or sync members, and cannot read images (see **Images and screenshots** below). Enter chat IDs and the allowed list by hand. Choosing **All** for a group additionally needs Feishu's permission to receive every group message; without it only messages that mention the bot arrive.
 2. Give the bot its own `lark-cli` configuration, restricted to the bot identity. On POSIX, also create a wrapper:
 
    ```sh
@@ -138,6 +138,8 @@ On Windows the npm `lark-cli` is a `.cmd`. The host resolves the shim's `%dp0%` 
    The host refuses a CLI that can act as a user. It reads the app id, Feishu/Lark brand and bot `open_id` from the bot configuration.
 
    Both configurations share the keychain entry for the app secret. To remove only the bot configuration, delete its directory; do not run `lark-cli config remove`, which would affect the shared secret.
+
+**Images and screenshots.** The bot cannot download images. A download would need `im:resource` for `GET /open-apis/im/v1/images/:image_key`, or `im:message:readonly` (or `im:message.history:readonly`) for a message resource. This self-built app has neither: an image-upload probe reported `im:resource` missing, and the message-resource download answered `99991672` with `im:message.history:readonly`/`im:message:readonly`/`im:message`. The operator confirmed on 2026-11-09 that neither scope can be granted. A live event therefore carries only its rendered text, where an image appears as an `![Image]` marker carrying an `img_…` key; the agent sees that marker, not the screenshot. A rich-text message that mentions the bot and contains an image still arrives, but only its text is readable. Ask the sender to describe the image in text, or to send the request as text. This is a deployment limitation, not a Source setting: if the app later gains one of those scopes, an image download path can be added.
 
 ## Install
 
@@ -500,6 +502,7 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `The bot lark-cli allows user identities` | Point the Feishu Source at a bot-only configuration, as in Feishu bot above |
 | `The bot lark-cli does not work.` or `The bot identity of app … is …` | Check the configuration's app id and secret |
 | `The Feishu bot is not a member of the chat.` | Add the bot to the chat in the chat's settings; the next attempt succeeds |
+| A screenshot or image sent to the bot is not understood | The bot cannot download images: the app has neither `im:resource` nor `im:message:readonly`, and neither can be granted (see Images and screenshots above). Ask for a text description |
 | `status` exits 2 | A part reports an error, which a restart does not fix: `errors` names each part, as listed under Management API, with its detail; each part clears its own entry once it works again |
 | `status` exits 3 | Setup waits: `setup` says what is missing, and the overview links to the setting that fixes it |
 | `status` exits 1 | The service does not run, runs twice, does not answer, or its runtime reports an error; the output and the newest log say which |
