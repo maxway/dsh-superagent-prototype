@@ -113,6 +113,10 @@ export interface PanelServer {
   opened: string[]
   dropped: DroppedReply[]
   failing: Extract<Problem, { kind: 'outgoing' }>['outgoing'][]
+  /** The last Watchdog run the panel reads; tests set it to exercise the version and heartbeat line. */
+  watchdogLastRun: ApiResponse<'GET watchdog'>['lastRun']
+  /** Installed Watchdog pointers and last update; tests set it to exercise the install line. */
+  watchdogInstall: ApiResponse<'GET watchdog'>['install']
 }
 export let server: PanelServer
 
@@ -167,7 +171,8 @@ function sourceStatuses(): SourceStatusRow[] {
   })
 }
 const stateView = (): StateView => ({
-  setup: server.setup, load: { running: server.setup.problem ? 0 : 2, queued: 0, maxWorkers: server.settings.executor.maxWorkers },
+  version: '0.1.0', setup: server.setup,
+  load: { running: server.setup.problem ? 0 : 2, queued: 0, maxWorkers: server.settings.executor.maxWorkers },
   masterId: 'master', paused: server.settings.paused,
   // The panel does not read health; the service script does.
   health: {},
@@ -258,6 +263,7 @@ function initial(): PanelServer {
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
+    watchdogLastRun: null, watchdogInstall: null,
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { provider: 'github', host: 'github.com', repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot',
         brand: 'feishu', botId: 'ou_bot', name: 'Widgets Bot' } } },
@@ -304,7 +310,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET state': { answer: stateView },
   'GET watchdog': { query: ['stale_minutes'], answer: ({ query }) =>
     ({ at: '2026-11-07T00:00:00.000Z', staleMinutes: Number(query.stale_minutes ?? 30), open: 0, tickets: [], state: stateView(),
-      lastRun: null }) },
+      lastRun: server.watchdogLastRun, install: server.watchdogInstall }) },
   'GET watchdog/wait': { query: ['since', 'timeout', 'stale_minutes'], answer: ({ query }) =>
     ({ at: '2026-11-07T00:00:00.000Z', version: query.since ?? 'version-1', changed: false,
       reason: query.since ? 'timeout' : 'initial' }) },

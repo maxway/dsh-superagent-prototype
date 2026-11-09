@@ -357,6 +357,11 @@ Some generic modules still need provider-specific behavior:
 | `src/app/views/watchdog.ts` | The read-only Watchdog view and `watchdogSummary`: every open Ticket's stage, latest Assignment and report, silence and mechanical signals, rendered as the Feishu observation report |
 | `src/app/watchdog.ts` | The read-only Watchdog observation: records a run from the live snapshot and keeps the rendered observation as the last-run heartbeat |
 | `scripts/watchdog` | The independent Watchdog process: its own configuration, state, log and pid; it holds one versioned wait request, reads the panel snapshot when the wait returns, records a run every cycle, reports changed mechanical findings to Feishu, and sends the configured quiet daily report; `--gate` adds the two-stage form that records a quiet cycle and exits 0, or records a risk and exits 2 for the full agent's model judgement |
+| `scripts/watchdog-agent/` | The agent wrapper, mechanical gate, prompt and configuration/model templates, versioned with the observer: a quiet gate records a run and exits; a risky cycle starts the full DSH agent from the same artifact |
+| `scripts/watchdog-artifact.mjs` | Builds an immutable Watchdog artifact and its manifest (file hashes, one digest, `apiVersion`, `minServiceVersion`), and verifies an artifact before installation |
+| `scripts/watchdog-smoke.mjs` | Exercises an uninstalled artifact against a local mock management API: the observer and the agent gate must record runs carrying the manifest version, without the production service or Feishu |
+| `scripts/watchdog-launch.ps1` | The stable launcher the scheduled task runs: it reads `current.txt` and starts that version's agent wrapper, so switching versions does not rewrite the task action |
+| `scripts/watchdog-update.mjs` | The independent Watchdog update: request and staging-root validation, lock, smoke, install, atomic pointer switch, agent heartbeat, idempotency and rollback; it never restarts superagent |
 | `src/app/views/threads.ts` | The Thread lists, a Thread's timeline, the search and the Decision list |
 | `src/app/views/sources.ts` | The Source status: each Source instance's state, its last day's counts, and what it filtered and dropped in that day |
 | `src/app/views/settings.ts` | The settings page's view: each block with its revision, each Source's settings with its kind's form, and the execution environment |
@@ -456,6 +461,8 @@ Some generic modules still need provider-specific behavior:
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/watchdog.spec.ts` | The Watchdog view and its Feishu observation summary: stages, latest reports, silence, faults, off-peak and review waits, activity from Inputs, and the rendered report |
 | `tests/watchdog-process.spec.ts` | The independent Watchdog process: configuration validation, mechanical findings and their stable identity, run recording, report dedupe, the quiet daily report, an unreachable service, the versioned wait and the status command; the gate's quiet, risk and unreachable exits |
+| `tests/watchdog-artifact.spec.ts` | The versioned Watchdog artifact: its file set and manifest, a stable digest, a self-contained observer/gate smoke and tamper detection |
+| `tests/watchdog-update.spec.ts` | The independent Watchdog update: artifact validation, smoke, install and pointer switch, recorded-run heartbeat, idempotency, rollback and staging-root refusal |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |
@@ -467,7 +474,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/launch.spec.ts` | The Windows launcher: `.cmd` shim resolution, `.js` entries and the refusal of a shell-only wrapper |
 | `tests/commands-window.spec.ts` | The CLI transport hides the window when it runs a background command |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
-| `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route |
+| `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route; the Execution page also shows the Superagent and Watchdog versions, a fresh, stale or missing heartbeat, and the installed current, previous and candidate versions with the last update |
 | `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, and the panel's search, glossary and route memory |
 | `tests/draft.spec.ts`, `tests/prompt-config.spec.ts`, `tests/markdown.spec.ts`, `tests/marks.spec.ts` | Draft states, merges and the save bar's line; the prompt configuration by section and the line diff; the Markdown subset and its links; the mark of every state the views classify |
 | `tests/locales.spec.ts`, `tests/styles.spec.ts` | The copy in both languages, the stylesheet |
@@ -490,7 +497,7 @@ One SQLite file, `<stateDir>/orchestrator.sqlite`, which only the Store opens.
 | `decision` | Decisions, by Thread | Engine |
 | `effect` | The effect queue: per kind and key, the payload, its order, failed attempts with the last error, and when it is due | Effects; the schema 11 migration queues what earlier versions kept for the main Session |
 | `outbox` | The receipt of each message for a Channel, by id, with the Ticket it is for and its `status`, `pending`, `sent` or `dropped`, kept so an id is never queued twice; for a dropped message, when and why, as the generated column `dropped`, its time, and a reason code. A message that waits has a `reply` effect, which holds its attempts | The Outbox |
-| `watchdog_run` | Every recorded Watchdog observation run, by its id and unique idempotency key: the time, paused state, open and flagged counts, the caller's note and the rendered observation; the newest thirty days are kept, so a fresh run proves the check is alive | `src/app/watchdog.ts` |
+| `watchdog_run` | Every recorded Watchdog observation run, by its id and unique idempotency key: the time, paused state, open and flagged counts, the caller's note and the rendered observation, plus the Watchdog artifact's `version` and `commit` when the reporter knows them; the newest thirty days are kept, so a fresh run proves the check is alive | `src/app/watchdog.ts` |
 | `kv` | Every other record, by key | The part that names it |
 
 A generated column is computed from its row's JSON and is empty outside its set, and each has an index over its set, so a pass reads only active work. A database that predates a column gets it when the Store opens it.

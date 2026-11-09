@@ -40,6 +40,50 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   expect(server.settings).toMatchObject({ paused: true, executor: { maxWorkers: 4 } })
 })
 
+it('shows the Superagent and Watchdog versions and a fresh heartbeat, and warns when it is stale or missing', async () => {
+  server.watchdogLastRun = { at: '2026-11-09T00:00:00.000Z', ageMinutes: 5, paused: false, open: 0, flagged: 0,
+    version: 'artifact-p2', commit: 'abcdef123456' }
+  await mount()
+  await click(zh['tab.execution'])
+  expect(text()).toContain(zh.superagentVersion)
+  expect(text()).toContain('0.1.0')
+  expect(text()).toContain(zh.watchdogVersion)
+  expect(text()).toContain('artifact-p2')
+  expect(text()).toContain('最近心跳 5 分钟前')
+  expect(document.querySelector('.dt-watchdog-heartbeat [data-state="ongoing"]')).not.toBeNull()
+  server.watchdogLastRun = { ...server.watchdogLastRun!, ageMinutes: 90 }
+  await remount(en)
+  await click(en['tab.execution'])
+  expect(text()).toContain('Heartbeat is stale: 90 min ago')
+  expect(document.querySelector('.dt-watchdog-heartbeat [data-state="warning"]')).not.toBeNull()
+  server.watchdogLastRun = null
+  await remount(zh)
+  await click(zh['tab.execution'])
+  expect(text()).toContain(zh.watchdogNoHeartbeat)
+})
+
+it('shows the installed Watchdog current, previous, candidate and last update, or that it is not configured', async () => {
+  server.watchdogInstall = { current: 'v2', previous: 'v1', candidate: 'v2', at: '2026-11-09T04:00:00.000Z',
+    ok: true, phase: 'updated' }
+  await mount()
+  await click(zh['tab.execution'])
+  expect(text()).toContain(zh.watchdogCurrent)
+  expect(text()).toContain('v2')
+  expect(text()).toContain(zh.watchdogPrevious)
+  expect(text()).toContain('v1')
+  expect(text()).toContain(zh.watchdogCandidate)
+  expect(text()).toContain(zh.watchdogLastUpdate)
+  server.watchdogInstall = server.watchdogInstall ? { ...server.watchdogInstall, ok: false } : null
+  await remount(zh)
+  await click(zh['tab.execution'])
+  expect(text()).toContain(zh.watchdogUpdateFailed)
+  expect(document.querySelector('.dt-watchdog-install [data-state="warning"]')).not.toBeNull()
+  server.watchdogInstall = null
+  await remount(zh)
+  await click(zh['tab.execution'])
+  expect(text()).toContain(zh.watchdogInstallUnconfigured)
+})
+
 it('stops an open Ticket from its page after confirmation', async () => {
   await mount()
   await click('修复回归')

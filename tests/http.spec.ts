@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { z } from 'zod'
-import { registerHttp } from '../src/app/http.ts'
+import { registerHttp, watchdogInstallView } from '../src/app/http.ts'
 import { Store } from '../src/app/store.ts'
 import { PromptConflict } from '../src/app/prompts.ts'
 import { SettingsConflict } from '../src/app/settings.ts'
@@ -218,10 +218,12 @@ it('records and lists Watchdog observation runs without changing a Ticket', asyn
       machine: { stateDir: '/tmp/state', promptMaxChars: { get: () => 100_000 }, admissionContextMaxPages: { get: () => 1 },
         admissionContextTimeoutMs: { get: () => 1_000 } },
       health: { runtime: { state: 'ready', detail: '' } }, masterId: 'master' })
-    const response = await call('POST', 'watchdog/runs', { idempotencyKey: 'run-1', note: 'One stuck Ticket' })
+    const response = await call('POST', 'watchdog/runs', { idempotencyKey: 'run-1', note: 'One stuck Ticket',
+      version: 'artifact-1', commit: 'abcdef1234567890' })
     expect(response.status).toBe(200)
     const recorded = response.body as { id: string, text: string }
-    expect(recorded).toMatchObject({ open: 1, flagged: 1, note: 'One stuck Ticket', paused: false })
+expect(recorded).toMatchObject({ open: 1, flagged: 1, note: 'One stuck Ticket', paused: false,
+      version: 'artifact-1', commit: 'abcdef1234567890' })
     expect(recorded.text).toContain('**Watchdog 观察汇总**')
     expect(recorded.text).toContain('One stuck Ticket')
     // The same idempotency key returns the recorded run instead of writing a second one.
@@ -230,7 +232,8 @@ it('records and lists Watchdog observation runs without changing a Ticket', asyn
     expect(await call('GET', 'watchdog/runs?limit=5')).toMatchObject({ status: 200,
       body: { runs: [expect.objectContaining({ id: recorded.id })] } })
     expect(await call('GET', 'watchdog?stale_minutes=30')).toMatchObject({ status: 200,
-      body: { lastRun: { open: 1, flagged: 1, note: 'One stuck Ticket' } } })
+body: { lastRun: { open: 1, flagged: 1, note: 'One stuck Ticket',
+        version: 'artifact-1', commit: 'abcdef1234567890' } } })
     // A recorded observation reads the Ticket; it does not change it.
     expect(store.tickets.get('t1')?.updatedAt).toBe(old)
     expect(await call('POST', 'watchdog/runs', { note: 'no key' })).toMatchObject({ status: 400 })
@@ -269,4 +272,30 @@ it('sends the Watchdog observation summary to a Feishu chat, and refuses without
   const off = serve({ ...runtime, sources: { instance: () => ({ enabled: false, config: {} }) } })
   expect(await off('POST', 'watchdog/report', { chatId: 'oc_test', idempotencyKey: 'report-key' }))
     .toEqual({ status: 400, body: { error: 'The Feishu Source is off' } })
+})
+
+it('reads the installed Watchdog pointers and last update from operator-configured files', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-watchdog-install-'))
+  const home = process.env.DSH_SUPERAGENT_WATCHDOG_HOME
+  const result = process.env.DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT
+  try {
+    writeFileSync(join(directory, 'current.txt'), 'v2\n')
+    writeFileSync(join(directory, 'previous.txt'), 'v1\n')
+    writeFileSync(join(directory, 'watchdog-update-result.json'), JSON.stringify({ at: '2026-11-09T04:00:00.000Z',
+      ok: true, phase: 'updated', version: 'v2', previousVersion: 'v1', request: { target: { version: 'v2' } } }))
+    process.env.DSH_SUPERAGENT_WATCHDOG_HOME = directory
+    delete process.env.DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT
+    expect(watchdogInstallView()).toMatchObject({ current: 'v2', previous: 'v1', candidate: 'v2',
+      at: '2026-11-09T04:00:00.000Z', ok: true, phase: 'updated' })
+    delete process.env.DSH_SUPERAGENT_WATCHDOG_HOME
+    expect(watchdogInstallView()).toBeNull()
+    expect(watchdogInstallView(join(directory, 'missing'))).toMatchObject({ current: null, previous: null, candidate: null,
+      at: null, ok: null, phase: null })
+  } finally {
+    if (home === undefined) delete process.env.DSH_SUPERAGENT_WATCHDOG_HOME
+    else process.env.DSH_SUPERAGENT_WATCHDOG_HOME = home
+    if (result === undefined) delete process.env.DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT
+    else process.env.DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT = result
+    rmSync(directory, { recursive: true, force: true })
+  }
 })

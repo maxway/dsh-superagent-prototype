@@ -17,6 +17,16 @@ export function ExecutionStatus({ filter: current, state, reload }: {
   const { t, call, navigate } = usePanel()
   const [limit, setLimit] = useState(20)
   const { data, error, reload: reloadTickets } = usePoll(() => call('GET tickets', { query: { state: current, limit } }), [current, limit])
+  // A missing or stale Watchdog heartbeat is a warning: silence is not proof that the observer is alive.
+  const pulse = usePoll(() => call('GET watchdog', { query: { stale_minutes: 30 } }), [])
+  const lastRun = pulse.data?.lastRun
+  const heartbeatStale = !lastRun || lastRun.ageMinutes > (pulse.data?.staleMinutes ?? 30) * 2
+  const heartbeat = lastRun ? t(heartbeatStale ? 'watchdogHeartbeatStale' : 'watchdogHeartbeat', { minutes: lastRun.ageMinutes })
+    : t('watchdogNoHeartbeat')
+  const install = pulse.data?.install
+  const updatedAt = install?.at && Number.isFinite(Date.parse(install.at))
+    ? new Date(install.at).toLocaleString(t('lang') === 'en' ? 'en-US' : 'zh-CN', { dateStyle: 'short', timeStyle: 'short' })
+    : undefined
   const { paused, load: { maxWorkers } } = state
   // Pausing uses its own block revision so toggling pause does not invalidate an open Execution settings draft.
   const pause = async () => { await call('POST executor/pause', { body: { paused: !paused } }); await reload() }
@@ -35,6 +45,20 @@ export function ExecutionStatus({ filter: current, state, reload }: {
       <ConfirmButton variant="outline" icon={paused ? 'play' : 'pause'} label={t(action)} title={t(action)} message={t(paused
         ? 'resumeProcessingConfirm' : 'pauseProcessingConfirm')}
         onConfirm={pause} />
+    </div>
+    <div className="dt-row-meta dt-watchdog-heartbeat">
+      <LabelValue label={t('superagentVersion')} value={state.version} />
+      <LabelValue label={t('watchdogVersion')} value={lastRun?.version ?? t('watchdogVersionUnknown')} />
+      <span className="dt-status-text" data-state={heartbeatStale ? 'warning' : 'ongoing'}>{heartbeat}</span>
+    </div>
+    <div className="dt-row-meta dt-watchdog-install">
+      {install ? <>
+        <LabelValue label={t('watchdogCurrent')} value={install.current ?? t('watchdogNone')} />
+        <LabelValue label={t('watchdogPrevious')} value={install.previous ?? t('watchdogNone')} />
+        <LabelValue label={t('watchdogCandidate')} value={install.candidate ?? t('watchdogNone')} />
+        <LabelValue label={t('watchdogLastUpdate')} value={updatedAt ?? t('watchdogNoUpdate')} />
+        {install.ok === false && <span className="dt-status-text" data-state="warning">{t('watchdogUpdateFailed')}</span>}
+      </> : <span className="dt-hint">{t('watchdogInstallUnconfigured')}</span>}
     </div>
     <div className="dt-filters">
       {TICKET_FILTERS.map(value => <Pill key={value} active={current === value}

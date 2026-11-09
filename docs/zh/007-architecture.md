@@ -359,6 +359,11 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/views/watchdog.ts` | 只读的 Watchdog 视图与 `watchdogSummary`：每个进行中工单的阶段、最近派工与报告、静默时长和机械信号，并渲染成飞书观察报告 |
 | `src/app/watchdog.ts` | 只读的 Watchdog 观测：从实时快照记录一次运行，并把渲染出的观测保存为“最近运行”心跳 |
 | `scripts/watchdog` | 独立的 Watchdog 进程：自有配置、状态、日志与 pid；挂一个带版本号的等待请求，等待返回后读取面板快照、每轮记录一次运行、把发生变化的机械发现报告到飞书，并发送配置好的安静日报；`--gate` 提供一次性两段式形态：普通轮次记录后退出 0，风险轮次记录后退出 2，交给完整 agent 做模型判定 |
+| `scripts/watchdog-agent/` | agent 包装、机械 gate、提示词与配置/模型模板，与观察器同版本：普通 gate 记录运行后退出，风险轮次从同一制品启动完整 DSH agent |
+| `scripts/watchdog-artifact.mjs` | 构建不可变 Watchdog 制品及 manifest（文件哈希、总摘要、`apiVersion`、`minServiceVersion`），并在安装前校验制品 |
+| `scripts/watchdog-smoke.mjs` | 用本地 mock 管理 API 验证未安装的制品：观察器与 agent gate 必须记录带 manifest 版本的运行，不接触生产服务或飞书 |
+| `scripts/watchdog-launch.ps1` | 计划任务运行的稳定启动器：读取 `current.txt` 并启动该版本的 agent 包装，因此切换版本不需要改写任务动作 |
+| `scripts/watchdog-update.mjs` | 独立 Watchdog 更新：请求与 staging 根校验、锁、smoke、安装、原子指针切换、agent 心跳、幂等与回滚；从不重启 superagent |
 | `src/app/views/threads.ts` | 线程列表、线程时间线、搜索和决定列表 |
 | `src/app/views/sources.ts` | 来源状态：每个来源实例的状态、它最后一天的计数，以及它在那一天过滤和丢弃的内容 |
 | `src/app/views/settings.ts` | 设置页面的视图：每个块及其修订版本、每个来源的设置及其种类的表单，以及执行环境 |
@@ -458,6 +463,8 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/views.spec.ts` | 管理视图从 Store 推导出的内容，例如被丢弃的消息属于哪个线程 |
 | `tests/watchdog.spec.ts` | Watchdog 视图及其飞书观察汇总：阶段、最近报告、静默时长、故障、谷价与评审等待、来自输入的活跃度，以及渲染出的报告 |
 | `tests/watchdog-process.spec.ts` | 独立 Watchdog 进程：配置校验、机械发现及其稳定标识、运行记录、报告去重、安静日报、服务不可达、带版本等待与状态命令；gate 的 quiet/risk/unreachable 出口 |
+| `tests/watchdog-artifact.spec.ts` | 版本化 Watchdog 制品：文件集与 manifest、稳定摘要、自包含观察器/gate 冒烟与篡改检测 |
+| `tests/watchdog-update.spec.ts` | 独立 Watchdog 更新：制品校验、smoke、安装与指针切换、已记录运行心跳、幂等、回滚与 staging 根拒绝 |
 | `tests/timeline.spec.ts` | 线程的页面，以及触发按时间再按 id 排序的邻近项，每个已接收触发的时间都采用同一种形式 |
 | `tests/migration.spec.ts` | schema 11 迁移：每条已存储记录都处于当前形状，以及拒绝更旧的 schema |
 | `tests/store.spec.ts` | 仓储及其工作集（SQLite 中与内存中一致）、kv 区域，其中 `KV` 的每个键只在 `src/kv.ts` 和迁移中拼写，以及设置历史与查询 |
@@ -469,7 +476,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/launch.spec.ts` | Windows 启动器：`.cmd` shim 解析、`.js` 入口，以及拒绝只能走 shell 的包装 |
 | `tests/commands-window.spec.ts` | CLI 传输在运行后台命令时隐藏窗口 |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | 客户端插件的注册和轮询、Session 导航和路由记忆、本地控件，以及面板的导入（没有循环） |
-| `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | 面板的每个页面，对照按路由作答的伪造管理 API |
+| `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | 面板的每个页面，对照按路由作答的伪造管理 API；执行页还显示 Superagent 与 Watchdog 版本、新鲜/过期/缺失的心跳，以及已安装的当前/上一版/候选版本和最近更新 |
 | `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | 设置分组、草稿和历史、提示词、部署页面，以及面板的搜索、术语表和路由记忆 |
 | `tests/draft.spec.ts`, `tests/prompt-config.spec.ts`, `tests/markdown.spec.ts`, `tests/marks.spec.ts` | 草稿状态、合并和保存栏的那行文字；按段落组织的提示词配置和行级 diff；Markdown 子集及其链接；视图所归类每种状态的标记 |
 | `tests/locales.spec.ts`, `tests/styles.spec.ts` | 两种语言的文案、样式表 |
@@ -492,7 +499,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `decision` | 决定，按线程 | Engine |
 | `effect` | 副作用队列：按种类和键，保存负载、顺序、失败尝试及最后一次错误，以及何时到期 | Effects；schema 11 迁移会把较早版本为主 Session 保留的内容入队 |
 | `outbox` | 每条发往渠道的消息的回执，按 id 保存，带上它所指向的工单及其 `status`（`pending`、`sent` 或 `dropped`），保存它以便同一个 id 永远不会入队两次；对于被丢弃的消息，何时、为何，以生成列 `dropped`、其时间和原因代码表示。等待中的消息有一个 `reply` 副作用，保存它的尝试 | Outbox |
-| `watchdog_run` | 每次记录下来的 Watchdog 观测，按其 id 和唯一幂等键保存：时间、暂停状态、进行中与带信号的工单数、调用方的一句话判断和渲染出的观测；只保留最近 30 天，因此有新的运行记录就能证明巡检还活着 | `src/app/watchdog.ts` |
+| `watchdog_run` | 每次记录下来的 Watchdog 观测，按其 id 和唯一幂等键保存：时间、暂停状态、进行中与带信号的工单数、调用方的一句话判断和渲染出的观测，以及报告方知道时的 Watchdog 制品 `version` 和 `commit`；只保留最近 30 天，因此有新的运行记录就能证明巡检还活着 | `src/app/watchdog.ts` |
 | `kv` | 其他所有记录，按键 | 为它命名的部件 |
 
 生成列由其所在行的 JSON 计算得出，在其集合之外为空，每个生成列都在其集合上有索引，因此一轮只需读取处于活动状态的工作。早于某个列的数据库会在 Store 打开它时获得该列。

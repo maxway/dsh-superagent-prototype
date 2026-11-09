@@ -36,6 +36,9 @@ export interface WatchdogRun {
   open: number
   flagged: number
   note?: string
+  /** The installed Watchdog artifact's version and commit, when the reporter knows them. */
+  version?: string
+  commit?: string
   /** The rendered observation, the same text a Feishu report carries for the same snapshot. */
   text: string
 }

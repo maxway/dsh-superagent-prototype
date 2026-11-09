@@ -146,7 +146,9 @@ Windows Task Scheduler / systemd
 | P3（中期） | 快照增加 Session 观测与信号；enforce 下有界 retry/重启；服务/宿主机检查项（路线图 L）；服务不可用时的独立告警 | 杀死测试 Session 后 Watchdog 能识别并恢复/报告；服务停止期间 Watchdog 仍工作并留下记录 |
 | P4（可选） | 面板部署/更新入口与状态查询；审批与维护窗口配置；自动化边界评估 | 断线可恢复查看；未授权/未配置时不可执行 |
 
-**P1 状态（2026-11-09）。** `scripts/dsh-superagent start` 已改为在调用方位于 Windows Job 中时，通过 WMI 让 `scripts/service-start.ps1` 在 Job 之外启动服务，并在启动后验证 `IsProcessInJob=false`；`status` 报告实时归属与最近启动方式。`scripts/deploy.ps1` 在部署 agent 退出后用 `verify` 做存活检查并记录结果。隔离环境中的 Job 关闭复现证明旧路径会杀死服务、新路径不会。剩余操作：生产实例仍需在维护窗口中由独立终端或任务重启一次，部署任务需改指向仓库内的 `deploy.ps1` 与仓库外配置；实际生产部署尚未执行。P2–P4 保持方案状态，其待决策项见下一节。
+**P1 状态（2026-11-09）。** `scripts/dsh-superagent start` 已改为在调用方位于 Windows Job 中时，通过 WMI 让 `scripts/service-start.ps1` 在 Job 之外启动服务，并在启动后验证 `IsProcessInJob=false`；`status` 报告实时归属与最近启动方式。`scripts/deploy.ps1` 在部署 agent 退出后用 `verify` 做存活检查并记录结果。隔离环境中的 Job 关闭复现证明旧路径会杀死服务、新路径不会。剩余操作：生产实例仍需在维护窗口中由独立终端或任务重启一次，部署任务需改指向仓库内的 `deploy.ps1` 与仓库外配置；实际生产部署尚未执行。
+
+**P2 状态（2026-11-09）。** Watchdog agent 脚本已入仓并模板化；`scripts/watchdog-artifact.mjs` 构建带 manifest/摘要的不可变制品，`watchdog-smoke.mjs` 用本地 mock 验证自包含性；`watchdog-launch.ps1` 作为稳定启动器读取 `current.txt`；`watchdog-update.mjs` 实现请求校验、staging 根校验、smoke、安装、指针切换、锁、幂等、心跳和回滚，更新运行记录携带 `version`/`commit`。面板已在执行页显示双方版本、最近心跳，以及 current/候选/上一版与最近更新（缺失/过期/失败显示警告）；更新任务支持可选持久 observer 的停止、切换、启动与失败回滚。生产安装与更新任务尚未执行，完整 agent 模型路径留待维护窗口验证。P3–P4 保持方案状态，其待决策项见下一节。
 
 ## 8. 待决策与风险
 
