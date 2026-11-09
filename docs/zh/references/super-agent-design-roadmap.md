@@ -8,7 +8,7 @@
 
 - 双层架构、两级过滤、订阅直通、Inline & Spill 与链式召回（GitHub/GitLab）、异步后台作业、飞书/GitHub/GitLab 多信道交互。
 - Watchdog 阶段 1：只读 `GET /orchestrator/api/watchdog`、`scripts/dsh-superagent watchdog`、观测记录与独立进程（MR !28）；随后加入带版本号的长等待、`--gate` 机械预检、安静日报与独立不可达告警。阶段 2 的 retry/stop 介入（MR !30、!32）已随外部独立 Watchdog 的启用而移除。
-- Watchdog 制品与常驻 observer/风险 agent（P2/P3）：版本化制品、独立更新任务、隐藏启动器、独立 workspace、`session-missing` 观测与有界恢复已落地；常驻 observer 用 HTTP 长连接监控，新风险时触发完整 agent；生产已安装 `p3-0cf6a69` 并通过完整 agent 运行验证。
+- Watchdog 制品与常驻 observer/风险 agent（P2/P3）：版本化制品、独立更新任务、隐藏启动器、独立 workspace、`session-missing` 观测与有界恢复已落地；常驻 observer 用 HTTP 长连接监控，新风险时触发完整 agent；生产已安装 `obs-525e65f` 并记录带版本的心跳。
 - 多 Git 来源：[011 多 Git 来源](../011-multi-git-sources.md) 记录改动面与分阶段建议；方案 A（强化切换）已实现（MR !34），部署仍只保留一个生效的 Git 来源。
 - Windows 原生部署：服务控制、worker 命令层、prepare、router 工具、飞书来源与 CI 均在 Windows 上落地（MR !10–!19），部署现状见 [009 Windows 部署](../009-windows-deployment.md)；它不改变本计划的设计差距，但决定了 5.1/5.2 的现状描述。
 
