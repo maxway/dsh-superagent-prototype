@@ -194,8 +194,11 @@ function watchdogVersion(runtime: HttpHost): string {
     undelivered: ticket.undelivered.length, attention: ticket.attention?.id ?? null,
     delivery: ticket.delivery?.at ?? null, offPeak: ticket.offPeak === true,
   }))
-  return createHash('sha1').update(JSON.stringify({ paused: state.paused, health: state.health,
-    setup: state.setup.problem?.code ?? null, feishu: state.setup.feishuProblem?.code ?? null, tickets })).digest('hex')
+  // Only a part's state is a supervision fact; its detail and check timestamp change with every health report and must
+  // not wake the Watchdog on every check. Ticket facts still carry the data the observation renders.
+  const health = Object.fromEntries(Object.entries(state.health).map(([part, value]) => [part, value.state]))
+  return createHash('sha1').update(JSON.stringify({ paused: state.paused, health, setup: state.setup.problem?.code ?? null,
+    feishu: state.setup.feishuProblem?.code ?? null, tickets })).digest('hex')
 }
 /** The next moment a silence/ready threshold may turn a quiet Ticket into a finding, or undefined if none is pending. */
 function watchdogNextWake(runtime: HttpHost, now: number, staleMinutes: number): number | undefined {
