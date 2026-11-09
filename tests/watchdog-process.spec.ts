@@ -71,6 +71,7 @@ it('validates configuration, finds mechanical problems and keeps finding identit
   const module = await import(pathToFileURL(script).href) as {
     loadConfig: (path: string) => Record<string, unknown>
     collectFindings: (snapshot: unknown) => Record<string, unknown>[]
+    gateFindings: (snapshot: unknown) => Record<string, unknown>[]
     fingerprint: (findings: Record<string, unknown>[]) => string
   }
   directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-watchdog-config-'))
@@ -108,6 +109,14 @@ it('validates configuration, finds mechanical problems and keeps finding identit
   // A part that is still starting is normal operation; only an error is a finding.
   expect(module.collectFindings(snapshot({ state: { paused: false, load: { running: 0, maxWorkers: 3 },
     health: { runtime: { state: 'ready' }, feishu: { state: 'starting', detail: '' } }, setup: { problem: null } } }))).toEqual([])
+  // The gate adds the slow risks a signal threshold does not raise by itself.
+  expect(module.gateFindings(snapshot({ tickets: [{ id: 'r1', title: 'Review', stage: 'ready', silentMinutes: 2000, signals: [] }],
+    state: { paused: false, load: { running: 0, maxWorkers: 3 }, health: { runtime: { state: 'ready' } }, setup: { problem: null } } })))
+    .toEqual([{ kind: 'ticket', id: 'r1', title: 'Review', signals: ['ready-unreviewed'] }])
+  expect(module.gateFindings(snapshot({ tickets: [{ id: 'f1', title: 'Flaky', stage: 'working', silentMinutes: 5, signals: [],
+    attempts: ['failed', 'failed', 'running'] }],
+    state: { paused: false, load: { running: 0, maxWorkers: 3 }, health: { runtime: { state: 'ready' } }, setup: { problem: null } } })))
+    .toEqual([{ kind: 'ticket', id: 'f1', title: 'Flaky', signals: ['repeated-failures'] }])
 })
 
 it('records every observation and reports a finding only when it changes', async () => {
@@ -172,4 +181,35 @@ it('reports a missing run route once, logs an unreachable service, and exits 1 w
   const missing = await run(['--config', join(directory!, 'missing.json'), '--once'])
   expect(missing.code).toBe(2)
   expect(missing.stderr).toContain('Cannot read the watchdog configuration')
+})
+
+it('runs the cheap gate: quiet records without a model, risk records and exits 2, unreachable exits 1', async () => {
+  const answers: unknown[] = []
+  const { calls, url } = await fakeService(() => answers[0])
+  answers[0] = snapshot()
+  const config = configure(url, { report: false })
+  const quiet = await run(['--config', config, '--gate'])
+  expect(quiet.code).toBe(0)
+  const quietPosts = calls.filter(call => call.method === 'POST')
+  expect(quietPosts).toHaveLength(1)
+  expect(quietPosts[0]!.url).toBe('/orchestrator/api/watchdog/runs')
+  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(0)
+  expect(JSON.parse(readFileSync(join(directory!, 'state', 'state.json'), 'utf8')))
+    .toMatchObject({ reachable: true, gate: 'quiet', current: [] })
+
+  // A signal turns the gate into the escalation path: it records the risk and exits 2 for the full agent.
+  answers[0] = snapshot({ tickets: [{ id: 't1', title: 'Stuck', stage: 'working', silentMinutes: 90, signals: ['no-progress'], attempts: ['running'] }] })
+  const risk = await run(['--config', config, '--gate'])
+  expect(risk.code).toBe(2)
+  const posts = calls.filter(call => call.method === 'POST')
+  expect(posts).toHaveLength(2)
+  expect(JSON.parse(posts[1]!.body!).note).toContain('高风险')
+  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(0)
+  expect(JSON.parse(readFileSync(join(directory!, 'state', 'state.json'), 'utf8'))).toMatchObject({ reachable: true, gate: 'risk' })
+
+  const unreachable = configure('http://127.0.0.1:1', { report: false })
+  expect((await run(['--config', unreachable, '--gate'])).code).toBe(1)
+  const status = await run(['--config', unreachable, '--status'])
+  expect(status.code).toBe(0)
+  expect(JSON.parse(status.stdout)).toMatchObject({ reachable: false, gate: 'unreachable' })
 })
