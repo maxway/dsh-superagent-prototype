@@ -310,7 +310,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET state': { answer: stateView },
   'GET watchdog': { query: ['stale_minutes'], answer: ({ query }) =>
     ({ at: '2026-11-07T00:00:00.000Z', staleMinutes: Number(query.stale_minutes ?? 30), open: 0, tickets: [], state: stateView(),
-      lastRun: server.watchdogLastRun, install: server.watchdogInstall }) },
+      recovery: { mode: 'off', maxAttempts: 1 }, lastRun: server.watchdogLastRun, install: server.watchdogInstall }) },
   'GET watchdog/wait': { query: ['since', 'timeout', 'stale_minutes'], answer: ({ query }) =>
     ({ at: '2026-11-07T00:00:00.000Z', version: query.since ?? 'version-1', changed: false,
       reason: query.since ? 'timeout' : 'initial' }) },
@@ -318,6 +318,10 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     ({ id: 'watchdog-run-1', idempotency: body.idempotencyKey, at: '2026-11-07T00:00:00.000Z',
       paused: false, open: 0, flagged: 0, ...(body.note ? { note: body.note } : {}), text: '**Watchdog 观察汇总**' }) },
   'GET watchdog/runs': { query: ['limit', 'before'], answer: () => ({ runs: [] }) },
+  'POST watchdog/recoveries': { body: true, answer: ({ body }) =>
+    ({ id: 'watchdog-recovery-1', idempotency: body.idempotencyKey, at: '2026-11-07T00:00:00.000Z',
+      ticketId: body.ticketId, sessionId: `worker-${body.ticketId}`, action: 'retry', reason: body.reason,
+      snapshotAt: body.snapshotAt, result: 'refused', error: 'Recovery is off' }) },
   'POST watchdog/report': { body: true, answer: ({ body }) =>
     ({ sent: true as const, at: '2026-11-07T00:00:00.000Z', chatId: body.chatId, text: '**Watchdog 观察汇总**' }) },
   'GET overview': { answer: overviewView },

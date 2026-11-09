@@ -42,6 +42,19 @@ export interface WatchdogRun {
   /** The rendered observation, the same text a Feishu report carries for the same snapshot. */
   text: string
 }
+/** One audited Watchdog recovery attempt; `executing` is reserved before the retry is applied. */
+export interface WatchdogRecovery {
+  id: string
+  idempotency: string
+  at: string
+  ticketId: string
+  sessionId: string
+  action: 'retry'
+  reason: string
+  snapshotAt: string
+  result: 'executing' | 'executed' | 'refused' | 'failed'
+  error?: string
+}
 /**
  * Generated columns and partial indexes defining active working sets so passes scan only active rows.
  * Older databases missing a column get it added on open and populated by SQLite from stored JSON rows.
@@ -101,11 +114,14 @@ export class Store implements Repositories {
               since TEXT NOT NULL, PRIMARY KEY (kind, key));
             CREATE TABLE IF NOT EXISTS watchdog_run (id TEXT PRIMARY KEY, idempotency TEXT NOT NULL UNIQUE, at TEXT NOT NULL,
               value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS watchdog_recovery (id TEXT PRIMARY KEY, idempotency TEXT NOT NULL UNIQUE,
+              at TEXT NOT NULL, ticket TEXT NOT NULL, value TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS trigger_at ON trigger(at);
             CREATE INDEX IF NOT EXISTS trigger_thread_at ON trigger_thread(thread, at);
             CREATE INDEX IF NOT EXISTS decision_thread ON decision(thread);
             CREATE INDEX IF NOT EXISTS effect_due ON effect(kind, due, seq);
             CREATE INDEX IF NOT EXISTS watchdog_run_at ON watchdog_run(at);
+            CREATE INDEX IF NOT EXISTS watchdog_recovery_ticket ON watchdog_recovery(ticket, at);
           `)
           this.addColumns()
           if (migrating) migrateTo11(this)
@@ -284,6 +300,18 @@ export class Store implements Repositories {
       : this.values<WatchdogRun>('SELECT value FROM watchdog_run ORDER BY at DESC, rowid DESC LIMIT ?', limit),
     /** Deletes runs older than `before`; returns how many rows were removed. */
     prune: (before: string): number => Number(this.db.prepare('DELETE FROM watchdog_run WHERE at < ?').run(before).changes),
+  }
+  /** Audited Watchdog recovery attempts: idempotent lookups and every attempt for one Ticket. */
+  readonly watchdogRecoveries = {
+    byIdempotency: (idempotency: string): WatchdogRecovery | undefined =>
+      this.values<WatchdogRecovery>('SELECT value FROM watchdog_recovery WHERE idempotency = ?', idempotency)[0],
+    save: (recovery: WatchdogRecovery): void => {
+      this.db.prepare(`INSERT INTO watchdog_recovery (id, idempotency, at, ticket, value) VALUES (?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET value=excluded.value`).run(recovery.id, recovery.idempotency, recovery.at,
+        recovery.ticketId, JSON.stringify(recovery))
+    },
+    forTicket: (ticketId: string): WatchdogRecovery[] =>
+      this.values<WatchdogRecovery>('SELECT value FROM watchdog_recovery WHERE ticket = ? ORDER BY at', ticketId),
   }
   /** Read-only queries for management views, orchestrator tools, and source polling (see `storeReads`). */
   readonly read: ReturnType<typeof storeReads>

@@ -7,7 +7,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { dirname } from 'node:path'
 import { z } from 'zod'
 import { key, liveTicket, type Ticket } from '../core/index.ts'
-import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
+import { mandateInstructions, ticketOfSession, workerSessionId } from '../executor/dsh.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
@@ -185,6 +185,14 @@ export class Sessions {
     // Deduplicate by notice name and payload hash so retries are idempotent while updated payloads still deliver.
     const text = JSON.stringify(value)
     await this.agentDelivery.send(resolved.agent, `notice:${name}:${key(text)}`, text, { inject: summary }, this.host.lifetime)
+  }
+  /** The worker Sessions present for open Tickets, for the read-only Watchdog snapshot; an absent Ticket has no entry. */
+  lifecycle() {
+    return this.host.store.tickets.open().flatMap(ticket => {
+      const sessionId = workerSessionId(ticket.id)
+      const agent = this.ctx.agents.get(sessionId as SessionId)
+      return agent ? [{ ticketId: ticket.id, sessionId, status: agent.status }] : []
+    })
   }
   /** Returns the current prompt revision, the active prompt revision of each loaded Session, and whether the main Session still has a pending `'prompts'` notice. */
   status() {

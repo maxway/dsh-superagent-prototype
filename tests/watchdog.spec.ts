@@ -50,6 +50,14 @@ it('reports every open Ticket with its stage, latest report, silence and the Thr
     threads: [{ key: 'github:7', title: 'PR 7', url: 'https://example.test/pull/7', context: true }] })
 })
 
+it('flags a running Assignment whose worker Session is missing, and records the Session when it is present', () => {
+  const host = views()
+  store.tickets.save(ticket('missing', { updatedAt: at(5), assignments: [assignment({ startedAt: at(10) })] }))
+  expect(watchdogView(host, NOW, 30, () => undefined).tickets[0]?.signals).toEqual(['session-missing'])
+  expect(watchdogView(host, NOW, 30, () => ({ sessionId: 'worker-missing', status: 'running' })).tickets[0])
+    .toMatchObject({ signals: [], session: { id: 'worker-missing', status: 'running' } })
+})
+
 it('flags faults and stale stages, but not an off-peak wait or a ready result awaiting review', () => {
   const host = views()
   const tickets = [

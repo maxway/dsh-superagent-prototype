@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -254,6 +254,25 @@ it('reports a missing run route once, logs an unreachable service, and exits 1 w
   const missing = await run(['--config', join(directory!, 'missing.json'), '--once'])
   expect(missing.code).toBe(2)
   expect(missing.stderr).toContain('Cannot read the watchdog configuration')
+})
+
+it('writes one independent alert after consecutive unreachable reads and a recovery record when the service returns', async () => {
+  const { url } = await fakeService(() => snapshot())
+  const config = configure('http://127.0.0.1:1', { report: false, alertFile: 'alerts.jsonl', alertAfterFailures: 2 })
+  expect((await run(['--config', config, '--once'])).code).toBe(1)
+  expect(existsSync(join(directory!, 'alerts.jsonl'))).toBe(false)
+  expect((await run(['--config', config, '--once'])).code).toBe(1)
+  const alertPath = join(directory!, 'alerts.jsonl')
+  const first = readFileSync(alertPath, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line))
+  expect(first).toEqual([expect.objectContaining({ kind: 'unreachable', failures: 2, url: 'http://127.0.0.1:1' })])
+  expect((await run(['--config', config, '--once'])).code).toBe(1)
+  expect(readFileSync(alertPath, 'utf8').trim().split(/\r?\n/)).toHaveLength(1)
+
+  const recoveredPath = join(directory!, 'recovered.json')
+  writeFileSync(recoveredPath, JSON.stringify({ url, report: false, stateDir: 'state', alertFile: 'alerts.jsonl', alertAfterFailures: 2 }))
+  expect((await run(['--config', recoveredPath, '--once'])).code).toBe(0)
+  expect(readFileSync(alertPath, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line).kind))
+    .toEqual(['unreachable', 'recovered'])
 })
 
 it('runs the cheap gate: quiet records without a model, risk records and exits 2, unreachable exits 1', async () => {

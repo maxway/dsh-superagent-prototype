@@ -487,6 +487,39 @@ it('asks the server to send the Watchdog observation summary to a Feishu chat', 
   expect(calls).toHaveLength(1)
 })
 
+it('asks the service for one bounded recovery and exits non-zero when it is refused', async () => {
+  const calls: { method?: string; url?: string; body?: string; header?: string }[] = []
+  let result = 'executed'
+  server = createServer((request, response) => {
+    let body = ''
+    request.on('data', chunk => { body += chunk })
+    request.on('end', () => {
+      calls.push({ method: request.method, url: request.url, body, header: String(request.headers['x-orchestrator-request']) })
+      response.writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ id: 'r1', idempotency: 'key', at: '2026-11-07T01:00:00.000Z', ticketId: 't1',
+          sessionId: 'worker-t1', action: 'retry', reason: 'Session missing', snapshotAt: '2026-11-07T01:00:00.000Z', result }))
+    })
+  })
+  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
+  const executed = await run('watchdog', 'recover', '--ticket', 't1', '--reason', 'Session missing',
+    '--snapshot-at', '2026-11-07T01:00:00.000Z', '--url', url)
+  expect(executed.code).toBe(0)
+  expect(JSON.parse(executed.stdout)).toMatchObject({ result: 'executed', ticketId: 't1' })
+  expect(calls).toHaveLength(1)
+  expect(calls[0]).toMatchObject({ method: 'POST', url: '/orchestrator/api/watchdog/recoveries', header: '1' })
+  expect(JSON.parse(calls[0]!.body!)).toMatchObject({ ticketId: 't1', action: 'retry', reason: 'Session missing',
+    snapshotAt: '2026-11-07T01:00:00.000Z' })
+  expect((JSON.parse(calls[0]!.body!) as { idempotencyKey: string }).idempotencyKey).toMatch(/^watchdog-recovery-t1-/)
+  result = 'refused'
+  const refused = await run('watchdog', 'recover', '--ticket', 't1', '--reason', 'Session missing',
+    '--snapshot-at', '2026-11-07T01:00:00.000Z', '--idempotency-key', 'recover-key', '--url', url)
+  expect(refused.code).toBe(1)
+  expect(JSON.parse(calls[1]!.body!)).toMatchObject({ idempotencyKey: 'recover-key' })
+  expect(await run('watchdog', 'recover', '--ticket', 't1', '--url', url)).toMatchObject({ code: 1,
+    stderr: expect.stringContaining('needs --reason') })
+})
+
 it('records an observation run and prints recent runs', async () => {
   const calls: { method?: string; url?: string; body?: string; header?: string }[] = []
   server = createServer((request, response) => {

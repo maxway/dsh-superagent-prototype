@@ -9,8 +9,8 @@ import { markdown } from './text.ts'
  * are faults, `queued` and `no-progress` mean a working Ticket has been silent for the stale threshold, and
  * `waiting-person` means a blocked, failed or unanswered Ticket has waited that long.
  */
-export type WatchdogSignal = 'delivery-error' | 'undelivered-inputs' | 'queued' | 'no-progress' | 'waiting-person'
-const SIGNAL_ORDER: readonly WatchdogSignal[] = ['delivery-error', 'undelivered-inputs', 'queued', 'no-progress', 'waiting-person']
+export type WatchdogSignal = 'delivery-error' | 'undelivered-inputs' | 'queued' | 'no-progress' | 'waiting-person' | 'session-missing'
+const SIGNAL_ORDER: readonly WatchdogSignal[] = ['delivery-error', 'undelivered-inputs', 'queued', 'no-progress', 'waiting-person', 'session-missing']
 /** A person stage these actions do not raise `waiting-person` for: delivery has its own fault signal, and a review may wait normally. */
 const NO_WAITING_SIGNAL = new Set(['review', 'delivery'])
 
@@ -43,7 +43,8 @@ function threadsOf(view: Snapshot, ticket: Ticket) {
  * Builds the Watchdog view: every open Ticket with its stage, latest Assignment and report, silence and signals.
  * `staleMinutes` is the silence threshold for the mechanical signals; it is a hint, not a verdict.
  */
-export function watchdogView(host: ViewHost, at: string, staleMinutes: number) {
+export function watchdogView(host: ViewHost, at: string, staleMinutes: number,
+  sessionOf?: (ticketId: string) => { sessionId?: string; status?: string } | undefined) {
   const view = snapshot(host)
   const now = Date.parse(at)
   const tickets = host.store.tickets.open().slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(ticket => {
@@ -51,10 +52,13 @@ export function watchdogView(host: ViewHost, at: string, staleMinutes: number) {
     // `idle` and `ended` have no action; a person stage names one and a queued working stage names `queued`.
     const action = 'action' in stage ? stage.action : undefined
     const assignment = latestAssignment(ticket)
+    const session = sessionOf?.(ticket.id)
     const report = latestReport(ticket)
     const activity = lastActivity(ticket)
     const silentMinutes = minutesBetween(activity, now)
     const signals: WatchdogSignal[] = []
+    // A running Assignment with no live worker Session means the worker died or was never created.
+    if (sessionOf && assignment?.state === 'running' && !session) signals.push('session-missing')
     if (ticket.delivery) signals.push('delivery-error')
     if (ticket.undelivered.length) signals.push('undelivered-inputs')
     if (stage.stage === 'working' && action === 'queued') {
@@ -75,7 +79,8 @@ export function watchdogView(host: ViewHost, at: string, staleMinutes: number) {
       ...ticket.delivery ? { deliveryError: ticket.delivery.error } : {}, undelivered: ticket.undelivered.length,
       ...ticket.offPeak ? { offPeak: true } : {},
       ...ticket.execution ? { directory: ticket.execution.directory } : {},
-      ...ticket.assignments.some(item => item.startedAt) ? { sessionId: workerSessionId(ticket.id) } : {},
+      ...(ticket.assignments.some(item => item.startedAt) ? { sessionId: workerSessionId(ticket.id) } : {}),
+      ...(session ? { session: { ...(session.sessionId ? { id: session.sessionId } : {}), ...(session.status ? { status: session.status } : {}) } } : {}),
       threads: threadsOf(view, ticket), signals: ordered }
   })
   return { at, staleMinutes, open: tickets.length, tickets }
