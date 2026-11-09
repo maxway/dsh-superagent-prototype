@@ -983,6 +983,17 @@ else { ready(); setTimeout(() => { printEvents(); setInterval(() => {}, 1000) },
     expect(alive(pid)).toBe(false)
     controller.abort(); await running; store.close()
   }, 20_000)
+  it('stops quietly when the state database closes before the consumer stops', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const { ctx, health, store } = consumerSource(cli('ready'))
+    running = runFeishu(ctx, controller.signal)
+    await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'ready' }), until)
+    // Shutdown closes the Store before the Source controller is aborted, so the five-second enabled check must not read it.
+    store.close()
+    await vi.advanceTimersByTimeAsync(5000)
+    const stopped = new Promise((_, reject) => setTimeout(() => reject(new Error('the watch loop kept running after its store closed')), 10_000))
+    await expect(Promise.race([running, stopped])).resolves.toBeUndefined()
+  }, 20_000)
   it('starts the consumer again after it exits, and is ready once the next run listens', async () => {
     const { ctx, health, store } = consumerSource(cli('flaky'))
     running = runFeishu(ctx, controller.signal)

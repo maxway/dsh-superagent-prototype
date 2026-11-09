@@ -16,6 +16,14 @@ import type { FeishuConfig } from './feishu.ts'
 
 export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> => watch(ctx, signal)
 const enabled = (ctx: SourceContext): FeishuConfig | undefined => ctx.config<FeishuConfig>('feishu')
+/**
+ * Whether the Feishu Source is on, or `undefined` once its state store is closed. Shutdown closes the database before the
+ * Source controller is aborted, so a timer or event callback that reads settings after that point stops the loop instead of
+ * throwing out of an unhandled timer (which ended the process with `database is not open`).
+ */
+function sourceOn(ctx: SourceContext): boolean | undefined {
+  try { return enabled(ctx) !== undefined } catch { return undefined }
+}
 const bot = (ctx: SourceContext): FeishuBot => {
   const resolved = ctx.deployment.feishu
   if (!resolved) throw new Error('The Feishu Source has no working bot CLI')
@@ -43,19 +51,29 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   if (!available(ctx)) return
   let retry: number | undefined
   while (!signal.aborted) {
-    if (!enabled(ctx)) {
+    const on = sourceOn(ctx)
+    if (on === undefined) return
+    if (!on) {
       ctx.report('feishu', health('paused', 'sourceOff'))
       await delay(5000, undefined, { signal }).catch(() => {})
       continue
     }
     const running = new AbortController()
-    const check = setInterval(() => { if (!enabled(ctx)) running.abort() }, 5000)
+    const check = setInterval(() => {
+      // A closed store means shutdown has begun; abort so the loop can exit without reading it again.
+      if (sourceOn(ctx) !== true) running.abort()
+    }, 5000)
+    // Clear the check as soon as the run is stopping, not only after `consume` has finished: its stop can wait five seconds
+    // on Windows, which is long enough for the database to close underneath a later check.
+    const stopCheck = () => clearInterval(check)
+    running.signal.addEventListener('abort', stopCheck, { once: true })
     const stop = () => running.abort()
     signal.addEventListener('abort', stop, { once: true })
     const began = Date.now()
     try { await consume(ctx, running.signal) }
     catch (error) { if (!running.signal.aborted) ctx.report('feishu', { state: 'error', detail: String(error) }) }
-    finally { clearInterval(check); signal.removeEventListener('abort', stop) }
+    finally { clearInterval(check); running.signal.removeEventListener('abort', stopCheck); signal.removeEventListener('abort', stop) }
+    if (sourceOn(ctx) === undefined) return
     if (running.signal.aborted) continue
     retry = consumerRetry(retry, Date.now() - began)
     await delay(retry, undefined, { signal }).catch(() => {})
@@ -99,8 +117,9 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
     chain = chain.then(async () => {
       if (line.length > 1_048_576) throw new Error('Feishu event exceeds 1 MiB')
       const trigger = feishuTrigger(JSON.parse(line), bot(ctx).botId, bot(ctx).appId)
-      // Events already read when the Source is disabled are dropped; the consumer stops shortly after.
-      if (!trigger || !enabled(ctx)) return
+      // Events already read when the Source is disabled are dropped; the consumer stops shortly after. A closed store means
+      // shutdown, so the event is dropped too rather than read through an unusable Source.
+      if (!trigger || sourceOn(ctx) !== true) return
       await receive(ctx, trigger)
     }).catch(error => { ctx.report('feishu', { state: 'error', detail: String(error) }) })
   })
