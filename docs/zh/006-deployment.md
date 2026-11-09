@@ -112,7 +112,7 @@ GitLab 来源默认按 `pollSeconds`（默认 60 秒）轮询，变更最长要�
 
 Windows 上 npm 安装的 `lark-cli` 是 `.cmd`。宿主会解析 shim 的 `%dp0%` Node 入口并用 Node 运行它，因此消息文本和 JSON 从不经过 `cmd.exe`。没有 Node 入口的 `.cmd` 会被拒绝；请使用 npm 包或原生可执行文件，不要用自定义包装脚本。
 
-1. 创建一个带机器人能力的自建应用。授予它接收消息事件和以机器人身份发送消息的权限，然后发布应用版本。它不需要读取消息、聊天历史、群或群成员的权限：来源只使用事件携带的内容并回复。被移除的读取路径会调用需要 `im:message`、`im:message:readonly`、`im:message.history:readonly`（消息）以及 `im:chat`、`im:chat:readonly`、`im:chat.group_info:readonly`、`im:chat:read`、`im:chat.members:read`（群和成员）的接口；当前版本不再调用它们。因此它无法补收 dsh-superagent 离线期间的消息，无法按 ID 读取消息或话题，无法列出群或同步成员，也无法读取图片。群 chat_id 和允许名单需要手工填写。为群选择**全部消息**还需要飞书“接收群内全部消息”的权限；没有该权限时只会收到 @ 机器人的消息。
+1. 创建一个带机器人能力的自建应用。授予它接收消息事件和以机器人身份发送消息的权限，然后发布应用版本。它不需要读取消息、聊天历史、群或群成员的权限：来源只使用事件携带的内容并回复。被移除的读取路径会调用需要 `im:message`、`im:message:readonly`、`im:message.history:readonly`（消息）以及 `im:chat`、`im:chat:readonly`、`im:chat.group_info:readonly`、`im:chat:read`、`im:chat.members:read`（群和成员）的接口；当前版本不再调用它们。因此它无法补收 dsh-superagent 离线期间的消息，无法按 ID 读取消息或话题，无法列出群或同步成员，也无法读取图片（原因见下文**图片与截图**）。群 chat_id 和允许名单需要手工填写。为群选择**全部消息**还需要飞书“接收群内全部消息”的权限；没有该权限时只会收到 @ 机器人的消息。
 2. 给机器人一份自己的 `lark-cli` 配置，限制为机器人身份；在 POSIX 上再提供一个包装脚本：
 
    ```sh
@@ -140,6 +140,8 @@ Windows 上 npm 安装的 `lark-cli` 是 `.cmd`。宿主会解析 shim 的 `%dp0
    宿主会拒绝能充当用户的 CLI。它从机器人配置中读取应用 id、飞书/Lark 品牌和机器人的 `open_id`。
 
    两份配置共享应用密钥的钥匙串条目。要只删除机器人配置，请删除它的目录；不要运行 `lark-cli config remove`，那会影响共享的密钥。
+
+**图片与截图。** 机器人无法下载图片。下载图片需要 `im:resource`（`GET /open-apis/im/v1/images/:image_key`），下载消息资源需要 `im:message:readonly`（或 `im:message.history:readonly`）。这个自建应用两者都没有：上传图片的探测报告缺少 `im:resource`，消息资源下载返回 `99991672` 并列出 `im:message.history:readonly`/`im:message:readonly`/`im:message`；操作员已确认（2026-11-09）两个权限都无法开通。因此实时事件只带来渲染后的文本，图片显示为 `![Image]` 标记并带有 `img_…` key，agent 看到的是标记而不是截图。即使一条富文本消息同时包含 @ 机器人和图片，机器人也只能读取其中的文字。请让发送者用文字描述图片内容，或用文字提出请求。这是部署限制，不是来源设置；如果以后应用获得其中之一，可以再实现图片下载路径。
 
 ## 安装
 
@@ -504,6 +506,7 @@ Windows 上用 PowerShell 执行同样的步骤；PowerShell 7 支持 `&&`，服
 | `The bot lark-cli allows user identities` | 让飞书来源指向一个仅机器人配置，如上面的飞书机器人所述 |
 | `The bot lark-cli does not work.` 或 `The bot identity of app … is …` | 检查配置的应用 id 和密钥 |
 | `The Feishu bot is not a member of the chat.` | 在该群的设置中把机器人加入群；下一次尝试就会成功 |
+| 发给机器人的截图或图片没有被理解 | 机器人无法下载图片：应用既没有 `im:resource` 也没有 `im:message:readonly`，且两者都无法开通（见上文**图片与截图**）。请让发送者改用文字描述 |
 | `status` 以 2 退出 | 某个部分报告错误，重启不能修复：`errors` 会列出每个部分（如管理 API 下所列）及其详情；每个部分恢复工作后会清除自己的条目 |
 | `status` 以 3 退出 | 安装配置在等待：`setup` 说明缺少什么，概览会链接到可修复它的设置 |
 | `status` 以 1 退出 | 服务没有运行、运行了两份、没有响应，或它的运行时报告错误；输出和最新的日志会说明是哪种 |
