@@ -270,6 +270,7 @@ Use these facts to keep the next preflight short:
 3. Confirm the service is idle with the same `status` output and record open and queued Ticket counts. Pause the independent Watchdog writers before the consistent backup, then restore and verify them after the service is ready.
 4. Stop at the switched, stopped state. Do not start the service from the deploying DSH agent's shell tool: on Windows that child belongs to the agent's Job object and is killed when the agent exits. The outer deployment task must start the service after the DSH child process has exited, wait for readiness outside the agent, and only then report success.
 5. Write the measured stop, start and ready times into the deployment log. The log is the retrospective: a slow run can be compared with the previous one, and the switch target stays under a minute.
+6. After deploying a change to `scripts/watchdog`, add `dailyReport` to the independent watchdog's `watchdog.json` and restart that process; if its scheduled gate still runs the old `gate.mjs`, point it at `scripts/watchdog --gate` so the quiet daily report uses the deployed version.
 
 The release supervisor still owns identity checks, the backup, rollback readiness and the maintenance window; these facts shorten discovery, they do not replace those steps. The summarized timing record is in [the deployment-speed evidence](evidence/deployment-speed/).
 

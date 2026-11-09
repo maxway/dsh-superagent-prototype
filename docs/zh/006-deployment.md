@@ -272,6 +272,7 @@ Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --
 3. 用同一份 `status` 输出确认服务空闲，并记录进行中与排队工单数。做一致性备份前暂停独立 Watchdog 的写入，服务恢复后按原方式恢复并核验。
 4. 在“文件已切换、服务已停止”的状态停下。不要在部署 DSH agent 的 shell 工具里启动服务：Windows 上这个子进程属于 agent 的 Job 对象，会随 agent 退出被杀。外层部署任务要在 DSH 子进程退出后再启动服务，在 agent 之外等待就绪，然后才报告成功。
 5. 把实测的停机、启动和就绪时间写进部署日志。日志就是复盘材料：慢的那次可以和上一次比较，切换本身应保持在一分钟内。
+6. 部署 `scripts/watchdog` 的改动后，在独立 Watchdog 的 `watchdog.json` 里加上 `dailyReport` 并重启该进程；如果计划任务仍运行旧的 `gate.mjs`，把它改为 `scripts/watchdog --gate`，让安静日报走已部署的版本。
 
 身份核验、备份、回滚准备与维护窗口仍由发布监督器负责；这些事实只缩短发现过程，不替代那些步骤。汇总的时间记录见[部署提速证据](../evidence/deployment-speed/)。
 
