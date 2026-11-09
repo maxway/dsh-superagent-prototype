@@ -251,7 +251,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | --- | --- |
 | `src/app/runtime.ts` | 组合根：用各部件使用的接口构建它们，注册路由和来源宿主，并启动与关停 dsh-superagent |
 | `src/app/notices.ts` | 把领域事件和 worker 报告转换为面向主 Session 的通知和转发 |
-| `src/app/tools/main.ts`, `src/app/tools/executor.ts` | 把主 Session 与执行器 Session 的工具参数转换为核心类的调用，把结果转换为卡片 |
+| `src/app/tools/main.ts`, `src/app/tools/executor.ts` | 把主 Session 与执行器 Session 的工具参数转换为核心类的调用，把结果转换为卡片；主 Session 的 `orchestrator_deploy` 把操作者的部署请求发给独立 Watchdog |
 | `src/app/http.ts`, `src/app/views/`, `src/app/api.ts` | 把 HTTP 请求转换为调用，把 Store 读取转换为面板的视图；`api.ts` 为面板给每条路由标注类型 |
 | `src/app/resources.ts`, `src/app/links.ts`, `src/app/cards.ts` | 把资源名称转换为读取、把来源消息转换为链接、把记录转换为给模型的紧凑卡片 |
 | `src/sources/github*.ts`, `src/sources/gitlab*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | 把 GitHub、GitLab 和飞书负载转换为触发和线程事实，把消息转换为 CLI 调用 |
@@ -343,6 +343,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/retry-health.ts` | `RetryHealth`：哪些 Session 在等待模型预算重试，供 `models` 健康条目使用 |
 | `src/app/role-models.ts` | 解析评估和执行器的模型，并用其角色的模型初始化新 Session |
 | `src/app/assessment.ts` | MasterAssessor、研判 schema，以及 `orchestrator_eval` 回答所用的窗口 |
+| `src/app/deployment.ts` | 主 Session 发给独立 Watchdog 的部署请求：从环境读取请求文件与任务命令；只发送，不发布 |
 | `src/app/execution-environment.ts` | 执行环境：它的变量、工单的取值、目录根，以及提示词段落的各行，`src/app/prompts.ts` 把它们填入模板 |
 | `src/app/source-context.ts` | `sourceContextOf`：每个来源种类的 `SourceContext` |
 | `src/app/links.ts` | `sourceLink`、触发消息的页面，以及 `candidateCard` |
@@ -430,6 +431,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/gitlab.spec.ts` | `SourceContext` 上的 GitLab 来源：转换、项目轮询和游标、渠道、合并请求规则和结束通知 |
 | `tests/gitlab-webhook.spec.ts` | GitLab webhook：监听器校验、唤醒合并和项目 hook 的创建、更新与删除 |
 | `tests/commands.spec.ts` | 以部署账号执行的 CLI 调用、渠道的回答，以及限定在仓库范围内的 GitHub 调用 |
+| `tests/deploy-command.spec.ts` | 主 Session 的部署请求：从环境读取配置、原子写请求文件、启动独立任务，以及命令失败 |
 | `tests/commands-window.spec.ts` | 后台 CLI 命令运行时隐藏窗口 |
 | `tests/github-read.spec.ts` | GitHub 读取 |
 | `tests/admission-context.spec.ts` | 研判的线程窗口 |
