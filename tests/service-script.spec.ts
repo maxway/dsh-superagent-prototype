@@ -297,6 +297,25 @@ it('exposes the platform-specific process, start and argument forms', async () =
   // A control invocation of this script carries --profile too, but only the DSH launcher is the service.
   expect(value.serves).toEqual([false, false, false, true, false])
 })
+it.skipIf(process.platform !== 'win32')('reads Job ownership from the probe rather than plain membership', async () => {
+  const module = pathToFileURL(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')).href
+  const script = `import(${JSON.stringify(module)}).then(m => console.log(JSON.stringify([
+    m.processJobFacts(1, () => 'none'),
+    m.processJobFacts(1, () => 'own'),
+    m.processJobFacts(1, () => 'foreign'),
+    m.processJobFacts(1, () => 'unknown'),
+    m.processJobFacts(1, () => { throw new Error('no PowerShell') })
+  ])))`
+  const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
+    (error, stdout) => error ? reject(error) : resolve(stdout)))
+  expect(JSON.parse(out)).toEqual([
+    { inJob: false, foreignJob: false },
+    { inJob: true, foreignJob: false },
+    { inJob: true, foreignJob: true },
+    null,
+    null
+  ])
+})
 it('reports the deployment facts from the profile home for a release preflight', async () => {
   const home = join(root, 'home')
   const profileDir = join(home, 'profiles', 'superagent')
@@ -363,13 +382,14 @@ it.skipIf(process.platform !== 'win32')('keeps a detached Node shim hidden and w
     await new Promise(resolve => child.once('exit', resolve))
   }
 }, 10_000)
-it.skipIf(process.platform !== 'win32')('proves a service created outside every Job survives and verify notices its loss', async () => {
+it.skipIf(process.platform !== 'win32')('proves a service created outside every foreign Job survives and verify notices its loss', async () => {
   const serviceDirectory = mkdtempSync(join(tmpdir(), 'verify service '))
   const profile = `p1verify${process.pid}`
   const portFile = join(serviceDirectory, 'port.txt')
   const entry = join(serviceDirectory, 'entry.js')
   writeFileSync(entry, `import { writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
+import { spawn } from 'node:child_process'
 const ready = { health: { runtime: { state: 'ready', detail: '' } }, setup: { problem: null, feishuProblem: null } }
 const server = createServer((request, response) => {
   if (request.url?.startsWith('/orchestrator/api/state')) {
@@ -379,6 +399,8 @@ const server = createServer((request, response) => {
   response.writeHead(404).end()
 })
 server.listen(0, '127.0.0.1', () => writeFileSync(${JSON.stringify(portFile)}, String(server.address().port)))
+// A long-running service spawns children (the Feishu event consumer is one) and joins the Job Node creates for them.
+spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000)'], { stdio: 'ignore' })
 setInterval(() => {}, 60_000)
 `)
   const controlScript = join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')
@@ -414,7 +436,8 @@ setInterval(() => {}, 60_000)
     const url = `http://127.0.0.1:${port}`
     const verified = await run([controlScript, 'verify', '--profile', profile, '--url', url, '--survival-seconds', '1'])
     expect(verified).toMatchObject({ code: 0, stderr: '' })
-    expect(JSON.parse(verified.stdout)).toMatchObject({ ok: true, pid: servicePid, inJob: false, survivalSeconds: 1 })
+    // Node puts the service into its own Job when it spawns a child; only a Job it merely inherited may fail the check.
+    expect(JSON.parse(verified.stdout)).toMatchObject({ ok: true, pid: servicePid, inJob: true, foreignJob: false, survivalSeconds: 1 })
     process.kill(servicePid!)
     const stopped = servicePid!
     servicePid = undefined
@@ -430,7 +453,7 @@ setInterval(() => {}, 60_000)
     rmSync(serviceDirectory, { recursive: true, force: true })
     rmSync(join(import.meta.dirname, '..', '.artifacts', 'control', 'profiles', profile), { recursive: true, force: true })
   }
-}, 30_000)
+}, 45_000)
 it('prints the Watchdog snapshot over GET and refuses an unreachable service', async () => {
   const requests: { method?: string; url?: string; header?: string }[] = []
   server = createServer((request, response) => {
