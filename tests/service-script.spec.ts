@@ -297,6 +297,25 @@ it('exposes the platform-specific process, start and argument forms', async () =
   // A control invocation of this script carries --profile too, but only the DSH launcher is the service.
   expect(value.serves).toEqual([false, false, false, true, false])
 })
+it('reports the deployment facts from the profile home for a release preflight', async () => {
+  const home = join(root, 'home')
+  const profileDir = join(home, 'profiles', 'superagent')
+  mkdirSync(profileDir, { recursive: true })
+  writeFileSync(join(home, 'service.ps1'), '# service control\n')
+  writeFileSync(join(profileDir, 'cordis.patch.yml'), '- id: dsh-superagent\n  config:\n    stateDir: /srv/dsh-superagent/state\n')
+  const module = pathToFileURL(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')).href
+  const script = `import(${JSON.stringify(module)}).then(m => console.log(JSON.stringify(m.deploymentFacts('superagent', ${JSON.stringify(home)}))))`
+  const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
+    (error, stdout) => error ? reject(error) : resolve(stdout)))
+  const value = JSON.parse(out) as Record<string, unknown>
+  expect(value).toMatchObject({ profile: 'superagent', home, profileDir, serviceScript: join(home, 'service.ps1'),
+    stateDir: '/srv/dsh-superagent/state', bundleLink: join(profileDir, 'node_modules', 'dsh-superagent'),
+    git: { head: expect.stringMatching(/^[0-9a-f]{40}$/), branch: expect.any(String), dirty: expect.any(Boolean) } })
+  // The profile home is also a parse-time option, and no other status field is disturbed by it.
+  expect(JSON.parse(await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e',
+    `import(${JSON.stringify(module)}).then(m => console.log(JSON.stringify(m.parseArgv(['status'], { DSH_HOME: ${JSON.stringify(home)} }))))`],
+  (error, stdout) => error ? reject(error) : resolve(stdout))))).toMatchObject({ home, profile: 'superagent' })
+})
 it('launches a Windows npm shim through its Node entry', async () => {
   const shim = join(root, 'bin', 'dsh.cmd')
   const entryDir = join(root, 'bin', 'node_modules', '@deepseek-ai', 'dsh', 'lib')
@@ -418,101 +437,26 @@ it('prints the Watchdog snapshot over GET and refuses an unreachable service', a
     requests.push({ method: request.method, url: request.url, header: String(request.headers['x-orchestrator-request']) })
     response.writeHead(200, { 'content-type': 'application/json' })
       .end(JSON.stringify({ at: '2026-11-07T01:00:00.000Z', staleMinutes: 15, open: 1, tickets: [{ id: 't1', signals: ['no-progress'] }],
-        state: { paused: false }, watchdog: { mode: 'enforce', staleMinutes: 30 }, audit: [] }))
+        state: { paused: false }, lastRun: null }))
   })
   await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
   const url = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
   const watched = await run('watchdog', '--url', url, '--stale-minutes', '15')
   expect(watched.code).toBe(0)
-  expect(JSON.parse(watched.stdout)).toMatchObject({ profile: 'superagent', url, staleMinutes: 15, open: 1, tickets: [{ id: 't1' }],
-    watchdog: { mode: 'enforce', staleMinutes: 30 }, audit: [] })
-  // The command is read-only: one GET, no retry, stop, settings or prompt call.
+  expect(JSON.parse(watched.stdout)).toMatchObject({ profile: 'superagent', url, staleMinutes: 15, open: 1, tickets: [{ id: 't1' }] })
+  // The command is read-only: one GET, no settings or prompt call.
   expect(requests).toEqual([{ method: 'GET', url: '/orchestrator/api/watchdog?stale_minutes=15', header: '1' }])
   expect(await run('watchdog', '--url', 'http://127.0.0.1:9')).toMatchObject({ code: 1,
     stderr: expect.stringContaining('No management API answer') })
   expect(await run('watchdog', '--stale-minutes', '0')).toMatchObject({ code: 1,
     stderr: expect.stringContaining('--stale-minutes must be an integer between 1 and 1440') })
 })
-/** A snapshot row the CLI can ask the server to act on. */
+/** A snapshot row the CLI reads for the Watchdog summary and run record. */
 function watchdogTicket(fields: Record<string, unknown> = {}) {
   return { id: 't1', title: 'Fix the build', stage: 'person', action: 'failed', silentMinutes: 90, signals: ['waiting-person'],
     lastReport: { state: 'failed', summary: 'The build broke', at: '2026-11-07T00:00:00.000Z', ageMinutes: 90 },
-    attempts: ['failed'], actions: { retry: true, stop: true }, ...fields }
+    attempts: ['failed'], ...fields }
 }
-/** Answer the Watchdog snapshot and record each action request, including its JSON body. */
-async function watchdogApi(ticket: () => Record<string, unknown> = () => watchdogTicket()) {
-  const calls: { method?: string; url?: string; body?: string; header?: string }[] = []
-  server = createServer((request, response) => {
-    let body = ''
-    request.on('data', chunk => { body += chunk })
-    request.on('end', () => {
-      calls.push({ method: request.method, url: request.url, body, header: String(request.headers['x-orchestrator-request']) })
-      if (request.method === 'POST') {
-        const value = JSON.parse(body) as { idempotencyKey: string; snapshotAt: string; reason: string }
-        const id = /tickets\/([^/]+)\//.exec(request.url ?? '')?.[1] ?? 't1'
-        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ id: 'watchdog-audit-1',
-          idempotency: value.idempotencyKey, at: '2026-11-07T00:01:00.000Z', snapshotAt: value.snapshotAt, ticketId: id,
-          action: request.url?.endsWith('/stop') ? 'stop' : 'retry', mode: 'enforce', initiator: 'watchdog', reason: value.reason,
-          result: 'executed', before: { stage: 'person', action: 'failed' }, after: { stage: 'working' } }))
-        return
-      }
-      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ at: '2026-11-07T00:00:00.000Z', staleMinutes: 30,
-        open: 1, tickets: [ticket()], state: { paused: false, health: {} },
-        watchdog: { mode: 'enforce', actions: ['retry', 'stop'], staleMinutes: 30, cooldownMinutes: 15, perTicketPerHour: 2, perHour: 6 },
-        audit: [] }))
-    })
-  })
-  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
-  return { calls, url: `http://127.0.0.1:${(server!.address() as AddressInfo).port}` }
-}
-it('asks the server for one retry or stop with the snapshot and a fresh idempotency key', async () => {
-  const { calls, url } = await watchdogApi()
-  const retry = await run('watchdog', 'retry', 't1', '--reason', 'No report for 90 minutes', '--url', url)
-  expect(retry.code).toBe(0)
-  expect(JSON.parse(retry.stdout)).toMatchObject({ result: 'executed', ticketId: 't1', action: 'retry' })
-  const stop = await run('watchdog', 'stop', 't1', '--reason', 'Stuck and drifting', '--url', url)
-  expect(stop.code).toBe(0)
-  expect(JSON.parse(stop.stdout)).toMatchObject({ result: 'executed', ticketId: 't1', action: 'stop' })
-  const posts = calls.filter(call => call.method === 'POST')
-  expect(posts.map(call => call.url)).toEqual(['/orchestrator/api/watchdog/tickets/t1/retry',
-    '/orchestrator/api/watchdog/tickets/t1/stop'])
-  expect(calls[0]).toMatchObject({ method: 'GET', url: '/orchestrator/api/watchdog?stale_minutes=30' })
-  const first = JSON.parse(posts[0]!.body!) as { reason: string; snapshotAt: string; idempotencyKey: string; evidence: Record<string, unknown> }
-  expect(first).toMatchObject({ reason: 'No report for 90 minutes', snapshotAt: '2026-11-07T00:00:00.000Z',
-    evidence: { stage: 'person', action: 'failed', silentMinutes: 90 } })
-  const second = JSON.parse(posts[1]!.body!) as { idempotencyKey: string }
-  expect(first.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
-  expect(second.idempotencyKey).not.toBe(first.idempotencyKey)
-  expect(posts.every(call => call.header === '1')).toBe(true)
-})
-it('refuses an action for a Ticket that is not open, and a missing ticket or reason', async () => {
-  const { calls, url } = await watchdogApi(() => watchdogTicket())
-  expect(await run('watchdog', 'retry', 'unknown', '--reason', 'Gone', '--url', url)).toMatchObject({ code: 1,
-    stderr: expect.stringContaining('is not open') })
-  expect(await run('watchdog', 'retry', '--reason', 'No ticket', '--url', url)).toMatchObject({ code: 1,
-    stderr: expect.stringContaining('needs a ticket id') })
-  expect(await run('watchdog', 'stop', 't1', '--url', url)).toMatchObject({ code: 1,
-    stderr: expect.stringContaining('needs --reason') })
-  expect(await run('watchdog', 'restart', 't1', '--url', url)).toMatchObject({ code: 1,
-    stderr: expect.stringContaining('watchdog action must be retry, stop, report, run or runs') })
-  expect(calls.some(call => call.method === 'POST')).toBe(false)
-})
-it('reports a management API refusal from the action route', async () => {
-  server = createServer((request, response) => {
-    if (request.method === 'POST') {
-      response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid settings: reason' }))
-      return
-    }
-    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ at: '2026-11-07T00:00:00.000Z', staleMinutes: 30,
-      open: 1, tickets: [watchdogTicket()], state: { paused: false, health: {} },
-      watchdog: { mode: 'enforce' }, audit: [] }))
-  })
-  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
-  const url = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
-  expect(await run('watchdog', 'retry', 't1', '--reason', 'Bad request', '--url', url)).toMatchObject({ code: 1,
-    stderr: expect.stringContaining('Invalid settings: reason') })
-})
-
 it('asks the server to send the Watchdog observation summary to a Feishu chat', async () => {
   const calls: { method?: string; url?: string; body?: string; header?: string }[] = []
   server = createServer((request, response) => {
@@ -539,7 +483,7 @@ it('asks the server to send the Watchdog observation summary to a Feishu chat', 
   expect(await run('watchdog', 'report', '--chat', 'team', '--url', url)).toMatchObject({ code: 1,
     stderr: expect.stringContaining('--chat must be a Feishu chat id') })
   expect(await run('watchdog', 'report', 't1', '--chat', 'oc_team', '--url', url)).toMatchObject({ code: 1,
-    stderr: expect.stringContaining('takes no ticket id') })
+    stderr: expect.stringContaining('unexpected argument') })
   expect(calls).toHaveLength(1)
 })
 
@@ -553,7 +497,7 @@ it('records an observation run and prints recent runs', async () => {
       if (request.method === 'POST') {
         const value = JSON.parse(body) as { note: string; idempotencyKey: string }
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ id: 'watchdog-run-1',
-          idempotency: value.idempotencyKey, at: '2026-11-07T00:00:00.000Z', mode: 'report', paused: false, open: 1, flagged: 1,
+          idempotency: value.idempotencyKey, at: '2026-11-07T00:00:00.000Z', paused: false, open: 1, flagged: 1,
           note: value.note, text: '**Watchdog 观察汇总**' }))
         return
       }
@@ -564,7 +508,7 @@ it('records an observation run and prints recent runs', async () => {
   const url = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
   const recorded = await run('watchdog', 'run', '--note', 'One stuck Ticket', '--url', url)
   expect(recorded.code).toBe(0)
-  expect(JSON.parse(recorded.stdout)).toMatchObject({ mode: 'report', open: 1, flagged: 1, note: 'One stuck Ticket' })
+  expect(JSON.parse(recorded.stdout)).toMatchObject({ open: 1, flagged: 1, note: 'One stuck Ticket' })
   const posts = calls.filter(call => call.method === 'POST')
   expect(posts).toHaveLength(1)
   expect(posts[0]).toMatchObject({ method: 'POST', url: '/orchestrator/api/watchdog/runs', header: '1' })
@@ -575,9 +519,9 @@ it('records an observation run and prints recent runs', async () => {
   expect(listed.code).toBe(0)
   expect(JSON.parse(listed.stdout)).toMatchObject({ runs: [{ id: 'watchdog-run-1' }] })
   expect(calls.at(-1)).toMatchObject({ method: 'GET', url: '/orchestrator/api/watchdog/runs?limit=5', header: '1' })
-  // A run takes no ticket id and both commands reject invalid input before any request.
+  // A run takes no positional argument and both commands reject invalid input before any request.
   expect(await run('watchdog', 'run', 't1', '--url', url)).toMatchObject({ code: 1,
-    stderr: expect.stringContaining('takes no ticket id') })
+    stderr: expect.stringContaining('unexpected argument') })
   expect(await run('watchdog', 'run', '--note', 'x'.repeat(501), '--url', url)).toMatchObject({ code: 1,
     stderr: expect.stringContaining('--note must be at most 500 characters') })
   expect(await run('watchdog', 'runs', '--limit', '0', '--url', url)).toMatchObject({ code: 1,

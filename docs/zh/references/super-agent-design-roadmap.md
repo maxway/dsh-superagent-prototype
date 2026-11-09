@@ -1,13 +1,13 @@
 # Super-agent 剩余能力落地计划
 
-> 基于 [super-agent-design.md](super-agent-design.md) 和 [能力差距分析](super-agent-design-gap-analysis.md)，把尚未落地的工作拆成可独立交付的工作流和里程碑。基线：`main` @ `7ff7178`（2026-11-09）；Watchdog 的只读巡检与 retry/stop 介入（MR !28、!30、!32）、部署指令与独立执行任务（MR !43）、多 Git 来源方案 A（MR !34）与 Windows 原生部署系列（MR !10–!19）已落地。多 Git 来源的完整现状见 [011 多 Git 来源](../011-multi-git-sources.md)；双向发布与看护的设计见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)。
+> 基于 [super-agent-design.md](super-agent-design.md) 和 [能力差距分析](super-agent-design-gap-analysis.md)，把尚未落地的工作拆成可独立交付的工作流和里程碑。基线：`main` @ `e7b6264`（2026-11-09）；Watchdog 只读巡检（MR !28）与独立进程已落地，阶段 2 的 retry/stop 介入（MR !30、!32）已随外部独立 Watchdog 的启用而移除；部署指令与独立执行任务（MR !43）已落地，2026-11-09 的 Windows Job 归属问题由 `scripts/service-start.ps1` 与 `verify` 修复；多 Git 来源方案 A（MR !34）与 Windows 原生部署系列（MR !10–!19）已落地。多 Git 来源的完整现状见 [011 多 Git 来源](../011-multi-git-sources.md)；双向发布与看护的设计见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)。
 
 ## 现状
 
 已经完成：
 
 - 双层架构、两级过滤、订阅直通、Inline & Spill 与链式召回（GitHub/GitLab）、异步后台作业、飞书/GitHub/GitLab 多信道交互。
-- Watchdog 阶段 1/2：只读 `GET /orchestrator/api/watchdog`、`scripts/dsh-superagent watchdog`、`watchdog` 设置块、专用介入 API、SQLite 审计、冷却/限流、retry/stop 与面板表单（MR !28、!30、!32）。
+- Watchdog 阶段 1：只读 `GET /orchestrator/api/watchdog`、`scripts/dsh-superagent watchdog`、观测记录与独立进程（MR !28）。阶段 2 的 retry/stop 介入（MR !30、!32）已随外部独立 Watchdog 的启用而移除。
 - 多 Git 来源：[011 多 Git 来源](../011-multi-git-sources.md) 记录改动面与分阶段建议；方案 A（强化切换）已实现（MR !34），部署仍只保留一个生效的 Git 来源。
 - Windows 原生部署：服务控制、worker 命令层、prepare、router 工具、飞书来源与 CI 均在 Windows 上落地（MR !10–!19），部署现状见 [009 Windows 部署](../009-windows-deployment.md)；它不改变本计划的设计差距，但决定了 5.1/5.2 的现状描述。
 
@@ -29,7 +29,7 @@
 
 | 工作流 | 目标 | 规模 | 依赖 | 需要决策 |
 | --- | --- | --- | --- | --- |
-| A. Watchdog 介入 | 允许 Watchdog 重试/停止工单，带审计、限流和安全前置条件 | 已完成 | Watchdog 阶段 1（已完成） | 默认模式与允许的动作 |
+| A. Watchdog 介入 | 允许 Watchdog 重试/停止工单，带审计、限流和安全前置条件 | 已实现后移除 | Watchdog 阶段 1（已完成） | 默认模式与允许的动作 |
 | B. Watchdog 配置修改 | 允许 Watchdog 修改设置或提示词 | 中 | A 稳定运行一段时间 | 是否允许自动修改，还是只生成待审草案 |
 | C. 计算与状态分离（5.1） | 计算无状态、状态进共享存储、可跨主机恢复 | 大 | DSH Session 持久化的能力评估 | 目标拓扑：单机加远程数据库，还是多实例 |
 | D. 执行环境分离（5.2） | 端侧 daemon 执行命令，支持 BYOM 与跨设备 | 大 | C | 信任模型与首批接入设备 |
@@ -47,7 +47,7 @@
 
 ### A. Watchdog 阶段 2：介入
 
-> 状态：已实现。`watchdog` 设置块、专用介入 API、SQLite 审计、冷却/限流、retry/stop 与面板表单均已落地；本文保留原始任务与验收，作为实现记录。
+> 状态：已实现后移除。`watchdog` 设置块、专用介入 API、SQLite 审计、冷却/限流、retry/stop 与面板表单曾落地（MR !30、!32）；外部独立 Watchdog 可用后，服务内实现已清理，决定与报告归外部进程。本文保留原始任务与验收，作为历史记录。
 
 **目标。** 在只读巡检的基础上，允许 Watchdog 对确认卡住的工单执行 `retry` 或 `stop`，同时保证误操作可审计、可限流、可回退。
 
@@ -229,7 +229,7 @@
 
 ### L. 独立 Watchdog 的主机服务看护
 
-> 状态：基础独立进程已落地（`scripts/watchdog`：工单观测、运行记录、飞书报告，自有配置/状态/日志与 pid）；主机检查项、有界恢复、自监督与 K 的部署监督仍待做。当前 DSH 内置 Watchdog 只读工单与 service 各部分健康；主机侧另有一个计划任务在登录状态下检查 CI runner 的进程（进程缺失时重启，只写本地日志），两者尚未打通。与 Superagent 互相看护、Session 级信号和双向心跳见 M。
+> 状态：基础独立进程已落地（`scripts/watchdog`：工单观测、运行记录、飞书报告与安静日报，自有配置/状态/日志与 pid；长期进程用版本化等待跟随工单、健康与静默阈值变化）；主机检查项、有界恢复、自监督与 K 的部署监督仍待做。服务内的 Watchdog 介入设置与审计已移除，只保留只读工单与 service 各部分健康快照；主机侧另有一个计划任务在登录状态下检查 CI runner 的进程（进程缺失时重启，只写本地日志），两者尚未打通。与 Superagent 互相看护、Session 级信号和双向心跳见 M。
 
 **目标。** 当 Watchdog 以独立进程（而不是 DSH 服务内的定时会话）运行时，除工单与部署外，还能按运营者预配置的检查项看护宿主机上的外部服务，例如项目 CI runner：发现进程缺失、健康检查失败或长时间不轮询时，在允许的范围内做有界恢复并留下审计与报告；主服务停止或重启时 Watchdog 仍能工作。
 
@@ -261,7 +261,7 @@
 
 | 阶段 | 内容 | 出口标准 |
 | --- | --- | --- |
-| 0. 已完成 | 双层架构、事件驱动与多信道；Watchdog 只读巡检与 retry/stop 介入（设置、审计、限流）；多 Git A（强化切换）；Windows 原生部署 | 已合并 |
+| 0. 已完成 | 双层架构、事件驱动与多信道；Watchdog 只读巡检与独立进程（介入实现已移除）；多 Git A（强化切换）；Windows 原生部署 | 已合并 |
 | 1. 近期（可并行） | 5.1 决策与 spike；3.4 授权与成本决策；F 飞书权限决策；G 评测；H 安全加固 | 5.1 有 go/no-go；3.4 与 F 有决策；G/H 有产出 |
 | 2. 中期（可并行） | 多 Git B（同宿主多项目）；5.1 实现；Watchdog 阶段 3（可选） | 多项目端到端可用；计算可重启或跨主机恢复 |
 | 3. 后期 | 5.2 协议与端侧 daemon；多 Git C（跨宿主并发）；3.4 试点 | 远程测试设备完成工单；跨宿主交付；投机指标可查 |

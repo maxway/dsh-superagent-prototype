@@ -1,138 +1,19 @@
-/** Watchdog interventions: guards, limits and audit around the existing retry and stop ticket operations. */
-import { canRetry, key, latestReport, ticketStage, UserError, type EngineForPeople } from '../core/index.ts'
-import type { WatchdogAction, WatchdogConfig } from '../policy.ts'
-import type { Store, WatchdogAudit, WatchdogRun } from './store.ts'
+/** The read-only Watchdog observation: recording a run and rendering the summary an external Watchdog reports. */
+import { key } from '../core/index.ts'
+import type { Store, WatchdogRun } from './store.ts'
 import type { ViewHost } from './views/records.ts'
 import { watchdogSummary, watchdogView } from './views/watchdog.ts'
 
-/** The snapshot a Watchdog decision is based on may not be older than this when the API re-reads the Ticket. */
-const SNAPSHOT_MAX_MS = 10 * 60_000
-const HOUR = 3_600_000
-const DAY = 24 * HOUR
+/** The default silence threshold used when a snapshot request names none; an external Watchdog may override it per request. */
+export const WATCHDOG_STALE_MINUTES = 30
+/** How long recorded observation runs are kept; older rows are pruned whenever a new run is recorded. */
+export const WATCHDOG_RUN_RETENTION_DAYS = 30
 
 export interface WatchdogHost {
   store: Store
-  engine: Pick<EngineForPeople, 'retryTicket' | 'stopTicket'>
   /** The ticket views need the Sources and channel links, as the management snapshot uses them. */
   view: ViewHost
-  configured(): boolean
-  setupProblem?: unknown
 }
-export interface WatchdogRequest {
-  ticketId: string
-  action: WatchdogAction
-  reason: string
-  evidence?: Record<string, unknown>
-  snapshotAt: string
-  idempotencyKey: string
-}
-const rowFacts = (row: ReturnType<typeof watchdogView>['tickets'][number] | undefined) => row ? {
-  stage: row.stage, ...(row.action ? { action: row.action } : {}), silentMinutes: row.silentMinutes, signals: row.signals,
-  ...(row.lastReport ? { lastReport: { state: row.lastReport.state, summary: row.lastReport.summary, at: row.lastReport.at } } : {}),
-  attempts: row.attempts,
-} : undefined
-/** Count the actions a cooldown and the settings' hourly limits consume; `executing` counts before it completes. */
-function limits(entries: WatchdogAudit[], ticketId: string, config: WatchdogConfig, at: number) {
-  const consumed = entries.filter(entry => (entry.result === 'executing' || entry.result === 'executed' || entry.result === 'failed')
-    && Number.isFinite(Date.parse(entry.at)))
-  const mine = consumed.filter(entry => entry.ticketId === ticketId)
-  return { cooldown: mine.some(entry => at - Date.parse(entry.at) < config.cooldownMinutes * 60_000),
-    perTicketPerHour: mine.filter(entry => at - Date.parse(entry.at) < HOUR).length,
-    perHour: consumed.filter(entry => at - Date.parse(entry.at) < HOUR).length }
-}
-/**
- * Decide one Watchdog request: modes `off`, `observe` and `report` never change a Ticket; only `enforce` may retry or stop,
- * after re-reading the Ticket and rejecting a changed snapshot, a waiting person, a pending delivery, an off-peak wait, a
- * paused or incomplete service, a too-recent silence, an action the settings exclude, or a cooldown/limit. Every decision
- * is kept in `watchdog_audit`; an `executing` row reserves the action so a concurrent request cannot duplicate it.
- */
-export function watchdogAction(host: WatchdogHost, request: WatchdogRequest): WatchdogAudit {
-  const settings = host.store.settings()
-  const config = settings.watchdog
-  const at = Date.now()
-  const now = new Date(at).toISOString()
-  const id = key('watchdog', request.action, request.ticketId, request.idempotencyKey)
-  const entry: WatchdogAudit = { id, idempotency: request.idempotencyKey, at: now, snapshotAt: request.snapshotAt,
-    ticketId: request.ticketId, action: request.action, mode: config.mode, initiator: 'watchdog', reason: request.reason,
-    ...(request.evidence ? { evidence: request.evidence } : {}), result: 'refused' }
-  // The reservation transaction serializes concurrent requests for this deployment: one inserts `executing`; the next
-  // sees it in the limits and refuses, or sees the same idempotency key and returns the first decision.
-  const reserved = host.store.atomic(() => {
-    const existing = host.store.watchdog.byIdempotency(request.idempotencyKey)
-    if (existing) return { entry: existing, execute: false as const }
-    const ticket = host.store.tickets.get(request.ticketId)
-    if (!ticket) throw new UserError('unknownTicket')
-    entry.ticketTitle = ticket.title
-    const before = watchdogView(host.view, now, config.staleMinutes).tickets.find(row => row.id === request.ticketId)
-    entry.before = rowFacts(before)
-    const refuse = (refusal: string) => {
-      entry.result = 'refused'; entry.refusal = refusal
-      host.store.watchdog.save(entry)
-      return { entry, execute: false as const }
-    }
-    if (config.mode === 'off') return refuse('modeOff')
-    if (config.mode === 'observe') {
-      entry.result = 'observed'
-      host.store.watchdog.save(entry)
-      return { entry, execute: false as const }
-    }
-    if (config.mode === 'report') {
-      entry.result = 'reported'
-      host.store.watchdog.save(entry)
-      return { entry, execute: false as const }
-    }
-    if (!config.actions.includes(request.action)) return refuse('actionNotAllowed')
-    const snapshot = Date.parse(request.snapshotAt)
-    if (!Number.isFinite(snapshot) || at - snapshot > SNAPSHOT_MAX_MS || snapshot - at > 60_000) return refuse('snapshotExpired')
-    if (!host.configured() || host.setupProblem) return refuse('setup')
-    if (settings.paused) return refuse('paused')
-    if (ticket.ended) return refuse('ticketEnded')
-    if (Date.parse(ticket.updatedAt) > snapshot) return refuse('ticketChanged')
-    if (ticket.attention) return refuse('attention')
-    const reportAt = latestReport(ticket)?.at ?? ''
-    if (ticket.inputs.some(input => input.kind === 'trigger' && input.human && !input.context && input.at > reportAt)) {
-      return refuse('humanFollowUp')
-    }
-    if (ticket.undelivered.length) return refuse('deliveryPending')
-    const stage = ticketStage(ticket)
-    if (ticket.offPeak && stage.stage === 'working' && stage.action === 'queued') return refuse('offPeak')
-    if (!before) return refuse('unknownTicket')
-    if (before.silentMinutes < config.staleMinutes) return refuse('notStale')
-    if (request.action === 'retry' && !canRetry(ticket)) return refuse('notRetryable')
-    // A stop is only for a Ticket whose work has visibly stopped: not one waiting on a person or a review.
-    if (request.action === 'stop' && (before.stage !== 'working'
-      || !before.signals.some(signal => signal === 'no-progress' || signal === 'queued'))) return refuse('notStoppable')
-    const usage = limits(host.store.watchdog.since(new Date(at - DAY).toISOString()), request.ticketId, config, at)
-    entry.limits = { cooldownMinutes: config.cooldownMinutes, perTicketPerHour: config.perTicketPerHour, perHour: config.perHour,
-      cooldown: Number(usage.cooldown), usedPerTicketPerHour: usage.perTicketPerHour, usedPerHour: usage.perHour }
-    if (usage.cooldown) return refuse('cooldown')
-    if (usage.perTicketPerHour >= config.perTicketPerHour) return refuse('perTicketPerHour')
-    if (usage.perHour >= config.perHour) return refuse('perHour')
-    entry.result = 'executing'
-    host.store.watchdog.save(entry)
-    return { entry, execute: true as const }
-  })
-  if (!reserved.execute) return reserved.entry
-  try {
-    if (request.action === 'retry') host.engine.retryTicket(request.ticketId)
-    else host.engine.stopTicket(request.ticketId, request.reason)
-    reserved.entry.result = 'executed'
-  } catch (error) {
-    reserved.entry.result = 'failed'
-    reserved.entry.error = error instanceof Error ? error.message : String(error)
-  }
-  const afterAt = new Date().toISOString()
-  try {
-    const after = watchdogView(host.view, afterAt, config.staleMinutes).tickets.find(row => row.id === request.ticketId)
-    reserved.entry.after = after ? rowFacts(after) : { ended: true }
-  } catch (error) {
-    reserved.entry.after = { error: error instanceof Error ? error.message : String(error) }
-  }
-  host.store.watchdog.save(reserved.entry)
-  return reserved.entry
-}
-/** How long recorded observation runs are kept; older rows are pruned whenever a new run is recorded. */
-export const WATCHDOG_RUN_RETENTION_DAYS = 30
 /** Service facts the observation record carries besides the Ticket snapshot. */
 export interface WatchdogRunState {
   paused: boolean
@@ -155,23 +36,20 @@ export function watchdogRun(host: WatchdogHost, state: WatchdogRunState, request
   return host.store.atomic(() => {
     const existing = host.store.watchdogRuns.byIdempotency(request.idempotencyKey)
     if (existing) return existing
-    const settings = host.store.settings()
     const at = new Date().toISOString()
-    const view = watchdogView(host.view, at, settings.watchdog.staleMinutes)
+    const view = watchdogView(host.view, at, WATCHDOG_STALE_MINUTES)
     const note = request.note?.trim() || undefined
     const run: WatchdogRun = {
       id: key('watchdog-run', request.idempotencyKey),
       idempotency: request.idempotencyKey,
       at,
-      mode: settings.watchdog.mode,
       paused: state.paused,
       open: view.open,
       flagged: view.tickets.filter(ticket => ticket.signals.length).length,
       ...(note ? { note } : {}),
-      ...(request.version ? { version: request.version } : {}),
+...(request.version ? { version: request.version } : {}),
       ...(request.commit ? { commit: request.commit } : {}),
-      text: watchdogSummary({ view, paused: state.paused, load: state.load, health: state.health, config: settings.watchdog,
-        audit: host.store.watchdog.recent(20), ...(note ? { note } : {}) }),
+      text: watchdogSummary({ view, paused: state.paused, load: state.load, health: state.health, ...(note ? { note } : {}) }),
     }
     host.store.watchdogRuns.save(run)
     host.store.watchdogRuns.prune(new Date(Date.parse(at) - WATCHDOG_RUN_RETENTION_DAYS * 86_400_000).toISOString())
