@@ -259,6 +259,14 @@ Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --
 
 要让模型成本只发生在真正需要的轮次，可以在使用计划任务的一次性形态时，用 `--gate` 按同样的间隔把它当作门控运行。门控轮次读取快照、记录这次观测；没有风险就退出 0，有风险就退出 2：工单信号、部件报错、安装配置未完成、ready 结果等待超过一天，或连续两次失败尝试。只有退出 2 时才运行完整 DSH agent 做详细判定，由 agent 自己记录观测并报告，因此 LLM 只在风险轮次产生费用。门控只发送配置好的安静日报，不发送发现报告，也不修改其他东西；`--status`、状态文件和日志会给出它的退出原因。主机检查项、有界恢复与部署监督（路线图工作流 K、L）后续也放进这个进程。
 
+### 在 Windows Job 之外启动服务
+
+DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Windows Job；从其中启动的服务会在命令结束时被终止，而命令内部此前的健康检查可能已经通过。`scripts/dsh-superagent start` 会检测这一状态，让 WMI 提供程序在 Job 之外创建 `scripts/service-start.ps1`，并等待健康检查。该包装脚本从受限文件中恢复服务环境、启动分离的服务后退出；它从不启动 observer。不在 Job 中的普通终端启动仍走原路径；计划任务所在的 Job 也按同样方式离开，`status` 会报告实时的 `inJob` 值以及 `start` 中最近一次启动的方式。无法证明服务位于所有 Windows Job 之外的启动会失败，而不是留下一个可能被关闭命令杀死的服务。
+
+操作员的 `service.ps1` 仍是服务入口：它设置生产 home 并调用控制脚本，因此服务在进程位于 Job 之外时仍使用自己的 profile home 和凭据。`scripts/service-start.ps1` 也可以由独立计划任务直接运行。
+
+`node scripts/dsh-superagent verify --profile superagent --url <url> --survival-seconds 30` 在执行器退出后证明发布有效：恰好一个进程服务该 profile，管理 API 返回 ready（或 paused），进程位于所有 Windows Job 之外，且在存活窗口之后仍是同一进程。退出码 1 会指出未通过的条件。
+
 ### 部署最新 superagent
 
 主会话可以把操作者明确的部署请求发给独立 Watchdog，而不是自己发布任何东西。`orchestrator_deploy` 工具把请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST` 指定的文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` 中的命令（例如 `schtasks /run /tn dsh-superagent-deploy`）；两个值未设置时工具关闭。独立的部署任务读取请求、核验操作者的原话，并在自己的进程里发布最新提交，主实例只负责停机；外层任务在 agent 退出后启动并核验它。只有操作者明确要求部署 superagent（“部署superagent”）时才使用该工具；普通请求不会触发部署，主会话也从不自己备份、发布或重启。
@@ -271,14 +279,36 @@ Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --
 
 下次按这几点缩短前期准备：
 
-1. 在稳定 checkout 中先运行一次 `node scripts/dsh-superagent status --profile superagent --url <面板 URL> --home <DSH home>`。`status` 会报告 profile 目录、`service.ps1`、配置的 `stateDir`、bundle 链接与目标、checkout 版本与分支，以及构建出的 `lib`；直接读这些，不再重新发现。
+1. 在稳定 checkout 中先运行一次 `node scripts/dsh-superagent status --profile superagent --url <面板 URL> --home <DSH home>`。`status` 会报告 profile 目录、`service.ps1`、配置的 `stateDir`、bundle 链接与目标、checkout 版本与分支、构建出的 `lib`，以及服务的 Windows Job 归属与最近一次启动方式；直接读这些，不再重新发现。
 2. 每个目标版本只保留一份候选，并记录 revision、产物哈希与测试证据。候选 worktree 的 `git rev-parse HEAD^{tree}` 与目标树相同、构建产物也一致时直接复用；不要在维护窗口里重新构建或重跑全量测试。
 3. 用同一份 `status` 输出确认服务空闲，并记录进行中与排队工单数。做一致性备份前暂停独立 Watchdog 的写入，服务恢复后按原方式恢复并核验。
-4. 在“文件已切换、服务已停止”的状态停下。不要在部署 DSH agent 的 shell 工具里启动服务：Windows 上这个子进程属于 agent 的 Job 对象，会随 agent 退出被杀。外层部署任务要在 DSH 子进程退出后再启动服务，在 agent 之外等待就绪，然后才报告成功。
+4. 在“文件已切换、服务已停止”的状态停下。`scripts/dsh-superagent start` 会检测 Windows Job，并通过 `service-start.ps1` 在 Job 之外创建服务；不要在 agent 的 shell 工具里直接启动一个裸子进程。DSH agent 退出后，外层部署任务运行 `verify --survival-seconds 30`；只有服务仍存活、在所有 Job 之外且管理 API 回答 ready，才算成功。
 5. 把实测的停机、启动和就绪时间写进部署日志。日志就是复盘材料：慢的那次可以和上一次比较，切换本身应保持在一分钟内。
 6. 部署 `scripts/watchdog` 的改动后，在独立 Watchdog 的 `watchdog.json` 里加上 `dailyReport` 并重启该进程；如果计划任务仍运行旧的 `gate.mjs`，把它改为 `scripts/watchdog --gate`，让安静日报走已部署的版本。
 
 身份核验、备份、回滚准备与维护窗口仍由发布监督器负责；这些事实只缩短发现过程，不替代那些步骤。汇总的时间记录见[部署提速证据](../evidence/deployment-speed/)。
+
+独立任务用仓库外的 JSON 配置运行本仓库的 `scripts/deploy.ps1`。脚本读取并归档请求、运行 headless DSH agent，并在该 agent 退出后带存活窗口运行 `verify`；它把 agent 退出码和存活结果写入结果文件，从不启动 observer，也不盲目重试。`-Validate` 只打印解析后的路径，不执行任何操作。部署相关路径、提示词和模型补丁留在仓库外：
+
+```json
+{
+  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-request.json",
+  "promptPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-prompt.md",
+  "modelPatch": "C:\\Users\\dd\\.dsh\\watchdog\\model.patch.yml",
+  "workdir": "F:\\code\\superagent-ops",
+  "node": "D:\\Program Files\\nodejs\\node.exe",
+  "dsh": "C:\\Users\\dd\\.local\\opt\\dsh-0.2.2-rc.1\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
+  "home": "C:\\Users\\dd\\.dsh",
+  "agentProfile": "headless",
+  "serviceProfile": "superagent",
+  "url": "http://127.0.0.1:3083",
+  "logFile": "C:\\Users\\dd\\.dsh\\watchdog\\watchdog-deploy.log",
+  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-result.json",
+  "survivalSeconds": 30
+}
+```
+
+`dsh-superagent-deploy` 任务随后运行 `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`。**上线说明（2026-11-09）。** 把生产服务从 Desktop DSH Job 迁移到这条路径需要操作员维护窗口：拉取已合并提交、把任务指向带版本的脚本，并在 DSH 之外重启一次当前生产实例，使它的进程不再位于该 Job 中。目标关系与剩余阶段见 `docs/zh/references/watchdog-superagent-mutual-assist.md`。
 
 ## 设置
 

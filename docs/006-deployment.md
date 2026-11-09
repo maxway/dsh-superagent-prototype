@@ -257,6 +257,14 @@ Run `node scripts/watchdog --config watchdog.json` in the foreground or under a 
 
 To keep the model cost out of ordinary cycles, run the process as a gate with `--gate` on the same interval when a scheduled one-shot is used. A gate cycle reads the snapshot, records the observation, and exits 0 when nothing is risky; it exits 2 when a mechanical finding needs judgement: a Ticket signal, a part in error, incomplete setup, a ready result waiting more than a day, or repeated failed attempts. Run a full DSH agent only when the gate exits 2; the agent records its own observation and reports, so the LLM is paid for only on those cycles. The gate sends only the configured quiet daily report, never a findings report, and changes nothing else; `--status`, the state file and the log show its exit reason. Host checks, bounded recovery and deployment supervision (roadmap workflows K and L) belong in this process later.
 
+### Starting the service outside a Windows Job
+
+A tool command run by DSH belongs to a Windows Job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; a service started from it is terminated when the command ends, after a health check inside the command has already passed. `scripts/dsh-superagent start` detects that state, asks the WMI provider to create `scripts/service-start.ps1` outside every Job, and waits for health. The wrapper restores the service environment from an access-restricted file, starts the detached service and exits; it never starts the observer. A start from a normal terminal that is not inside a Job keeps the ordinary path, and a scheduled task leaves its Job the same way; `status` reports the live `inJob` value plus the newest start's method in `start`. A start that cannot prove the service is outside every Job fails instead of leaving a service that a closing command could kill.
+
+The operator's `service.ps1` remains the service entry point: it sets the production home and calls the control script, so the service keeps its own profile home and credentials while its process is outside the Job. `scripts/service-start.ps1` can also run directly from an independent scheduled task.
+
+`node scripts/dsh-superagent verify --profile superagent --url <url> --survival-seconds 30` proves a release after its executor has exited: exactly one process serves the profile, the management API answers ready (or paused), the process is outside every Windows Job, and the same process is alive after the survival window. Exit 1 names the failed condition.
+
 ### Deploying the latest superagent
 
 The main Session can send the operator's explicit deployment request to the independent Watchdog instead of releasing anything itself. The `orchestrator_deploy` tool writes the request to the file named by `DSH_SUPERAGENT_DEPLOY_REQUEST` and starts the command in `DSH_SUPERAGENT_DEPLOY_COMMAND` (for example `schtasks /run /tn dsh-superagent-deploy`); unset values disable the tool. The independent deployment task reads the request, verifies the operator's words, and releases the latest commit in its own process, so the main instance only stops; the outer task starts and verifies it after the agent exits. The tool is used when the operator explicitly asks to deploy superagent ("部署superagent"); ordinary requests never deploy, and the main Session never backs up, releases or restarts itself.
@@ -269,14 +277,36 @@ The 2026-11-09 deployment history in `C:\Users\dd\.dsh\watchdog\watchdog-deploy.
 
 Use these facts to keep the next preflight short:
 
-1. From the stable checkout, run `node scripts/dsh-superagent status --profile superagent --url <panel URL> --home <DSH home>` once. `status` reports the profile directory, `service.ps1`, the configured `stateDir`, the bundle link and target, the checkout revision and branch, and the built `lib`; read those instead of rediscovering them.
+1. From the stable checkout, run `node scripts/dsh-superagent status --profile superagent --url <panel URL> --home <DSH home>` once. `status` reports the profile directory, `service.ps1`, the configured `stateDir`, the bundle link and target, the checkout revision and branch, the built `lib`, the service's Windows Job membership and how the newest start began; read those instead of rediscovering them.
 2. Keep one candidate per target revision and record its revision, artifact hashes and test evidence. If `git rev-parse HEAD^{tree}` of the candidate worktree equals the target tree and the built files match, reuse it; do not rebuild or rerun the full suite during the maintenance window.
 3. Confirm the service is idle with the same `status` output and record open and queued Ticket counts. Pause the independent Watchdog writers before the consistent backup, then restore and verify them after the service is ready.
-4. Stop at the switched, stopped state. Do not start the service from the deploying DSH agent's shell tool: on Windows that child belongs to the agent's Job object and is killed when the agent exits. The outer deployment task must start the service after the DSH child process has exited, wait for readiness outside the agent, and only then report success.
+4. Stop at the switched, stopped state. `scripts/dsh-superagent start` detects a Windows Job and creates the service outside it through `service-start.ps1`, so do not start a raw detached child from the agent's shell tool. After the DSH agent exits, the outer deployment task runs `verify --survival-seconds 30`; only a service that is alive, outside every Job and answering ready counts as success.
 5. Write the measured stop, start and ready times into the deployment log. The log is the retrospective: a slow run can be compared with the previous one, and the switch target stays under a minute.
 6. After deploying a change to `scripts/watchdog`, add `dailyReport` to the independent watchdog's `watchdog.json` and restart that process; if its scheduled gate still runs the old `gate.mjs`, point it at `scripts/watchdog --gate` so the quiet daily report uses the deployed version.
 
 The release supervisor still owns identity checks, the backup, rollback readiness and the maintenance window; these facts shorten discovery, they do not replace those steps. The summarized timing record is in [the deployment-speed evidence](evidence/deployment-speed/).
+
+The independent task runs `scripts/deploy.ps1` from this repository with a JSON configuration outside it. The script reads and archives the request, runs the headless DSH agent, and after that agent exits runs `verify` with a survival window; it records the agent's exit code and the survival result in the result file, and it never starts the observer or retries blindly. `-Validate` prints the resolved paths without running anything. The deployment-specific paths, prompt and model patch stay outside the repository:
+
+```json
+{
+  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-request.json",
+  "promptPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-prompt.md",
+  "modelPatch": "C:\\Users\\dd\\.dsh\\watchdog\\model.patch.yml",
+  "workdir": "F:\\code\\superagent-ops",
+  "node": "D:\\Program Files\\nodejs\\node.exe",
+  "dsh": "C:\\Users\\dd\\.local\\opt\\dsh-0.2.2-rc.1\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
+  "home": "C:\\Users\\dd\\.dsh",
+  "agentProfile": "headless",
+  "serviceProfile": "superagent",
+  "url": "http://127.0.0.1:3083",
+  "logFile": "C:\\Users\\dd\\.dsh\\watchdog\\watchdog-deploy.log",
+  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-result.json",
+  "survivalSeconds": 30
+}
+```
+
+The `dsh-superagent-deploy` task then runs `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`. **Rollout note (2026-11-09).** Moving a production service from the Desktop DSH Job to this path needs an operator maintenance window: pull the merged commit, point the task at the versioned script, and restart the current production instance once from outside DSH so its process is no longer in that Job. See `docs/zh/references/watchdog-superagent-mutual-assist.md` (in Chinese) for the target relationship and the remaining phases.
 
 ## Settings
 

@@ -11,8 +11,8 @@
  * exit codes, log names, the intentionally-stopped marker and the lock are the same on both.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { accessSync, closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync,
-  unlinkSync, writeFileSync } from 'node:fs'
+import { accessSync, closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync,
+  statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
@@ -45,8 +45,128 @@ function stopped(profile) {
   return existsSync(join(control(profile), 'manually-stopped'))
 }
 
+/** Run a PowerShell command and return its trimmed standard output; a failure carries the standard error. */
+function runPowerShell(script, environment = process.env) {
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+    { encoding: 'utf8', env: environment, windowsHide: true })
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    throw new Error((result.stderr ?? '').trim() || `PowerShell exited with code ${result.status}`)
+  }
+  return (result.stdout ?? '').trim()
+}
+
+/**
+ * The PowerShell that asks kernel32 whether a process belongs to a Job object. A DSH tool command runs in a Job with
+ * `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so a service started from there dies when the tool command's Job closes; this is
+ * how the control script tells that state apart from a normal terminal or Task Scheduler launch.
+ */
+const JOB_PROBE = '$ErrorActionPreference = \'Stop\'\n'
+  + 'Add-Type -TypeDefinition @\'\n'
+  + 'using System;\nusing System.Runtime.InteropServices;\npublic static class DshJobProbe {\n'
+  + '  [DllImport("kernel32.dll", SetLastError = true)]\n  [return: MarshalAs(UnmanagedType.Bool)]\n'
+  + '  public static extern bool IsProcessInJob(IntPtr processHandle, IntPtr jobHandle, out bool result);\n}\n'
+  + '\'@\n'
+  + '$process = Get-Process -Id __PID__ -ErrorAction Stop\n'
+  + '$inJob = $false\n'
+  + 'if (-not [DshJobProbe]::IsProcessInJob($process.Handle, [IntPtr]::Zero, [ref]$inJob)) { throw "IsProcessInJob failed" }\n'
+  + 'if ($inJob) { "true" } else { "false" }'
+
+/** Whether a Windows process belongs to any Job object; null when Windows cannot tell (or on another platform). */
+export function processInJob(pid, run = runPowerShell) {
+  if (!WINDOWS || !Number.isInteger(pid) || pid <= 0) return null
+  try {
+    const answer = run(JOB_PROBE.replace('__PID__', String(pid)))
+    return answer === 'true' ? true : answer === 'false' ? false : null
+  } catch { return null }
+}
+
+/** The PowerShell that asks the WMI provider to create a process outside the caller's Job and environment. */
+const WMI_CREATE = '$ErrorActionPreference = \'Stop\'\n'
+  + '$process = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ '
+  + 'CommandLine = $env:DSH_OUTSIDE_JOB_COMMAND; CurrentDirectory = $env:DSH_OUTSIDE_JOB_CWD }\n'
+  + 'if ($process.ReturnValue -ne 0) { throw "Win32_Process.Create returned $($process.ReturnValue)" }\n'
+  + '$process.ProcessId'
+
+/**
+ * Create one process through WMI. The provider creates it with the caller's token in the caller's session but outside
+ * every Windows Job and with the user's default environment, so the caller passes the environment explicitly.
+ */
+export function createOutsideJob(commandLine, cwd) {
+  const answer = runPowerShell(WMI_CREATE, { ...process.env, DSH_OUTSIDE_JOB_COMMAND: commandLine, DSH_OUTSIDE_JOB_CWD: cwd })
+  const pid = Number(answer.split(/\s+/).at(-1))
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`Win32_Process.Create returned no process id: ${answer.slice(0, 200)}`)
+  return pid
+}
+
+/** Quote one argument for a Windows command line the way CreateProcess parses it. */
+export function quoteWindowsArg(value) {
+  const arg = String(value)
+  if (arg === '') return '""'
+  if (!/[\s"]/.test(arg)) return arg
+  let quoted = '"'
+  let backslashes = 0
+  for (const character of arg) {
+    if (character === '\\') { backslashes += 1; continue }
+    if (character === '"') { quoted += '\\'.repeat(backslashes * 2 + 1) + '"'; backslashes = 0; continue }
+    quoted += '\\'.repeat(backslashes) + character
+    backslashes = 0
+  }
+  return quoted + '\\'.repeat(backslashes * 2) + '"'
+}
+
+/** The command line that runs `scripts/service-start.ps1`, the independent start wrapper, through WMI. */
+export function outsideJobStartCommand(input) {
+  return [input.shell, '-NoLogo', '-NoProfile', '-NonInteractive', '-File', input.wrapper,
+    '-Checkout', input.checkout, '-EnvFile', input.environmentFile, '-Profile', input.profile, '-Url', input.url,
+    '-Timeout', String(input.timeout), '-Log', input.log].map(quoteWindowsArg).join(' ')
+}
+
+/**
+ * The environment a service needs that a WMI-created process would otherwise lose (it starts with the user's default
+ * environment, not the caller's). It deliberately excludes unrelated variables, and it is written to an
+ * access-restricted file rather than the command line so the model key never appears in a process listing.
+ */
+const START_ENVIRONMENT = ['PATH', 'PATHEXT', 'SystemRoot', 'ComSpec', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
+  'HOME', 'DSH_HOME', 'DSH_AGENTS_HOME', 'LUMOS_API_KEY', 'DSH_SUPERAGENT_PROFILE', 'DSH_SUPERAGENT_URL',
+  'DSH_SUPERAGENT_DEPLOY_REQUEST', 'DSH_SUPERAGENT_DEPLOY_COMMAND']
+
+/** Write the caller environment the independent start wrapper restores, restricted to the current account. */
+export function writeStartEnvironment(profile, environment = process.env) {
+  const path = join(control(profile), `start-environment-${process.pid}-${Date.now()}.json`)
+  const value = Object.fromEntries(START_ENVIRONMENT.filter(name => environment[name] !== undefined)
+    .map(name => [name, String(environment[name])]))
+  writeFileSync(path, '{}', { mode: 0o600 })
+  restrictWindowsLog(path)
+  writeFileSync(path, `${JSON.stringify(value)}\n`, { mode: 0o600 })
+  return path
+}
+
+/** The facts of the newest start, kept beside the profile's control files so `status` can show how the service began. */
+function startFacts(profile) {
+  try {
+    const value = JSON.parse(readFileSync(join(control(profile), 'service-start.json'), 'utf8'))
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+  } catch { return null }
+}
+
+function recordStartFacts(profile, facts) {
+  const path = join(control(profile), 'service-start.json')
+  const temporary = `${path}.${process.pid}.tmp`
+  writeFileSync(temporary, `${JSON.stringify(facts, null, 2)}\n`, { mode: 0o600 })
+  renameSync(temporary, path)
+}
+
+/** The last lines of a start wrapper's log, for a failure a person can act on. */
+function logTail(path, limit = 2_000) {
+  try {
+    const text = readFileSync(path, 'utf8')
+    return text.length > limit ? text.slice(-limit) : text
+  } catch { return '' }
+}
+
 /** Subcommands of this control script; a process running one reads or controls a service but is not the service. */
-const CONTROL_ACTIONS = new Set(['start', 'stop', 'status', 'restart', 'watchdog'])
+const CONTROL_ACTIONS = new Set(['start', 'stop', 'status', 'restart', 'watchdog', 'verify'])
 const SCRIPT_NAME = basename(SCRIPT)
 
 /** Return whether command-line arguments belong to the main DSH service process for `profile`. */
@@ -192,12 +312,20 @@ export function outcome(pids, current) {
   return Object.keys(partErrors(current)).length ? PART_ERROR : 0
 }
 
-async function status(args) {
+/** Read the service's process, health and ownership facts without printing them. */
+async function statusValue(args) {
   const pids = processes(args.profile)
   const current = pids.length ? await state(args.url) : null
+const inJob = WINDOWS && pids.length === 1 ? processInJob(pids[0]) : null
   const value = { pids, cwd: ROOT, url: args.url, profile: args.profile, manually_stopped: stopped(args.profile),
     deployment: deploymentFacts(args.profile, args.home), health: current ? current.health : null,
-    errors: current ? current.errors : null, setup: current ? current.setup : null, feishu: current ? current.feishu : null }
+    errors: current ? current.errors : null, setup: current ? current.setup : null, feishu: current ? current.feishu : null,
+    inJob, start: startFacts(args.profile) }
+  return { pids, current, inJob, value }
+}
+
+async function status(args) {
+  const { pids, current, value } = await statusValue(args)
   process.stdout.write(JSON.stringify(value, null, 2) + '\n')
   return outcome(pids, current)
 }
@@ -242,6 +370,40 @@ export function deploymentFacts(profile, home = process.env.DSH_HOME || join(hom
     git: head ? { head, branch, dirty: changed === undefined ? undefined : changed.length > 0 } : undefined,
     ...libFacts ? { lib: libFacts } : {},
   }
+}
+
+/**
+ * Prove the service survived the independent deployment executor's exit: exactly one process runs the profile, the
+ * management API answers ready (or paused), the process is outside every Windows Job, and it is the same process after
+ * a survival window. This is the acceptance check the deployment task runs after the DSH agent has exited.
+ */
+async function verify(args) {
+  const at = new Date().toISOString()
+  const fail = message => { process.stderr.write(message + '\n'); return 1 }
+  const first = await statusValue(args)
+  if (first.pids.length !== 1) return fail(`Expected exactly one running service for ${args.profile}; found ${first.pids.length}.`)
+  if (!runtimeUp(first.current)) return fail('The management API did not answer ready (or paused); the service is not usable.')
+  if (WINDOWS && first.inJob !== false) {
+    return fail(first.inJob === null
+      ? 'Could not determine whether the service is inside a Windows Job; survival cannot be proven.'
+      : 'The service is inside a Windows Job and can be killed when that Job closes; restart it outside the Job.')
+  }
+  const pid = first.pids[0]
+  if (args.survival_seconds > 0) await sleep(args.survival_seconds * 1_000)
+  const second = await statusValue(args)
+  if (second.pids.length !== 1 || second.pids[0] !== pid) {
+    return fail(`The service did not keep its process across the ${args.survival_seconds}s survival window; it was ${pid}.`)
+  }
+  if (!runtimeUp(second.current)) return fail('The management API stopped answering usable within the survival window.')
+  if (WINDOWS && second.inJob !== false) {
+    return fail(second.inJob === null
+      ? 'Could not determine whether the service is inside a Windows Job after the survival window.'
+      : 'The service moved into a Windows Job and can be killed when that Job closes.')
+  }
+  const value = { ok: true, at, pid, url: args.url, profile: args.profile, inJob: second.inJob,
+    survivalSeconds: args.survival_seconds, health: second.current.health, start: second.value.start }
+  process.stdout.write(JSON.stringify(value, null, 2) + '\n')
+  return 0
 }
 
 /** Fetch the Watchdog snapshot, or an error message the caller can report. */
@@ -458,56 +620,96 @@ async function start(args) {
   const session = 'dsh-' + args.profile
   let pids = processes(args.profile)
   if (pids.length > 1) throw new Error('Multiple dsh-superagent processes found; refusing to start another.')
+  let method = pids.length ? 'existing' : undefined
+  let outsideJobLog
+  let outsideJobEnvironment
   if (!pids.length) {
-    const dsh = findExecutable('dsh')
-    const tmux = WINDOWS ? 'tmux' : findExecutable('tmux')
-    if (!dsh || !tmux) throw new Error(WINDOWS ? 'dsh must be on PATH.' : 'Both dsh and tmux must be on PATH.')
-    const socket = WINDOWS ? undefined : tmuxSocket(args.profile)
+    // A DSH tool command runs in a Windows Job with kill-on-close, so a service started there looks healthy only until
+    // that command ends. The WMI provider creates a process outside every Job; the environment is passed explicitly.
+    let outsideJob = false
+    if (WINDOWS && !args.outside_job_child) {
+      const membership = processInJob(process.pid)
+      if (membership === null) {
+        throw new Error('Cannot determine whether this process is inside a Windows Job; refusing to start a service that '
+          + 'a closing Job could kill. Run the service from an independent task or terminal.')
+      }
+      outsideJob = membership
+    }
+    const dsh = outsideJob ? 'dsh' : findExecutable('dsh')
+    const tmux = WINDOWS || outsideJob ? 'tmux' : findExecutable('tmux')
+    if (!outsideJob && (!dsh || !tmux)) throw new Error(WINDOWS ? 'dsh must be on PATH.' : 'Both dsh and tmux must be on PATH.')
+    const socket = WINDOWS || outsideJob ? undefined : tmuxSocket(args.profile)
     // Probe the tmux session before the URL so an existing orchestrator is still refused without touching tmux.
-    const sessionExists = WINDOWS ? false : spawnSync('tmux', ['-L', socket, 'has-session', '-t', '=' + session]).status === 0
+    const sessionExists = WINDOWS || outsideJob ? false : spawnSync('tmux', ['-L', socket, 'has-session', '-t', '=' + session]).status === 0
     if (await state(args.url) !== null) throw new Error('An existing orchestrator answers at this URL; refusing duplicate startup.')
     mkdirSync(ARTIFACTS, { recursive: true })
     const stamp = new Date()
     const pad = value => String(value).padStart(2, '0')
     const log = join(ARTIFACTS, `dsh-superagent-${args.profile}-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}`
       + `-${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}-${process.pid}.log`)
-    writeFileSync(log, '', { mode: 0o600 })
-    if (WINDOWS) restrictWindowsLog(log)
-    pruneLogs(args.profile)
-    if (WINDOWS) {
-      const invocation = windowsStart(dsh, args.profile)
-      const environment = { ...process.env }
-      delete environment.TMUX
-      delete environment.TMUX_PANE
-      const output = openSync(log, 'a')
-      const child = spawn(invocation.file, invocation.args, { detached: true, shell: invocation.shell, stdio: ['ignore', output, output],
-        cwd: ROOT, windowsHide: true, env: environment })
-      child.unref()
-      closeSync(output)
-      // The recorded PID is a convenience; the process scan is authoritative after a restart.
-      const deadline = Date.now() + 5_000
-      while (Date.now() < deadline && !processes(args.profile).length) await sleep(200)
-      pids = processes(args.profile)
-      if (pids.length) writeFileSync(join(control(args.profile), 'service.pid'), `${pids[0]}\n`)
+    if (outsideJob) {
+      const wrapper = join(ROOT, 'scripts', 'service-start.ps1')
+      if (!existsSync(wrapper)) throw new Error(`Cannot start outside a Windows Job: ${wrapper} is missing.`)
+      // The same prune-friendly name the ordinary service log uses; the child's service log has its own PID.
+      outsideJobLog = log
+      outsideJobEnvironment = writeStartEnvironment(args.profile)
+      const shell = findExecutable('pwsh') ?? 'powershell.exe'
+      const commandLine = outsideJobStartCommand({ shell, wrapper, checkout: ROOT, environmentFile: outsideJobEnvironment,
+        profile: args.profile, url: args.url, timeout: args.timeout, log: outsideJobLog })
+      try {
+        createOutsideJob(commandLine, ROOT)
+      } catch (error) {
+        rmSync(outsideJobEnvironment, { force: true })
+        throw new Error('Could not start the service outside the current Windows Job: '
+          + (error instanceof Error ? error.message : String(error)))
+      }
+      method = 'wmi'
+      process.stdout.write(`This process is inside a Windows Job; starting the service outside it through ${basename(wrapper)}.\n`)
     } else {
-      const target = sessionExists ? ['new-window', '-t', '=' + session + ':'] : ['new-session', '-s', session]
-      const started = spawnSync('tmux', ['-L', socket, ...tmuxStart(target, dsh, args.profile, log)], { encoding: 'utf8' })
-      if (started.error) throw started.error
-      if (started.status !== 0) throw new Error((started.stderr ?? '').trim() || `tmux exited with code ${started.status}`)
-      const pane = (started.stdout ?? '').trim()
-      if (/^\d+$/.test(pane)) writeFileSync(join(control(args.profile), 'service.pid'), pane + '\n')
+      writeFileSync(log, '', { mode: 0o600 })
+      if (WINDOWS) restrictWindowsLog(log)
+      pruneLogs(args.profile)
+      if (WINDOWS) {
+        const invocation = windowsStart(dsh, args.profile)
+        const environment = { ...process.env }
+        delete environment.TMUX
+        delete environment.TMUX_PANE
+        const output = openSync(log, 'a')
+        const child = spawn(invocation.file, invocation.args, { detached: true, shell: invocation.shell, stdio: ['ignore', output, output],
+          cwd: ROOT, windowsHide: true, env: environment })
+        child.unref()
+        closeSync(output)
+        // The recorded PID is a convenience; the process scan is authoritative after a restart.
+        const deadline = Date.now() + 5_000
+        while (Date.now() < deadline && !processes(args.profile).length) await sleep(200)
+        pids = processes(args.profile)
+        if (pids.length) writeFileSync(join(control(args.profile), 'service.pid'), `${pids[0]}\n`)
+        method = 'spawn'
+      } else {
+        const target = sessionExists ? ['new-window', '-t', '=' + session + ':'] : ['new-session', '-s', session]
+        const started = spawnSync('tmux', ['-L', socket, ...tmuxStart(target, dsh, args.profile, log)], { encoding: 'utf8' })
+        if (started.error) throw started.error
+        if (started.status !== 0) throw new Error((started.stderr ?? '').trim() || `tmux exited with code ${started.status}`)
+        const pane = (started.stdout ?? '').trim()
+        if (/^\d+$/.test(pane)) writeFileSync(join(control(args.profile), 'service.pid'), pane + '\n')
+        method = 'tmux'
+      }
     }
-    process.stdout.write('Log: ' + log + '\n')
+    process.stdout.write('Log: ' + (outsideJob ? outsideJobLog : log) + '\n')
   } else {
     writeFileSync(join(control(args.profile), 'service.pid'), `${pids[0]}\n`)
     process.stdout.write(`dsh-superagent already running (PID ${pids[0]}); no duplicate started.\n`)
   }
   rmSync(join(control(args.profile), 'manually-stopped'), { force: true })
+  // A wrapper child only launches the detached service; the parent that holds the profile lock waits for health.
+  if (args.outside_job_child) return 0
   const deadline = Date.now() + args.timeout * 1000
   while (Date.now() < deadline) {
     const current = await state(args.url)
     if (processes(args.profile).length && runtimeUp(current)) {
-      const code = await status(args)
+      const inspected = await statusValue(args)
+      process.stdout.write(JSON.stringify(inspected.value, null, 2) + '\n')
+      const code = outcome(inspected.pids, inspected.current)
       if (current.setup) {
         process.stdout.write('dsh-superagent is waiting for setup: ' + String(current.setup.detail ?? '') + '\n')
         process.stdout.write('Open the URL DSH printed in the log, then the dsh-superagent overview.\n')
@@ -519,9 +721,27 @@ async function start(args) {
       for (const [name, detail] of Object.entries(partErrors(current))) {
         process.stdout.write(`${name} reports an error, which a restart does not fix: ${detail}\n`)
       }
+      if (method !== 'existing' && inspected.pids.length === 1) {
+        recordStartFacts(args.profile, { at: new Date().toISOString(), pid: inspected.pids[0], method,
+          inJob: inspected.inJob, url: args.url, launchedBy: process.pid })
+      }
+      if (outsideJobEnvironment) rmSync(outsideJobEnvironment, { force: true })
+      if (WINDOWS && method !== 'existing') {
+        if (inspected.inJob !== false) {
+          process.stderr.write('The service is not provably outside every Windows Job; a closing DSH Job could still kill it.\n')
+          return 1
+        }
+      } else if (WINDOWS && inspected.inJob === true) {
+        process.stderr.write('Warning: this running service belongs to a Windows Job and can be killed when that Job closes; '
+          + 'restart it from an independent task during a maintenance window.\n')
+      }
       return code
     }
     await sleep(1000)
+  }
+  if (outsideJobLog) {
+    const tail = logTail(outsideJobLog)
+    if (tail) process.stderr.write('The independent start wrapper logged:\n' + tail + '\n')
   }
   await status(args)
   throw new Error('Startup health check timed out; inspect the log. Any running process was left intact.')
@@ -531,7 +751,8 @@ async function start(args) {
 export function parseArgv(argv, env = process.env) {
   const args = { action: undefined, watchdog_action: undefined, chat: undefined, note: undefined,
     profile: env.DSH_SUPERAGENT_PROFILE || 'superagent', url: env.DSH_SUPERAGENT_URL || 'http://127.0.0.1:3082',
-    home: env.DSH_HOME || join(homedir(), '.dsh'), timeout: 60, stop_timeout: 300, stale_minutes: 30, limit: 20, respect_stop: false }
+home: env.DSH_HOME || join(homedir(), '.dsh'), timeout: 60, stop_timeout: 300, stale_minutes: 30, limit: 20,
+    respect_stop: false, survival_seconds: 20, outside_job_child: false }
   const positionals = []
   const value = (index, name) => {
     const next = argv[index + 1]
@@ -554,6 +775,8 @@ export function parseArgv(argv, env = process.env) {
     else if (word.startsWith('--url=')) args.url = word.slice('--url='.length)
     else if (word === '--timeout') { args.timeout = Number(value(index, '--timeout')); index++ }
     else if (word === '--stop-timeout') { args.stop_timeout = Number(value(index, '--stop-timeout')); index++ }
+    else if (word === '--survival-seconds') { args.survival_seconds = Number(value(index, '--survival-seconds')); index++ }
+    else if (word.startsWith('--survival-seconds=')) args.survival_seconds = Number(word.slice('--survival-seconds='.length))
     else if (word === '--stale-minutes') { args.stale_minutes = Number(value(index, '--stale-minutes')); index++ }
     else if (word.startsWith('--stale-minutes=')) args.stale_minutes = Number(word.slice('--stale-minutes='.length))
     else if (word === '--chat') { args.chat = value(index, '--chat'); index++ }
@@ -563,6 +786,8 @@ export function parseArgv(argv, env = process.env) {
     else if (word === '--limit') { args.limit = Number(value(index, '--limit')); index++ }
     else if (word.startsWith('--limit=')) args.limit = Number(word.slice('--limit='.length))
     else if (word === '--respect-stop') args.respect_stop = true
+    // Internal: a wrapper started outside every Windows Job spawns the service and returns immediately.
+    else if (word === '--outside-job-child') args.outside_job_child = true
     else if (word === '-h' || word === '--help') args.help = true
     else if (word.startsWith('-')) throw new Error(`unrecognized option: ${word}`)
     else positionals.push(word)
@@ -586,9 +811,14 @@ export function parseArgv(argv, env = process.env) {
     }
   } else if (positionals.length > 1) throw new Error(`unexpected argument: ${positionals[1]}`)
   if (args.help) return args
-  if (!['start', 'stop', 'restart', 'status', 'watchdog'].includes(args.action)) throw new Error('action must be one of start, stop, restart, status, watchdog')
+  if (!['start', 'stop', 'restart', 'status', 'watchdog', 'verify'].includes(args.action)) {
+    throw new Error('action must be one of start, stop, restart, status, watchdog, verify')
+  }
   if (!Number.isFinite(args.timeout) || !Number.isFinite(args.stop_timeout) || args.timeout <= 0 || args.stop_timeout <= 0) {
     throw new Error('--timeout and --stop-timeout must be positive')
+  }
+  if (!Number.isInteger(args.survival_seconds) || args.survival_seconds < 0 || args.survival_seconds > 3_600) {
+    throw new Error('--survival-seconds must be an integer between 0 and 3600')
   }
   if (!Number.isInteger(args.stale_minutes) || args.stale_minutes < 1 || args.stale_minutes > 1440) {
     throw new Error('--stale-minutes must be an integer between 1 and 1440')
@@ -615,10 +845,14 @@ function acquireLock(profile) {
   }
 }
 
-const USAGE = `Usage: dsh-superagent [--respect-stop] <start|stop|restart|status|watchdog> [options]
+const USAGE = `Usage: dsh-superagent [--respect-stop] <start|stop|restart|status|watchdog|verify> [options]
 
 Manage a local dsh-superagent service (one DSH profile, default \`superagent\`).
 
+\`start\` and \`restart\` start the service outside any Windows Job when the caller is inside one, so a closing DSH tool
+command cannot kill it; \`status\` reports the process's Job membership and how the newest start began.
+\`verify\` proves the service survived a deployment executor's exit: one process, the management API usable, outside every
+Windows Job, and the same process after --survival-seconds.
 \`watchdog\` prints a read-only JSON snapshot of the service, its open Tickets and the last recorded observation;
 \`watchdog run [--note <text>]\` records one observation run from the live snapshot, even when nothing is flagged;
 \`watchdog runs [--limit <n>]\` prints recent observation runs, newest first;
@@ -631,6 +865,7 @@ Options:
   --url <url>            Health-check URL (default: $DSH_SUPERAGENT_URL or http://127.0.0.1:3082).
   --timeout <seconds>    Startup timeout (default: 60).
   --stop-timeout <s>     Graceful shutdown timeout (default: 300).
+  --survival-seconds <n> How long \`verify\` waits before its second health check (default: 20, at most 3600).
   --stale-minutes <n>    Watchdog signal threshold in minutes (default: 30, at most 1440).
   --chat <chat id>       Feishu chat that \`watchdog report\` posts to (required, an \`oc_\` id the bot is in).
   --note <text>          The Watchdog's one-sentence judgement for \`watchdog run\` or \`watchdog report\` (at most 500 characters).
@@ -647,6 +882,11 @@ async function main(argv = process.argv.slice(2)) {
     if (args.watchdog_action === 'runs') return await watchdogRuns(args)
     return args.watchdog_action === 'report' ? await watchdogReport(args) : await watchdog(args)
   }
+  // The wrapper runs only after the locked parent asked it to spawn the detached service; it must not take the lock.
+  if (args.outside_job_child) {
+    if (args.action !== 'start') throw new Error('--outside-job-child is only valid for start')
+    return await start(args)
+  }
   const release = acquireLock(args.profile)
   try {
     if (args.respect_stop && (args.action === 'start' || args.action === 'restart') && stopped(args.profile)) {
@@ -654,6 +894,7 @@ async function main(argv = process.argv.slice(2)) {
       return 0
     }
     if (args.action === 'status') return await status(args)
+    if (args.action === 'verify') return await verify(args)
     if (args.action === 'stop' || args.action === 'restart') {
       // Only a stop keeps automatic recovery off; a restart whose stop timed out leaves it on.
       await stop(args, args.action === 'stop')

@@ -1,6 +1,6 @@
 # Super-agent 设计差距分析
 
-> 对照 [super-agent-design.md](super-agent-design.md) 与当前实现，梳理设计中尚未落地、或只有近似实现的重要能力。基线：`main` @ `0be6513`（2026-11-08）；与上一版基线（`e095162`，2026-11-07）相比，Watchdog 阶段 2（MR !30、!32）、Git 宿主切换（011 方案 A，MR !34）和 Windows 原生部署（见 [006 部署](../006-deployment.md)、[009 Windows 部署](../009-windows-deployment.md)）已并入主线。设计文档本身是一篇架构探讨，不是产品功能清单；本文只陈述实现与设计之间的差距，不改变设计。每项状态都给出可核查的代码入口或合并请求，剩余工作的拆分与并行边界见 [落地计划](super-agent-design-roadmap.md)。
+> 对照 [super-agent-design.md](super-agent-design.md) 与当前实现，梳理设计中尚未落地、或只有近似实现的重要能力。基线：`main` @ `7ff7178`（2026-11-09）；与上一版基线（`e095162`，2026-11-07）相比，Watchdog 阶段 2（MR !30、!32）、部署指令与独立执行任务（MR !43）、Git 宿主切换（011 方案 A，MR !34）和 Windows 原生部署（见 [006 部署](../006-deployment.md)、[009 Windows 部署](../009-windows-deployment.md)）已并入主线。设计文档本身是一篇架构探讨，不是产品功能清单；本文只陈述实现与设计之间的差距，不改变设计。每项状态都给出可核查的代码入口或合并请求，剩余工作的拆分与并行边界见 [落地计划](super-agent-design-roadmap.md)，双向发布与看护的设计见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)。
 
 ## 结论
 
@@ -10,7 +10,7 @@
 
 - **已实现**：双层架构、两级过滤、订阅与直通、Inline & Spill 与链式召回（GitHub 与 GitLab）、异步后台作业、IM 与 Git 信道的定制交互；部署也支持原生 Windows 上的本机进程（[009 Windows 部署](../009-windows-deployment.md)）。
 - **未实现**：计算与状态分离（5.1）、计算与执行环境分离（5.2）。这是设计五个模块中缺失的两个。
-- **部分实现**：Watchdog（第 6 节）的只读巡检已落地（MR !28）；retry/stop 介入（MR !30、!32）已随外部独立 Watchdog 的启用而移除，缺从 Watchdog 修改设置或提示词；投机执行（3.4）可以由主动规则近似，但没有决定前提前行动的独立机制。
+- **部分实现**：Watchdog（第 6 节）的只读巡检已落地（MR !28）；retry/stop 介入（MR !30、!32）已随外部独立 Watchdog 的启用而移除，缺从 Watchdog 修改设置或提示词；部署指令与独立执行任务已落地（MR !43），2026-11-09 的 Windows Job 归属问题已由 `scripts/service-start.ps1` 与 `verify` 修复；Watchdog 独立更新、Session 级看护和双向心跳仍未完成（见 [互辅助设计](watchdog-superagent-mutual-assist.md)）；投机执行（3.4）可以由主动规则近似，但没有决定前提前行动的独立机制。
 - **设计自身的开放问题**：长程记忆、Router 水平切分、A2A、安全与隐私（第 8 节）在设计里也没有答案，当前实现同样未解决，不应算作本项目的实现缺口。
 - **范围与限制**：飞书没有线程上下文读取，链式召回在飞书线程上受限；邮件、文档等信道未接入；没有第 7 节那样的架构级评测。
 
@@ -27,7 +27,7 @@
 | 4.2 | 多信道交互 | 已实现（飞书/GitHub/GitLab） | `src/sources/*-channel.ts`、`src/app/outbox.ts`；`src/infra/text.ts` 的 `IM_WORDS = 100`；`src/sources/` 下没有邮件或文档来源 |
 | 5.1 | 计算与状态分离 | 未实现 | `src/core/ports.ts` 只提供逻辑端口；`src/app/runtime.ts` 在本机 `stateDir` 上加锁并打开 SQLite；Session 日志仍在 DSH home 下；[006 部署](../006-deployment.md) |
 | 5.2 | 计算与执行环境分离 | 未实现 | `src/executor/dsh.ts` 创建本机 DSH Session；`src/app/execution-environment.ts` 只描述本机环境变量与工作目录根；没有端侧 daemon 或设备注册 |
-| 6 | Watchdog | 部分实现 | `src/app/api.ts` 的 `GET watchdog`；`src/app/watchdog.ts`；`src/app/store.ts` 的 `watchdog_run` 表；`scripts/dsh-superagent`；`scripts/watchdog`；`tests/watchdog*.spec.ts` |
+| 6 | Watchdog | 部分实现 | `src/app/api.ts` 的 `GET watchdog` 与 `GET watchdog/wait`；`src/app/watchdog.ts`；`src/app/store.ts` 的 `watchdog_run` 表；`src/app/deployment.ts` 的部署请求；`scripts/dsh-superagent`；`scripts/watchdog`；`tests/watchdog*.spec.ts`、`tests/deploy-command.spec.ts` |
 | 7 | 架构实验 | 未实现 | `tests/` 有功能与并发测试，但没有批处理、直通或双层架构对比的负载脚本与指标 |
 | 8.1–8.4 | 长程记忆、Session 之外的协作、A2A、安全与隐私 | 未解决 | 设计标为开放问题；当前实现没有完整方案：8.2 已有执行中追加消息、停止与重试，8.4 见下文的权限限制；`src/core/memory.ts` 只是测试用的内存仓储，不是长程记忆 |
 
@@ -65,12 +65,13 @@
 - [006 部署](../006-deployment.md) 的“每小时检查”是文档化的外部巡检提示词：在另一个 DSH profile 中定时运行 `status`，进程退出码为 1 时执行 `restart`。它是进程级的，需要人工按文档配置，不判断 worker 是否在无效循环或偏离目标。
 - **已落地的只读任务级巡检（MR !28）**：`GET /orchestrator/api/watchdog` 返回每个进行中工单的阶段、最近派工与报告、静默时长、机械信号（投递失败、未送达输入、排队过久、无进展、等待人工过久）和线程信息；`scripts/dsh-superagent watchdog` 输出 JSON 快照。
 - **观测记录与运行心跳**：`watchdog run [--note "<一句话>"]` 把每次巡检的实时观测（服务状态、有信号的工单和判断）记入 SQLite 并保留 30 天；`watchdog runs` 列出最近的观测结果，`GET watchdog` 的 `lastRun` 给出最近运行时间，因此能区分“安静正常”和“巡检没跑”。记录观测不修改工单、不发送消息。
-- **独立 Watchdog 进程（基础）**：`scripts/watchdog` 不依赖 DSH 定时会话，用自己的配置、状态、日志和 pid 运行；每轮读取面板快照、记录一次运行，只在机械发现变化时发飞书，配置 `dailyReport` 后无异常时每天上午发一次安静日报。主机检查项、有界恢复与部署监督（路线图 K/L）后续接入这个进程。
+- **独立 Watchdog 进程（基础）**：`scripts/watchdog` 不依赖 DSH 定时会话，用自己的配置、状态、日志和 pid 运行；每轮读取面板快照、记录一次运行，只在机械发现变化时发飞书，配置 `dailyReport` 后无异常时每天上午发一次安静日报。长期运行进程通过只读 `GET watchdog/wait` 等待工单、健康或静默阈值变化，不再轮询全量快照，`intervalSeconds` 只是兜底间隔。本机的定时 agent（`run.ps1` + `gate.mjs`）仍从稳定 checkout 导入源码，尚未制品化；主机检查项、Session 级看护与有界恢复（路线图 K/L/M）后续接入。
+- **已落地的部署入口（MR !43）**：主 Session 的 `orchestrator_deploy` 把操作者的部署原话写入请求文件，并触发独立计划任务；执行器按受控发布技能停服、切换、启动和健康检查。2026-11-09 证实的 Windows Job 归属问题已由 `scripts/service-start.ps1` 与 `verify` 修复，服务不再随执行器退出；`gate.mjs` 仍依赖稳定 checkout，制品化与目标关系见 [互辅助设计](watchdog-superagent-mutual-assist.md)。
 - **已移除的介入（阶段 2，MR !30、!32）**：`watchdog` 设置块、专用 `POST /orchestrator/api/watchdog/tickets/<id>/retry|stop`、SQLite 审计、冷却/限流与面板表单曾实现自动 retry/stop；外部独立 Watchdog 可用后，这些服务内实现已清理，决定与报告由外部进程负责。
 
 **影响。** 只读巡检与独立进程能在服务之外发现卡住的工单并报告；但修改提示词、策略或其他设置仍需人来完成，服务进程存活和重启恢复也仍依赖外部每小时检查。当前单机部署一旦主机休眠或离线，整个系统停止，这正是第 5 节要解决的问题。
 
-**下一步。** 服务内只保留只读观测；后续阶段若允许从 Watchdog 修改设置或提示词，需要 diff、人工确认和回滚。具体任务、验收与并行边界见 [落地计划](super-agent-design-roadmap.md) 的工作流 B。
+**下一步。** 服务内只保留只读观测；部署入口先完成制品化、独立更新任务与 Session 级看护（2026-11-09 的 Job 归属已由 `scripts/service-start.ps1` 与 `verify` 修复），阶段 3 才允许从 Watchdog 修改设置或提示词，并且需要 diff、人工确认和回滚。具体任务、验收与并行边界见 [落地计划](super-agent-design-roadmap.md) 的工作流 B 与 M，设计细节见 [互辅助设计](watchdog-superagent-mutual-assist.md)。
 
 ### 2. 计算与状态分离（5.1）
 
