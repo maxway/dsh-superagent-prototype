@@ -499,9 +499,11 @@ function gitFacts() {
     const header = name => lines.find(line => line.startsWith(`# ${name} `))?.slice(name.length + 3)
     const head = header('branch.oid')
     if (!head || !/^[0-9a-f]{40}$/.test(head)) return undefined
+    const branch = header('branch.head')
     return {
       head,
-      branch: header('branch.head') ?? 'HEAD',
+      // A detached checkout keeps the value `rev-parse --abbrev-ref HEAD` reported before this probe changed shape.
+      branch: !branch || branch === '(detached)' ? 'HEAD' : branch,
       dirty: lines.some(line => line !== '' && !line.startsWith('#')),
     }
   } catch { return undefined }
