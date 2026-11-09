@@ -228,6 +228,7 @@ export function artifactFacts() {
     const version = typeof manifest.version === 'string' ? manifest.version : typeof manifest.commit === 'string' ? manifest.commit : undefined
     return { ...(version ? { version } : {}), ...(typeof manifest.commit === 'string' ? { commit: manifest.commit } : {}) }
   } catch { return {} }
+}
 /** The note of the once-a-morning quiet report, so a person can tell a heartbeat from a finding report. */
 export const DAILY_QUIET_NOTE = '每日巡检：无异常，没有需要关注的机械信号。'
 
