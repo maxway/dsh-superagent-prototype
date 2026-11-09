@@ -6,7 +6,7 @@
 
 ## 本检出的生产主机
 
-目标生产主机是原生 Windows，使用固定检出目录 `F:\code\dsh-superagent-prototype`，以及与 Desktop 分离的 DSH 根目录。仅使用不同的 profile 并不能隔离工作区和会话存储。2026-11-08，操作员批准切换到 `C:\Users\dd\.dsh-superagent`，并将 `DSH_AGENTS_HOME` 设置为其中的 `agents` 子目录。本机 `C:\Users\dd\.dsh-superagent\service.ps1` 在 `start`、`stop`、`restart` 和 `status` 时设置这些变量；不带这些变量使用通用脚本可能重新使用 Desktop 的共享目录。原有专属状态目录仍位于新根目录之外的 `C:\Users\dd\.dsh\state\superagent`。启动报告显示运行时和飞书 ready、GitLab starting；根据操作员要求，切换后未独立验证工作区、会话恢复和端到端行为。这种分离不是操作系统安全边界。profile 直接链接 F: 检出；不要为了匹配包名而重命名目录。Windows profile 示例位于 `examples/profile.cordis.patch.yml`；POSIX / WSL 示例保留在 `examples/profile.posix.cordis.patch.yml`，供独立部署使用。历史 WSL 状态与工作树不是 Windows worker 目录，不得清理或在 Windows 上直接恢复。
+目标生产主机是原生 Windows，使用固定检出目录 `F:\code\dsh-superagent-prototype`，以及与 Desktop 分离的 DSH 根目录。仅使用不同的 profile 并不能隔离工作区和会话存储。2026-11-08，操作员批准切换到 `C:\Users\dd\.dsh-superagent`，并将 `DSH_AGENTS_HOME` 设置为其中的 `agents` 子目录。带版本的入口 `scripts\dsh-superagent.ps1` 读取 checkout 之外的 `%USERPROFILE%\.dsh-superagent\service.json`，固定 checkout、DSH home、profile、本机回环 URL、Node 路径、可选的 PATH 追加项以及部署请求/命令；没有该文件而直接使用通用脚本，可能重新使用 Desktop 的共享目录。本机 `C:\Users\dd\.dsh-superagent\service.ps1` 仍是既有工具的兼容入口；切换后应缩减为向带版本入口传 `-Config` 的 shim。原有专属状态目录仍位于新根目录之外的 `C:\Users\dd\.dsh\state\superagent`。启动报告显示运行时和飞书 ready、GitLab starting；根据操作员要求，切换后未独立验证工作区、会话恢复和端到端行为。这种分离不是操作系统安全边界。profile 直接链接 F: 检出；不要为了匹配包名而重命名目录。Windows profile 示例位于 `examples/profile.cordis.patch.yml`；POSIX / WSL 示例保留在 `examples/profile.posix.cordis.patch.yml`，供独立部署使用。历史 WSL 状态与工作树不是 Windows worker 目录，不得清理或在 Windows 上直接恢复。
 
 Windows 进程不能安全依赖共享检出内 WSL 创建的依赖链接。应在生产服务停止、其他使用该依赖树的进程静止后，于最终路径准备并验证完整的 Windows 依赖安装。pnpm 的 `Already up to date` 不代表可用：用 Windows Node 构建并导入实际 bundle，再确认带 `x-orchestrator-request: 1` 的 `GET /orchestrator/api/state` 返回 200，并检查来源健康。仅监听 Web 端口不够。两种平台都需要运行时，应分离各自的依赖树。后台运行时还要确认服务与飞书消费者没有可见控制台，且含令牌的启动日志只允许目标用户和管理员访问。
 
@@ -176,22 +176,39 @@ Windows 上用 PowerShell 运行同一段内容，把 `> /dev/null` 换成 `> $n
 
 ## 启动与停止
 
+Windows 上，带版本的入口就是操作命令。它读取 checkout 之外的机器配置，因此目标不会随当前目录或无关的环境变量漂移：
+
+```powershell
+pwsh scripts\dsh-superagent.ps1 status
+pwsh scripts\dsh-superagent.ps1 start
+pwsh scripts\dsh-superagent.ps1 stop
+pwsh scripts\dsh-superagent.ps1 restart
+```
+
+除非用 `-Config` 或 `DSH_SUPERAGENT_SERVICE_CONFIG` 指定其他文件，它读取 `%USERPROFILE%\.dsh-superagent\service.json`；`examples/service.windows.json` 是模板。该文件固定 `checkout`、`home`、`agentsHome`、`profile`、回环 `url`、`node` 可执行文件、可选的 `path` 追加项以及可选的 `deployRequest`/`deployCommand`，并且不保存密钥。启动还需要用户级 `LUMOS_API_KEY`，包装脚本从用户环境复制。`-Checkout`、`-DshHome`、`-DshProfile` 和 `-Url` 可以只对一次调用覆盖文件；入口会拒绝 checkout、profile 目录或 URL 不匹配的目标，且只接受回环 URL。
+
+切换完成后，把旧的硬编码 `C:\Users\dd\.dsh-superagent\service.ps1` 换成兼容 shim，让既有工具继续工作：
+
+```powershell
+param([ValidateSet('start', 'stop', 'restart', 'status', 'verify')][string]$Action = 'status')
+& 'F:\code\dsh-superagent-prototype\scripts\dsh-superagent.ps1' -Action $Action -Config "$env:USERPROFILE\.dsh-superagent\service.json"
+exit $LASTEXITCODE
+```
+
+Node 脚本仍是实现，也是两个平台上已设置好环境时的可用入口：
+
 ```sh
 scripts/dsh-superagent start
 scripts/dsh-superagent status
 ```
 
-Windows 上通过 Node 运行同一个脚本，因为该文件没有 `.cmd` shim：
+Windows 上写作 `node scripts\dsh-superagent start` 等；该文件没有 `.cmd` shim，因此需要 Node。
 
-```powershell
-node scripts\dsh-superagent start
-node scripts\dsh-superagent status
-node scripts\dsh-superagent stop
-```
+`--url` 监听套接字的所有者才是权威目标。`status` 报告 `identity: "listener"`、`listener` PID、`unlistening`（匹配 profile 但不拥有该 URL 的进程）和 `foreign`（另有进程拥有该 URL）。`start` 会拒绝外部监听者，或本 home 记录过但已不再监听的进程；`stop` 同样拒绝，并且绝不强杀。因此不同 home 中同名 profile 的两个实例，或其他 DSH 进程，都不会被误认成目标。监听查询不可用时，`identity: "scan"` 表示退回了旧的命令行扫描。
 
 `start` 在 tmux 会话 `dsh-superagent` 中运行 `dsh --profile superagent`；其他 profile 则使用 `dsh-<profile>`。它最多等待一分钟，让运行时变为就绪或报告安装配置要求。首次运行时，它会打印缺失的安装配置信息。它会拒绝重复的实例，包括从这个脚本之外启动的实例。每个 profile 使用独立命名的 tmux socket。pane 使用调用者的 `DSH_HOME`、`HOME` 和 `PATH`（包括未设置的情况），并在启动 DSH 前清除 `TMUX` 与 `TMUX_PANE`，避免 worker 继承服务 socket。仅设置 `TMUX_TMPDIR` 不能覆盖继承的 `TMUX`；这些措施只是护栏，不是操作系统安全边界。
 
-Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以分离进程启动 `dsh --profile <profile> --no-open`，日志和控制文件与 POSIX 相同，并等待管理 API；它不使用 tmux。`status` 通过 Windows PowerShell（`powershell.exe`，Windows 自带）列出进程。`stop` 通过 `POST /orchestrator/api/service/stop` 让 DSH 退出，而不是发送信号；它最多等待五分钟，绝不会强制杀死进程。上面的 tmux socket 与 `TMUX` 细节只适用于 POSIX。两种平台使用相同的退出码、日志名和 `manually-stopped` 标记。
+Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以分离进程启动 `dsh --profile <profile> --no-open`，日志和控制文件与 POSIX 相同，并等待管理 API；它不使用 tmux。当调用者位于 Windows Job 中时，它通过 `scripts\service-start.ps1` 在 Job 之外创建服务，并把同一个 `--home` 传下去。`status` 通过 Windows PowerShell（`powershell.exe`，Windows 自带）列出进程。`stop` 通过 `POST /orchestrator/api/service/stop` 让 DSH 退出，而不是发送信号；它最多等待五分钟，绝不会强制杀死进程。上面的 tmux socket 与 `TMUX` 细节只适用于 POSIX。两种平台使用相同的退出码、日志名和 `manually-stopped` 标记。
 
 `stop` 和 `restart` 请求优雅 drain，并最多等待进程五分钟退出。执行器 drain 的上限是十秒，DSH 启动器再加五秒宽限，因此停止通常约十五秒完成；drain 之后仍在回合中的 worker 可能被打断。POSIX 上它们绝不会强制杀死进程，也不会碰其他 tmux 会话。
 
@@ -210,10 +227,12 @@ Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以
 
 `status` 在 `errors` 下返回失败的部分及其详情，在 `setup` 下返回安装配置要求。`start` 和 `restart` 会逐行打印这些问题；如果服务始终没有起来，它们以 1 退出。只有有意的 `stop` 会暂停自动恢复。
 
-每个 profile 在 `.artifacts/` 下保存日志和控制文件：
+每个 DSH home 在自己的 `service/` 下保存服务的日志和控制文件，因此脏的或共享的 checkout 不再是运行时状态：
 
-- 启动日志：`dsh-superagent-<profile>-<date>-<time>-<pid>.log`，其中 pid 属于脚本。保留最新的 20 个。
-- 控制文件：`control/profiles/<profile>/`，包含停止标记、锁和进程 id。
+- 启动日志：`<DSH home>\service\logs\dsh-superagent-<profile>-<date>-<time>-<pid>.log`，其中 pid 属于脚本。保留最新的 20 个。
+- 控制文件：`<DSH home>\service\control\profiles\<profile>\`，包含停止标记、锁、进程 id 和最近一次启动事实。
+
+本版本仍会读取旧的 `<checkout>\.artifacts\control\profiles\<profile>\` 停止标记、记录 PID 和启动事实，使有意的停止和当前启动在升级后继续有效；但它不再向那里写入。新入口部署完成、且没有旧的调用方式后，可以归档该目录。
 
 打开日志中打印的 URL，然后在侧边栏中选择 **Superagent**。
 
@@ -222,10 +241,10 @@ Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以
 在你日常使用的 DeepSeek Harness profile 中创建每小时检查，而不是在 `superagent` 中。智能体服务停止时，它必须继续运行。让该 profile 中的智能体用下面这段提示词创建每小时计划，并填入检出路径：
 
 ```text
-Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest .artifacts/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
+Check dsh-superagent: run `scripts/dsh-superagent --profile superagent --home <DSH home> status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --home <DSH home> --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest <DSH home>/service/logs/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
 ```
 
-`--respect-stop` 保留有意的停止。只有 `stop` 写入标记；`start` 清除它。`restart` 不写标记，因此该检查可以恢复一次关闭超时的重启。Windows 上使用同一段提示词，把命令换成 `node scripts\dsh-superagent ...`。
+`--respect-stop` 保留有意的停止。只有 `stop` 写入标记；`start` 清除它。`restart` 不写标记，因此该检查可以恢复一次关闭超时的重启。Windows 上改用 `pwsh scripts\dsh-superagent.ps1 -Action status` 和 `pwsh scripts\dsh-superagent.ps1 -Action restart -RespectStop`，并读取配置的 DSH home 下的同一日志。
 
 ### 任务级巡检（Watchdog）
 
@@ -265,7 +284,7 @@ Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --
 
 DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Windows Job；从其中启动的服务会在命令结束时被终止，而命令内部此前的健康检查可能已经通过。`scripts/dsh-superagent start` 会检测这一状态，让 WMI 提供程序在 Job 之外创建 `scripts/service-start.ps1`，并等待健康检查。该包装脚本从受限文件中恢复服务环境、启动分离的服务后退出；它从不启动 observer。不在 Job 中的普通终端启动仍走原路径；计划任务所在的 Job 也按同样方式离开，`status` 会报告实时的 `inJob` 值以及 `start` 中最近一次启动的方式。无法证明服务位于所有 Windows Job 之外的启动会失败，而不是留下一个可能被关闭命令杀死的服务。
 
-操作员的 `service.ps1` 仍是服务入口：它设置生产 home 并调用控制脚本，因此服务在进程位于 Job 之外时仍使用自己的 profile home 和凭据。`scripts/service-start.ps1` 也可以由独立计划任务直接运行。
+带版本的 `scripts\dsh-superagent.ps1` 是服务入口：它校验机器配置并调用控制脚本，因此服务在进程位于 Job 之外时仍使用自己的 profile home 和凭据。操作员的 `C:\Users\dd\.dsh-superagent\service.ps1` 仍是既有工具的兼容入口；切换后应缩减为指向该入口的 shim。`scripts/service-start.ps1` 也可以由独立计划任务直接运行；它会收到与父进程相同的 `-DshHome`。
 
 `node scripts/dsh-superagent verify --profile superagent --url <url> --survival-seconds 30` 在执行器退出后证明发布有效：恰好一个进程服务该 profile，管理 API 返回 ready（或 paused），进程位于所有 Windows Job 之外，且在存活窗口之后仍是同一进程。退出码 1 会指出未通过的条件。
 
@@ -281,7 +300,7 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 下次按这几点缩短前期准备：
 
-1. 在稳定 checkout 中先运行一次 `node scripts/dsh-superagent status --profile superagent --url <面板 URL> --home <DSH home>`。`status` 会报告 profile 目录、`service.ps1`、配置的 `stateDir`、bundle 链接与目标、checkout 版本与分支、构建出的 `lib`，以及服务的 Windows Job 归属与最近一次启动方式；直接读这些，不再重新发现。
+1. 在稳定 checkout 中先运行一次 `pwsh scripts\dsh-superagent.ps1 -Action status`。`status` 会报告 profile 目录、`service.ps1`、按 home 存放的 `serviceDirectory`/`logs`/`control`、配置的 `stateDir`、bundle 链接与目标、checkout 版本与分支、构建出的 `lib`、监听身份（`identity`、`listener`、`unlistening`、`foreign`），以及服务的 Windows Job 归属与最近一次启动方式；直接读这些，不再重新发现。
 2. 每个目标版本只保留一份候选，并记录 revision、产物哈希与测试证据。候选 worktree 的 `git rev-parse HEAD^{tree}` 与目标树相同、构建产物也一致时直接复用；不要在维护窗口里重新构建或重跑全量测试。
 3. 用同一份 `status` 输出确认服务空闲，并记录进行中与排队工单数。做一致性备份前暂停独立 Watchdog 的写入，服务恢复后按原方式恢复并核验。
 4. 在“文件已切换、服务已停止”的状态停下。`scripts/dsh-superagent start` 会检测 Windows Job，并通过 `service-start.ps1` 在 Job 之外创建服务；不要在 agent 的 shell 工具里直接启动一个裸子进程。DSH agent 退出后，外层部署任务运行 `verify --survival-seconds 30`；只有服务仍存活、在所有 Job 之外且管理 API 回答 ready，才算成功。
@@ -495,7 +514,9 @@ Windows 上使用当前 Windows 版本自带的 `curl.exe`，把 `cli` 设为 `g
 3. 运行 `git pull && pnpm install && pnpm build`。
 4. 运行 `scripts/dsh-superagent restart` 并检查其状态。
 
-Windows 上用 PowerShell 执行同样的步骤；PowerShell 7 支持 `&&`，服务命令是 `node scripts\dsh-superagent restart`。
+Windows 上用 PowerShell 执行同样的步骤；PowerShell 7 支持 `&&`，服务命令是
+`pwsh scripts\dsh-superagent.ps1 -Action restart`。如果 checkout 还没有机器配置，显式传入 `-Checkout`、`-DshHome`、
+`-DshProfile` 和 `-Url`，或按 `examples/service.windows.json` 创建 `%USERPROFILE%\.dsh-superagent\service.json`。
 
 重启会结束正在运行的派工，并带恢复说明启动替代的派工。团队文本和被覆盖的提示词段落会保留；没有覆盖的段落跟随新的默认内容。升级后检查标记为 **默认内容已更新** 的段落。
 
@@ -520,7 +541,10 @@ Windows 上用 PowerShell 执行同样的步骤；PowerShell 7 支持 `&&`，服
 | 已结束工单的 worktree 仍留在 `<stateDir>/work/…` | 它有未提交或未跟踪改动、提交不在远端、检出了其他分支，或不是链接 worktree。提交并推送，或丢弃这些工作；下次宿主启动时会再次尝试清理 |
 | 找不到 `pwsh`，或准备命令报 PowerShell 错误 | 安装 PowerShell 7 并把 `pwsh` 放到 `PATH` 上；准备命令不使用 Windows PowerShell 5.1 |
 | Windows 上启动时报 `dsh must be on PATH.` | 全局安装 DSH 并打开新的 shell；`start` 会解析 npm 的 `dsh.cmd` |
-| PowerShell 或 `cmd.exe` 无法运行 `scripts\dsh-superagent` | 该脚本在 Windows 上没有 `.cmd` shim；请运行 `node scripts\dsh-superagent <command>` |
+| PowerShell 或 `cmd.exe` 无法运行 `scripts\dsh-superagent` | 该脚本在 Windows 上没有 `.cmd` shim；请运行 `pwsh scripts\dsh-superagent.ps1 <action>`，环境已设置好时也可 `node scripts\dsh-superagent <command>` |
+| `The service configuration does not exist` 或目标不匹配 | 按 `examples/service.windows.json` 创建 `%USERPROFILE%\.dsh-superagent\service.json`，或传入 `-Checkout`、`-DshHome`、`-DshProfile` 和 `-Url`；入口拒绝不匹配的 checkout、profile 目录或非回环 URL |
+| `The management URL … is owned by PID …` | 端口被其他进程占用；停止它或改用服务真实的 `url`。入口绝不会杀进程或探测外部监听者 |
+| `This home's dsh-superagent process … does not listen` | 记录过的进程仍在运行，但没有监听目标 URL。检查并修复其监听，或从独立任务重启；`start`/`stop` 拒绝操作它 |
 | `gh` 或 `glab` 的 `.cmd` 包装脚本丢失或破坏参数 | 使用原生 `gh.exe` 或 `glab.exe` 及其配置目录（见 Windows 凭据）；绝不要让 JSON 或消息文本经过 `cmd.exe` |
 | Windows 主机上飞书来源被拒绝 | 把来源的 **机器人的 lark-cli** 字段指向 `lark-cli`（npm 的 `.cmd` shim）或包的 Node 入口；没有 Node 入口的自定义 `.cmd` 包装会被拒绝 |
 | `git does not read the credential configuration dsh-superagent writes` | 安装 git 2.32 或更高版本 |
