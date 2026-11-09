@@ -231,6 +231,8 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 `GET /orchestrator/api/watchdog` 返回只读快照：服务状态、每个进行中工单的阶段、最近派工与报告、静默时长和机械信号，以及最近一次记录的观测（`lastRun`）。`scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog` 打印同样的 JSON。快照命令只发送 GET；`--stale-minutes` 只改变它的信号阈值。
 
+外部 agent 读取快照后只报告需要人处理的事：`delivery-error` 或 `undelivered-inputs`；无法用 `offPeak`、服务暂停、安装配置未完成或执行器满载解释的 `no-progress` 或 `queued`；等待远超过 30 分钟的 person 阶段，或超过一天仍未评审的 ready 结果；反复失败；或最近报告与工单标题明显不符。每次运行都记录观测（包括没有异常时），其他时候保持安静。它不修改设置、提示词、数据库或 Session 文件；服务也不再提供可调用的介入路由。
+
 Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog report --chat <chat id>` 会通过飞书来源的机器人把观察汇总发到该飞书会话，让人在平时和机器人对话的地方直接看到。服务端用自己的实时快照渲染汇总：服务状态、带机械信号的进行中工单及其静默时长和最近报告；`--note "<一句话>"` 追加 Watchdog 自己的判断。目标会话必须是机器人所在的会话，飞书来源也必须已启用并配置好；报告不修改工单，也不受对话回复 100 词上限的限制。该命令调用 `POST /orchestrator/api/watchdog/report`，传入 `chatId`、`idempotencyKey` 和可选的 `note`。
 
 每次巡检用 `scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog run [--note "<一句话>"]` 记录一次观测。服务端从实时快照渲染观测并保留 30 天，因此 `watchdog runs [--limit <n>]` 可以列出最近的观测，`GET /orchestrator/api/watchdog` 用 `lastRun` 返回最新一次。记录观测不修改工单、不发送消息；有新的 `lastRun` 才能区分“安静正常”和“巡检没跑”。每次运行都要记一次，包括没有异常时。
