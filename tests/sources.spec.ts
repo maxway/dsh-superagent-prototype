@@ -124,6 +124,11 @@ describe('feishu source', () => {
     expect(feishuTrigger({ message_id: 'om_5', chat_id: 'oc_2', chat_type: 'p2p', sender_id: MEMBER, sender_type: 'user', content: 'hi', create_time: '1' }, 'ou_bot', 'cli_bot')!.addressed).toBe('direct')
     expect(feishuTrigger({ message_id: 'om_6', chat_id: 'oc_1', chat_type: 'group', sender_id: MEMBER, sender_type: 'user', content: 'hi', create_time: '1' }, 'ou_bot', 'cli_bot')).not.toHaveProperty('addressed')
     expect(feishuTrigger({ message_id: 'om_3', chat_id: 'oc_1', chat_type: 'p2p', sender_id: 'ou_bot', sender_type: 'bot', content: 'me', create_time: '1' }, 'ou_bot', 'cli_bot')).toBeUndefined()
+    // The live consumer prints the message a reply answers as `reply_to`, which the Trigger keeps as the message it answers.
+    const answered = feishuTrigger({ message_id: 'om_7', chat_id: 'oc_1', chat_type: 'group', sender_id: MEMBER, sender_type: 'user',
+      content: 'yes', create_time: '1757376000000', root_id: 'om_1', reply_to: 'om_6' }, 'ou_bot', 'cli_bot')!
+    expect(answered.meta.parentId).toBe('om_6')
+    expect(feishuKind.repliesTo!(answered)).toBe(feishuTriggerId('om_6'))
   })
   it('reads message times given as epoch milliseconds or as local times, and refuses others', () => {
     expect(feishuTime('1757376000000')).toBe('2025-09-09T00:00:00.000Z')

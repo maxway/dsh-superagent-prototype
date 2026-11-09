@@ -233,6 +233,13 @@ export class Tickets extends EnginePart {
    */
   addInput(ticket: Ticket, input: TicketInput): void {
     if (ticket.inputs.some(existing => existing.id === input.id)) return
+    // A person's message on the Ticket's own Thread answers the question it waits on a person for: the Ticket stops showing
+    // it as awaiting an answer, and the question's unsent message is withdrawn. The worker still reads the message, and asks
+    // again if the answer does not resolve the question.
+    if (ticket.attention && input.kind === 'trigger' && input.human && !input.context) {
+      this.replies.withdrawAttention(ticket.attention.id)
+      delete ticket.attention
+    }
     ticket.inputs.push(input); ticket.updatedAt = this.now()
     // Hold back automated inputs while the worker is waiting on a person.
     const held = liveTicket(ticket) && automatic(input) && waitsForPerson(ticket)

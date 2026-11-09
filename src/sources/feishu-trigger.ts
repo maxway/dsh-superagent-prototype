@@ -10,7 +10,8 @@ export const feishuChannel = (chatId: string, messageId: string, direct = false)
 const EventSchema = z.object({ message_id: z.string(), chat_id: z.string(), chat_type: z.enum(['p2p', 'group']),
   sender_id: z.string(), sender_type: z.enum(['user', 'bot']), content: z.string(), create_time: z.string(),
   mentions: z.array(z.object({ id: z.string(), key: z.string().optional(), name: z.string().optional() })).default([]),
-  root_id: z.string().optional(), parent_id: z.string().optional(), thread_id: z.string().optional(), message_app_link: z.url().optional() })
+  root_id: z.string().optional(), reply_to: z.string().optional(), parent_id: z.string().optional(), thread_id: z.string().optional(),
+  message_app_link: z.url().optional() })
 export type FeishuEvent = z.infer<typeof EventSchema>
 export const feishuThreadId = (chatId: string, rootId: string | undefined, messageId: string): string => `${chatId}:${rootId ?? messageId}`
 /** Deterministic trigger ID for a Feishu message; every read path for this message produces the same ID. */
@@ -33,11 +34,13 @@ export function feishuTrigger(input: unknown, botId: string, botAppId: string): 
   const direct = event.chat_type === 'p2p'
   const mentioned = event.mentions.some(mention => mention.id === botId || mention.id === botAppId)
   const thread = feishuThreadId(event.chat_id, event.root_id, event.message_id)
+  // The live consumer prints the message a reply answers as `reply_to`; `parent_id` stays accepted for payloads that use it.
+  const repliedTo = event.reply_to ?? event.parent_id
   return { id: feishuTriggerId(event.message_id), source: SOURCE, threads: [{ source: SOURCE, id: thread }],
     actor: { source: SOURCE, id: event.sender_id }, human: event.sender_type === 'user',
     ...(direct ? { addressed: 'direct' as const } : mentioned ? { addressed: 'mention' as const } : {}),
     at: feishuTime(event.create_time), text: withMentionNames(event.content, event.mentions),
     channel: feishuChannel(event.chat_id, event.message_id, direct), ...(event.message_app_link ? { url: event.message_app_link } : {}),
     meta: { chatId: event.chat_id, messageId: event.message_id, direct, mentioned, ...(event.root_id ? { rootId: event.root_id } : {}),
-      ...(event.parent_id ? { parentId: event.parent_id } : {}), ...(event.thread_id ? { threadId: event.thread_id } : {}) } }
+      ...(repliedTo ? { parentId: repliedTo } : {}), ...(event.thread_id ? { threadId: event.thread_id } : {}) } }
 }

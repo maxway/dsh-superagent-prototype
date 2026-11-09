@@ -22,7 +22,7 @@
 | --- | --- | --- |
 | 服务控制脚本 | `scripts/dsh-superagent` | `start`/`stop`/`restart`/`status`，profile 级锁、健康检查、`watchdog` 只读快照与动作请求 |
 | 独立 Watchdog 进程 | `scripts/watchdog` | 自有配置/状态/日志/pid，读 `GET /orchestrator/api/watchdog`，记录运行、飞书报告、`--gate` 机械预检 |
-| Watchdog 定时 agent（本机） | `C:\Users\dd\.dsh\watchdog` 的 `run.ps1`、`gate.mjs`、`prompt.md` | 计划任务 `dsh-superagent-watchdog-agent` 每 15 分钟运行；`gate.mjs` 从稳定 checkout 导入 `scripts/watchdog`，风险轮次才启动完整 DSH agent |
+| Watchdog 定时 agent（本机） | `C:\Users\dd\.dsh\watchdog` 的 `run.ps1`、`gate.mjs`、`prompt.md` | 计划任务 `dsh-superagent-watchdog-agent` 每 15 分钟运行；`gate.mjs` 从稳定 checkout 导入 `scripts/watchdog`，风险轮次才启动完整 DSH agent；当前旧包装仍以 checkout 为工作目录，入仓模板已改为独立 `workspace` |
 | Superagent 侧部署入口 | `src/app/deployment.ts`、`orchestrator_deploy` | 主 Session 把操作者的部署原话写入请求文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` |
 | 独立部署任务（本机） | `C:\Users\dd\.dsh\watchdog\deploy.ps1`，计划任务 `dsh-superagent-deploy` | 启动 headless DSH agent，按 `local-superagent-release` 技能停服、切换、启动、健康检查并报告 |
 
@@ -148,7 +148,7 @@ Windows Task Scheduler / systemd
 
 **P1 状态（2026-11-09）。** `scripts/dsh-superagent start` 已改为在调用方位于 Windows Job 中时，通过 WMI 让 `scripts/service-start.ps1` 在 Job 之外启动服务，并在启动后验证 `IsProcessInJob=false`；`status` 报告实时归属与最近启动方式。`scripts/deploy.ps1` 在部署 agent 退出后用 `verify` 做存活检查并记录结果。隔离环境中的 Job 关闭复现证明旧路径会杀死服务、新路径不会。剩余操作：生产实例仍需在维护窗口中由独立终端或任务重启一次，部署任务需改指向仓库内的 `deploy.ps1` 与仓库外配置；实际生产部署尚未执行。
 
-**P2 状态（2026-11-09）。** Watchdog agent 脚本已入仓并模板化；`scripts/watchdog-artifact.mjs` 构建带 manifest/摘要的不可变制品，`watchdog-smoke.mjs` 用本地 mock 验证自包含性；`watchdog-launch.ps1` 作为稳定启动器读取 `current.txt`；`watchdog-update.mjs` 实现请求校验、staging 根校验、smoke、安装、指针切换、锁、幂等、心跳和回滚，更新运行记录携带 `version`/`commit`。面板已在执行页显示双方版本、最近心跳，以及 current/候选/上一版与最近更新（缺失/过期/失败显示警告）；更新任务支持可选持久 observer 的停止、切换、启动与失败回滚。生产安装与更新任务尚未执行，完整 agent 模型路径留待维护窗口验证。P3–P4 保持方案状态，其待决策项见下一节。
+**P2 状态（2026-11-09）。** Watchdog agent 脚本已入仓并模板化；`scripts/watchdog-artifact.mjs` 构建带 manifest/摘要的不可变制品，`watchdog-smoke.mjs` 用本地 mock 验证自包含性；`watchdog-launch.ps1` 作为稳定启动器读取 `current.txt`；`watchdog-update.mjs` 实现请求校验、staging 根校验、smoke、安装、指针切换、锁、幂等、心跳和回滚，更新运行记录携带 `version`/`commit`。agent 包装支持独立 `workspace`，默认按 service profile 生成 `workspaces\watchdog_<profile>`（如 `watchdog_superagent`、`watchdog_sheepdoku`），启动 gate 与完整 agent 前切换进去，并拒绝等于 checkout 或位于其内的路径；提示词改用 checkout 绝对路径，因此 Watchdog 的 Session 不再进入 Desktop 的 checkout 工作区。面板已在执行页显示双方版本、最近心跳，以及 current/候选/上一版与最近更新（缺失/过期/失败显示警告）；更新任务支持可选持久 observer 的停止、切换、启动与失败回滚。生产安装与更新任务尚未执行，当前本机旧包装仍以 checkout 为工作目录；完整 agent 模型路径留待维护窗口验证。P3–P4 保持方案状态，其待决策项见下一节。
 
 **P3 状态（2026-11-09）。** 已开始：快照新增 `session-missing` 信号（运行中的 Assignment 没有存活 worker Session）；Watchdog 配置 `alertFile`/`alertAfterFailures`，在管理 API 连续不可达时写独立本地告警行，恢复时写恢复行，不依赖服务或飞书。尚未实现：enforce 下的有界 retry/重启、服务/宿主机检查项、独立告警的飞书投递与操作员确认；这些仍待第 8 节决策。
 
