@@ -5,7 +5,7 @@ import { dirname } from 'node:path'
 import { key, threadKey, type ChannelRef, type Decision, type OutboundMessage, type ReplyStatus, type Repositories, type Thread, type ThreadFact,
   type ThreadFacts, type Ticket, type Trigger, type TriggerDisposition } from '../core/index.ts'
 import { KV, type Family, type Key } from '../kv.ts'
-import { SettingsSchema, type Settings, type SettingsOrigin, type SettingsSave, type WatchdogAction, type WatchdogMode } from '../policy.ts'
+import { SettingsSchema, type Settings, type SettingsOrigin, type SettingsSave } from '../policy.ts'
 import { OLDEST_SCHEMA, SCHEMA_VERSION, migrateTo11, tooOld } from './migration.ts'
 import { Versions } from './versions.ts'
 import { storeReads } from './store-read.ts'
@@ -24,38 +24,14 @@ export interface SettingsVersion {
   policyVersion: string; policyChanged: boolean; notified: string[]; settings: Settings
 }
 /**
- * One Watchdog decision, kept after the fact for the operator and for cooldown and limit checks. `executing` reserves an
- * action before it runs, so a concurrent call can refuse it; the row is then updated with the result and the after state.
- */
-export interface WatchdogAudit {
-  id: string
-  idempotency: string
-  at: string
-  snapshotAt: string
-  ticketId: string
-  ticketTitle?: string
-  action: WatchdogAction
-  mode: WatchdogMode
-  initiator: 'watchdog'
-  reason: string
-  evidence?: Record<string, unknown>
-  before?: Record<string, unknown>
-  after?: Record<string, unknown>
-  limits?: Record<string, number>
-  result: 'executing' | 'executed' | 'reported' | 'observed' | 'refused' | 'failed'
-  refusal?: string
-  error?: string
-}
-/**
  * One recorded Watchdog observation run: the live snapshot the check read, the rendered observation and the caller's
- * one-sentence judgement. Unlike a decision, it is written even when nothing is flagged, so a quiet period stays
- * distinguishable from a check that stopped running; the newest thirty days are kept.
+ * one-sentence judgement. It is written even when nothing is flagged, so a quiet period stays distinguishable from a
+ * check that stopped running; the newest thirty days are kept.
  */
 export interface WatchdogRun {
   id: string
   idempotency: string
   at: string
-  mode: WatchdogMode
   paused: boolean
   open: number
   flagged: number
@@ -120,16 +96,12 @@ export class Store implements Repositories {
             CREATE TABLE IF NOT EXISTS effect (kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, seq INTEGER NOT NULL,
               generation INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', due INTEGER NOT NULL,
               since TEXT NOT NULL, PRIMARY KEY (kind, key));
-            CREATE TABLE IF NOT EXISTS watchdog_audit (id TEXT PRIMARY KEY, idempotency TEXT NOT NULL UNIQUE, at TEXT NOT NULL,
-              ticket TEXT NOT NULL, action TEXT NOT NULL, result TEXT NOT NULL, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS watchdog_run (id TEXT PRIMARY KEY, idempotency TEXT NOT NULL UNIQUE, at TEXT NOT NULL,
               value TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS trigger_at ON trigger(at);
             CREATE INDEX IF NOT EXISTS trigger_thread_at ON trigger_thread(thread, at);
             CREATE INDEX IF NOT EXISTS decision_thread ON decision(thread);
             CREATE INDEX IF NOT EXISTS effect_due ON effect(kind, due, seq);
-            CREATE INDEX IF NOT EXISTS watchdog_audit_at ON watchdog_audit(at);
-            CREATE INDEX IF NOT EXISTS watchdog_audit_ticket ON watchdog_audit(ticket, at);
             CREATE INDEX IF NOT EXISTS watchdog_run_at ON watchdog_run(at);
           `)
           this.addColumns()
@@ -291,22 +263,6 @@ export class Store implements Repositories {
     get: (id: string): Decision | undefined => { const row = this.db.prepare('SELECT value FROM decision WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as Decision : undefined },
     save: (decision: Decision): void => { this.db.prepare('INSERT INTO decision VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value, thread=excluded.thread').run(decision.id, decision.threadKey, JSON.stringify(decision)) },
     byThread: (threadKeyValue: string): Decision[] => this.db.prepare('SELECT value FROM decision WHERE thread=? ORDER BY rowid').all(threadKeyValue).map(row => JSON.parse(String(row.value)) as Decision),
-  }
-  /** Watchdog decisions: idempotent lookups, the newest first for the snapshot, and the rows a cooldown or limit reads. */
-  readonly watchdog = {
-    get: (id: string): WatchdogAudit | undefined => this.values<WatchdogAudit>('SELECT value FROM watchdog_audit WHERE id = ?', id)[0],
-    byIdempotency: (idempotency: string): WatchdogAudit | undefined =>
-      this.values<WatchdogAudit>('SELECT value FROM watchdog_audit WHERE idempotency = ?', idempotency)[0],
-    save: (entry: WatchdogAudit): void => {
-      this.db.prepare(`INSERT INTO watchdog_audit (id, idempotency, at, ticket, action, result, value) VALUES (?,?,?,?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET at=excluded.at, ticket=excluded.ticket, action=excluded.action, result=excluded.result, value=excluded.value`)
-        .run(entry.id, entry.idempotency, entry.at, entry.ticketId, entry.action, entry.result, JSON.stringify(entry))
-    },
-    /** Newest first, for the Watchdog snapshot and its recent decisions. */
-    recent: (limit = 20): WatchdogAudit[] => this.db.prepare('SELECT value FROM watchdog_audit ORDER BY at DESC, rowid DESC LIMIT ?')
-      .all(limit).map(row => JSON.parse(String(row.value)) as WatchdogAudit),
-    /** Decisions at or after `at`, oldest first, for cooldown and limit checks. */
-    since: (at: string): WatchdogAudit[] => this.values('SELECT value FROM watchdog_audit WHERE at > ? ORDER BY at', at),
   }
   /** Watchdog observation runs: idempotent lookups and the newest first, so a recent run and its result stay retrievable. */
   readonly watchdogRuns = {

@@ -227,45 +227,21 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 ### 任务级巡检（Watchdog）
 
-每小时检查看的是进程。任务级巡检看的是工作：在自己的 DeepSeek Harness profile 里定时运行一个 agent，读取进行中的工单和最近报告，在某个工单停止推进或看起来偏离目标时告诉你。它和每小时检查放在同一个 profile，不要放在 `superagent` 里，这样主服务退出时它仍能工作。
+每小时检查看的是进程。任务级巡检看的是工作：所有进行中工单的阶段、最近报告、静默时长和机械信号。这项工作由服务之外的独立 Watchdog 完成，因此主服务停止时它仍能工作。服务原先自带介入设置、SQLite 决定审计与 `retry`/`stop` 路由；因为决定与报告归外部 Watchdog，这些内置实现已经移除，服务只保留只读观测面。
 
-Watchdog 的设置放在 `watchdog` 设置块：面板的 **执行 → Watchdog**，或带 block revision 的 `PUT /orchestrator/api/settings/watchdog`。默认是 `observe`，只记录它会做什么，不改任何工单；默认只允许 `retry`，需要显式加上 `stop`。
+`GET /orchestrator/api/watchdog` 返回只读快照：服务状态、每个进行中工单的阶段、最近派工与报告、静默时长和机械信号，以及最近一次记录的观测（`lastRun`）。`scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog` 打印同样的 JSON。快照命令只发送 GET；`--stale-minutes` 只改变它的信号阈值。
 
-```json
-{
-  "mode": "observe",
-  "actions": ["retry"],
-  "staleMinutes": 30,
-  "cooldownMinutes": 15,
-  "perTicketPerHour": 2,
-  "perHour": 6
-}
-```
+要不轮询全量快照地跟随变化，服务还提供带版本号的长等待：`GET /orchestrator/api/watchdog/wait?since=<version>&timeout=<seconds>&stale_minutes=<minutes>` 在工单、健康、暂停或安装配置变化时，在下一个静默/评审截止时刻，或超时时立即返回新的 `version`。超时上限为 240 秒。Watchdog 始终保持一个挂起请求，只在等待返回后才读取完整快照。
 
-- `off` 拒绝所有动作。
-- `observe` 不改变任何工单。
-- `report` 把建议记入审计，但不改变任何工单。
-- `enforce` 只能通过专用路由、在重新读取工单后动作。以下情况会拒绝：快照超过 10 分钟、工单在快照后发生变化、正在等待人工（`attention`）、最近有人类跟进、仍有未送达输入、工单在谷价时段排队、服务已暂停或安装配置未完成、静默时间未达到 `staleMinutes`、动作不在 `actions` 中、工单不可重试，或触发了冷却／每小时上限。`stop` 只接受仍在执行、且信号为 `no-progress` 或 `queued` 的工单；等待人工、评审或投递中的工单一律不停。
+外部 agent 读取快照后只报告需要人处理的事：`delivery-error` 或 `undelivered-inputs`；无法用 `offPeak`、服务暂停、安装配置未完成或执行器满载解释的 `no-progress` 或 `queued`；等待远超过 30 分钟的 person 阶段，或超过一天仍未评审的 ready 结果；反复失败；或最近报告与工单标题明显不符。每次运行都记录观测（包括没有异常时），其他时候保持安静。它不修改设置、提示词、数据库或 Session 文件；服务也不再提供可调用的介入路由。
 
-管理 API 的 `POST /orchestrator/api/watchdog/tickets/<id>/retry` 和 `.../stop` 接收 `reason`、`evidence`、`snapshotAt` 与 `idempotencyKey`；它们会重新读取工单，并把每个决定写入 SQLite 审计表。`GET /orchestrator/api/watchdog` 在只读工单快照之外返回当前 `watchdog` 设置、最近 20 条审计和最近一次记录的观测（`lastRun`）。重试会结束卡住的派工，在同一 Session 和目录里启动新派工；停止按人工停止结束工单，审计保留前后状态，新的工作要重新接单。
+Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog report --chat <chat id>` 会通过飞书来源的机器人把观察汇总发到该飞书会话，让人在平时和机器人对话的地方直接看到。服务端用自己的实时快照渲染汇总：服务状态、带机械信号的进行中工单及其静默时长和最近报告；`--note "<一句话>"` 追加 Watchdog 自己的判断。目标会话必须是机器人所在的会话，飞书来源也必须已启用并配置好；报告不修改工单，也不受对话回复 100 词上限的限制。该命令调用 `POST /orchestrator/api/watchdog/report`，传入 `chatId`、`idempotencyKey` 和可选的 `note`。
 
-Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog report --chat <chat id>` 会通过飞书来源的机器人把观察汇总发到该飞书会话，让人在平时和机器人对话的地方直接看到。服务端用自己的实时快照渲染汇总：服务状态、带机械信号的进行中工单及其静默时长和最近报告、Watchdog 设置与最近决定；`--note "<一句话>"` 追加 Watchdog 自己的判断。目标会话必须是机器人所在的会话，飞书来源也必须已启用并配置好；报告不修改工单、不写决定，也不受对话回复 100 词上限的限制。该命令调用 `POST /orchestrator/api/watchdog/report`，传入 `chatId`、`idempotencyKey` 和可选的 `note`。
-
-每次巡检用 `scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog run [--note "<一句话>"]` 记录一次观测。服务端从实时快照渲染观测并保留 30 天，因此 `watchdog runs [--limit <n>]` 可以列出最近的观测，`GET /orchestrator/api/watchdog` 用 `lastRun` 返回最新一次。记录观测不修改工单、不发送消息；有新的 `lastRun` 才能区分“安静正常”和“定时巡检没跑”。定时巡检每次运行都要记一次，包括没有异常时。
-
-让该 profile 里的 agent 用下面的提示词建立每 15 到 30 分钟一次的定时任务，填入 checkout 路径、面板 URL 和飞书会话 id：
-
-```text
-检查 dsh-superagent 的工作：在 <checkout> 中运行 `scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog`。退出 0 会打印含 `state`、`tickets`、`watchdog` 与 `audit` 的 JSON；退出 1 表示管理 API 没有响应，只报告一次，恢复交给进程检查。先读 `watchdog.mode` 和 `watchdog.actions`。对每个工单看阶段、最近报告、`silentMinutes` 和 `signals`。只报告需要人处理的事：`delivery-error` 或 `undelivered-inputs`；无法用 `offPeak`、`state.paused`、`state.setup` 或执行器满载解释的 `no-progress` 或 `queued`；等待远超过 30 分钟的 person 阶段，或超过一天仍未评审的 ready 结果；反复失败；或最近报告与工单标题明显不符。在 `report` 或 `enforce` 模式下，工单静默超过 `watchdog.staleMinutes` 且你有证据时，运行 `scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog retry <工单 id> --reason "<一句话>"`；只有仍在执行且信号为 `no-progress` 或 `queued` 的工单才用 `stop`，等待人工、评审或投递中的工单绝不停。`watchdog.mode` 是 `off` 或 `observe`、`state.paused` 为真或安装配置未完成时，不要请求动作。同一个发现最多动作一次；读返回的 `executed`、`reported`、`observed`、`refused` 或 `failed`，并把拒绝或失败报告出来。有要报告的事时，还要运行 `scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog report --chat <chat id> --note "<一句证据>"`，让观察汇总发到飞书；该命令失败时只报告一次。每次运行都要记录这次观测（包括没有异常时）：运行 `scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog run --note "<一句话>"`；记录观测不是报告，不会给任何人发消息。绝不调用原始 retry/stop API，绝不修改设置或提示词，也绝不修改数据库或 Session 文件。没有问题就保持安静；同一发现没有变化、决定也没有变化时不要重复。
-```
-
-Windows 上用 `node scripts\dsh-superagent ...`。`--stale-minutes` 只改变快照里的信号阈值；服务端的决定使用 `watchdog.staleMinutes`。快照命令只发送 GET；`watchdog run` 记录一次观测，`watchdog runs` 列出最近的观测，`watchdog retry|stop` 只向服务端请求一个决定，`watchdog report` 只请求把一份汇总发到飞书。模式、安全前置、冷却、限流与审计都在服务端；这些护栏不是安全边界，因为面板和原始管理 API 仍允许人直接动作。
-
-从 Watchdog 修改提示词或其他设置属于后续阶段；本巡检不会暂停执行器、编辑提示词或修改设置。
+每次巡检用 `scripts/dsh-superagent --profile superagent --url <面板 URL> watchdog run [--note "<一句话>"]` 记录一次观测。服务端从实时快照渲染观测并保留 30 天，因此 `watchdog runs [--limit <n>]` 可以列出最近的观测，`GET /orchestrator/api/watchdog` 用 `lastRun` 返回最新一次。记录观测不修改工单、不发送消息；有新的 `lastRun` 才能区分“安静正常”和“巡检没跑”。每次运行都要记一次，包括没有异常时。
 
 ### 独立 Watchdog 进程
 
-任务级巡检也可以不用 DSH 定时会话，而作为独立进程运行。`scripts/watchdog` 读取同一份只读快照，把每次观测记录成一次运行，把发生变化的机械发现报告给飞书，并维护自己的配置、状态和日志；它不需要 DSH，也不依赖运营者的 profile，后续的主机看护与部署监督会放在这个进程里。创建 `watchdog.json`；其中的相对路径按该文件所在目录解析：
+`scripts/watchdog` 读取同一份只读快照，把每次观测记录成一次运行，把发生变化的机械发现报告给飞书，并维护自己的配置、状态和日志；它不需要 DSH，也不依赖运营者的 profile，主机看护与部署监督也放在这个进程里。创建 `watchdog.json`；其中的相对路径按该文件所在目录解析：
 
 ```json
 {
@@ -274,13 +250,14 @@ Windows 上用 `node scripts\dsh-superagent ...`。`--stale-minutes` 只改变�
   "report": true,
   "intervalSeconds": 900,
   "staleMinutes": 30,
+  "dailyReport": { "hour": 9, "timezone": "Asia/Shanghai" },
   "stateDir": "watchdog-state"
 }
 ```
 
-在前台或进程管理器下运行 `node scripts/watchdog --config watchdog.json`，或由计划任务每 15 到 30 分钟运行一次 `--once`。`--status` 打印最近记录的状态；进程在 `stateDir` 下写 `state.json` 与 `watchdog.log`，运行期间持有 `watchdog.pid`。它每轮都记录一次运行，因此 `GET watchdog` 的 `lastRun` 与 `watchdog runs` 能看出它还活着；只有机械发现集合变化时才发报告。它没有模型判断：报告工单信号、异常的服务部件和安装配置问题，执行器满载或服务暂停会解释掉相应的工单信号。服务停止时它只记录失败并继续检查，无法通过飞书机器人发报告（机器人属于服务）；若还需要模型判断，保留上一节的 DSH 巡检。
+在前台或进程管理器下运行 `node scripts/watchdog --config watchdog.json`，或由计划任务每 15 到 30 分钟运行一次 `--once`。`--status` 打印最近记录的状态；进程在 `stateDir` 下写 `state.json` 与 `watchdog.log`，运行期间持有 `watchdog.pid`。它每轮都记录一次运行，因此 `GET watchdog` 的 `lastRun` 与 `watchdog runs` 能看出它还活着；机械发现集合变化时才发报告。长时间运行的进程不再按 `intervalSeconds` 睡眠，而是挂一个带版本号的等待请求：工单、健康、暂停或安装配置变化，到达下一个静默/评审截止时刻，或达到 API 的 240 秒上限时返回。变化或截止时刻会立即跑完整轮次；达到上限只是重新挂起等待，只有距上次轮次已过 `intervalSeconds` 才跑兜底轮次，因此 `intervalSeconds` 是两次轮次之间的最大间隔。配置 `dailyReport` 后，无异常时每天上午还会发一次安静的日报，让人知道安静的服务仍在被检查；每本地日只发一次（在兜底间隔内），有异常时的报告不受影响。它没有模型判断：报告工单信号、异常的服务部件和安装配置问题，执行器满载或服务暂停会解释掉相应的工单信号。服务停止时它只记录失败并继续检查，无法通过飞书机器人发报告（机器人属于服务）。
 
-要让模型成本只发生在真正需要的轮次，可以用 `--gate` 按同样的间隔把它当作门控运行。门控轮次读取快照、记录这次观测；没有风险就退出 0，有风险就退出 2：工单信号、部件报错、安装配置未完成、ready 结果等待超过一天，或连续两次失败尝试。只有退出 2 时才运行上一节的任务级巡检（完整 DSH agent）做详细判定，由 agent 自己记录观测并报告，因此 LLM 只在风险轮次产生费用。门控不发送飞书消息、不修改任何东西；`--status`、状态文件和日志会给出它的退出原因。主机检查项、有界恢复与部署监督（路线图工作流 K、L）后续也放进这个进程。
+要让模型成本只发生在真正需要的轮次，可以在使用计划任务的一次性形态时，用 `--gate` 按同样的间隔把它当作门控运行。门控轮次读取快照、记录这次观测；没有风险就退出 0，有风险就退出 2：工单信号、部件报错、安装配置未完成、ready 结果等待超过一天，或连续两次失败尝试。只有退出 2 时才运行完整 DSH agent 做详细判定，由 agent 自己记录观测并报告，因此 LLM 只在风险轮次产生费用。门控只发送配置好的安静日报，不发送发现报告，也不修改其他东西；`--status`、状态文件和日志会给出它的退出原因。主机检查项、有界恢复与部署监督（路线图工作流 K、L）后续也放进这个进程。
 
 ### 在 Windows Job 之外启动服务
 
@@ -292,9 +269,24 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 ### 部署最新 superagent
 
-主会话可以把操作者明确的部署请求发给独立 Watchdog，而不是自己发布任何东西。`orchestrator_deploy` 工具把请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST` 指定的文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` 中的命令（例如 `schtasks /run /tn dsh-superagent-deploy`）；两个值未设置时工具关闭。独立的部署任务读取请求、核验操作者的原话，并在自己的进程里发布最新提交，主实例只负责重启。只有操作者明确要求部署 superagent（“部署superagent”）时才使用该工具；普通请求不会触发部署，主会话也从不自己备份、发布或重启。
+主会话可以把操作者明确的部署请求发给独立 Watchdog，而不是自己发布任何东西。`orchestrator_deploy` 工具把请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST` 指定的文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` 中的命令（例如 `schtasks /run /tn dsh-superagent-deploy`）；两个值未设置时工具关闭。独立的部署任务读取请求、核验操作者的原话，并在自己的进程里发布最新提交，主实例只负责停机；外层任务在 agent 退出后启动并核验它。只有操作者明确要求部署 superagent（“部署superagent”）时才使用该工具；普通请求不会触发部署，主会话也从不自己备份、发布或重启。
 
-部署尽量只做最必要的内容。还没有预构建候选的首次部署走完整受控发布（候选构建与验证、一致性备份、启动检查与回滚路径），会更慢。稳定期由 Watchdog 预构建并预验证最新提交，部署只做停机、切换构建好的 `lib` 与 `prompts`、启动和基础健康检查，保留上一版用于回滚，目标控制在一分钟内；代码质量由仓库检查和外部维护通道保证，因此跳过重复的全量测试与大范围检查。结果由 Watchdog 报告。首次部署（也就是安装这个命令本身）由操作员或 Watchdog 直接带上确认发起；运行中的 superagent 具备该工具和两个环境变量后，后续请求由主会话发送。
+部署尽量只做最必要的内容。还没有预构建候选的首次部署走完整受控发布（候选构建与验证、一致性备份、启动检查与回滚路径），会更慢。稳定期由 Watchdog 预构建并预验证最新提交，部署只做停机、切换构建好的 `lib` 与 `prompts`（以及 `scripts/watchdog`、`locale/` 等实际运行的变更文件）、启动和基础健康检查，保留上一版用于回滚，目标控制在一分钟内。代码质量由仓库检查和外部维护通道保证，因此跳过重复的全量测试与大范围检查。结果由 Watchdog 报告。首次部署（也就是安装这个命令本身）由操作员或 Watchdog 直接带上确认发起；运行中的 superagent 具备该工具和两个环境变量后，后续请求由主会话发送。
+
+#### 部署复盘与提速
+
+2026-11-09 的部署历史在 `C:\Users\dd\.dsh\watchdog\watchdog-deploy.log` 里，能看出时间花在哪。两次部署端到端都约十分钟：08:46:58 那次到 08:56:53，10:33:47 那次到 10:43:09。第二次服务约 10:40:56 停止、约 10:41:50 就绪，实际切换约 54 秒；其余时间几乎都在前期准备，而不是发布本身。准备阶段重复了部署早就知道的事：运行中的服务用哪个 DSH home 和 profile 目录、stateDir 与 bundle 链接在哪、已有的候选构建是否已经匹配目标树、哪些 watchdog 写入者需要暂停。请求本身也有歧义（“部署 !43 并设置两个环境变量”），监督器要先还原意图才能开始。
+
+下次按这几点缩短前期准备：
+
+1. 在稳定 checkout 中先运行一次 `node scripts/dsh-superagent status --profile superagent --url <面板 URL> --home <DSH home>`。`status` 会报告 profile 目录、`service.ps1`、配置的 `stateDir`、bundle 链接与目标、checkout 版本与分支、构建出的 `lib`，以及服务的 Windows Job 归属与最近一次启动方式；直接读这些，不再重新发现。
+2. 每个目标版本只保留一份候选，并记录 revision、产物哈希与测试证据。候选 worktree 的 `git rev-parse HEAD^{tree}` 与目标树相同、构建产物也一致时直接复用；不要在维护窗口里重新构建或重跑全量测试。
+3. 用同一份 `status` 输出确认服务空闲，并记录进行中与排队工单数。做一致性备份前暂停独立 Watchdog 的写入，服务恢复后按原方式恢复并核验。
+4. 在“文件已切换、服务已停止”的状态停下。`scripts/dsh-superagent start` 会检测 Windows Job，并通过 `service-start.ps1` 在 Job 之外创建服务；不要在 agent 的 shell 工具里直接启动一个裸子进程。DSH agent 退出后，外层部署任务运行 `verify --survival-seconds 30`；只有服务仍存活、在所有 Job 之外且管理 API 回答 ready，才算成功。
+5. 把实测的停机、启动和就绪时间写进部署日志。日志就是复盘材料：慢的那次可以和上一次比较，切换本身应保持在一分钟内。
+6. 部署 `scripts/watchdog` 的改动后，在独立 Watchdog 的 `watchdog.json` 里加上 `dailyReport` 并重启该进程；如果计划任务仍运行旧的 `gate.mjs`，把它改为 `scripts/watchdog --gate`，让安静日报走已部署的版本。
+
+身份核验、备份、回滚准备与维护窗口仍由发布监督器负责；这些事实只缩短发现过程，不替代那些步骤。汇总的时间记录见[部署提速证据](../evidence/deployment-speed/)。
 
 独立任务用仓库外的 JSON 配置运行本仓库的 `scripts/deploy.ps1`。脚本读取并归档请求、运行 headless DSH agent，并在该 agent 退出后带存活窗口运行 `verify`；它把 agent 退出码和存活结果写入结果文件，从不启动 observer，也不盲目重试。`-Validate` 只打印解析后的路径，不执行任何操作。部署相关路径、提示词和模型补丁留在仓库外：
 

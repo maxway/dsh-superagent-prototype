@@ -41,6 +41,8 @@ async function fakeService(answer: () => unknown) {
       response.writeHead(200, { 'content-type': 'application/json' })
       if (request.url?.startsWith('/orchestrator/api/watchdog/runs')) {
         response.end(JSON.stringify({ id: 'watchdog-run-1', text: '**Watchdog 观察汇总**' }))
+      } else if (request.url?.startsWith('/orchestrator/api/watchdog/wait')) {
+        response.end(JSON.stringify({ at: '2026-11-09T00:00:00.000Z', version: 'version-2', changed: true, reason: 'change' }))
       } else if (request.url === '/orchestrator/api/watchdog/report') {
         response.end(JSON.stringify({ sent: true, chatId: 'oc_test', text: '**Watchdog 观察汇总**' }))
       } else {
@@ -73,6 +75,10 @@ it('validates configuration, finds mechanical problems and keeps finding identit
     collectFindings: (snapshot: unknown) => Record<string, unknown>[]
     gateFindings: (snapshot: unknown) => Record<string, unknown>[]
     fingerprint: (findings: Record<string, unknown>[]) => string
+    localClock: (timeZone: string, now: Date) => { date: string, hour: number }
+    dailyReportDue: (config: Record<string, unknown>, state: Record<string, unknown>, now?: Date) => boolean
+    waitForChange: (config: Record<string, unknown>, since: string | undefined, timeoutSeconds: number, signal?: AbortSignal) =>
+      Promise<{ version: string, changed: boolean, reason: string }>
   }
   directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-watchdog-config-'))
   const path = join(directory, 'watchdog.json')
@@ -84,8 +90,26 @@ it('validates configuration, finds mechanical problems and keeps finding identit
   expect(() => module.loadConfig(path)).toThrow(/Unknown watchdog configuration field/)
   writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', intervalSeconds: 5 }))
   expect(() => module.loadConfig(path)).toThrow(/intervalSeconds/)
+  // A daily report is only meaningful with Feishu reporting on, and its schedule must be a valid local hour and zone.
+  writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', stateDir: 'state', dailyReport: { hour: 9 } }))
+  expect(() => module.loadConfig(path)).toThrow(/dailyReport requires report true/)
+  writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', report: true, chatId: 'oc_test', stateDir: 'state',
+    dailyReport: { hour: 24 } }))
+  expect(() => module.loadConfig(path)).toThrow(/dailyReport.hour/)
+  writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', report: true, chatId: 'oc_test', stateDir: 'state',
+    dailyReport: { hour: 9, timezone: 'Mars/Olympus' } }))
+  expect(() => module.loadConfig(path)).toThrow(/IANA time zone/)
+  writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', report: true, chatId: 'oc_test', stateDir: 'state',
+    dailyReport: { hour: 9, timezone: 'Asia/Shanghai' } }))
+  expect(module.loadConfig(path)).toMatchObject({ dailyReport: { hour: 9, timezone: 'Asia/Shanghai' } })
   const config = module.loadConfig((writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9/', stateDir: 'state' })), path))
   expect(config).toMatchObject({ url: 'http://127.0.0.1:9', intervalSeconds: 900, staleMinutes: 30, report: false })
+  const morning = new Date('2026-11-09T01:30:00.000Z')
+  expect(module.localClock('Asia/Shanghai', morning)).toEqual({ date: '2026-11-09', hour: 9 })
+  expect(module.dailyReportDue({ report: true, dailyReport: { hour: 9, timezone: 'Asia/Shanghai' } }, {}, morning)).toBe(true)
+  expect(module.dailyReportDue({ report: true, dailyReport: { hour: 10, timezone: 'Asia/Shanghai' } }, {}, morning)).toBe(false)
+  expect(module.dailyReportDue({ report: true, dailyReport: { hour: 9, timezone: 'Asia/Shanghai' } },
+    { quietReportDate: '2026-11-09' }, morning)).toBe(false)
 
   const findings = module.collectFindings(snapshot({ tickets: [
     { id: 't1', title: 'Stuck', signals: ['no-progress'] },
@@ -113,10 +137,31 @@ it('validates configuration, finds mechanical problems and keeps finding identit
   expect(module.gateFindings(snapshot({ tickets: [{ id: 'r1', title: 'Review', stage: 'ready', silentMinutes: 2000, signals: [] }],
     state: { paused: false, load: { running: 0, maxWorkers: 3 }, health: { runtime: { state: 'ready' } }, setup: { problem: null } } })))
     .toEqual([{ kind: 'ticket', id: 'r1', title: 'Review', signals: ['ready-unreviewed'] }])
+  // A real snapshot represents a ready result as the person/review stage, not as a `ready` stage.
+  expect(module.gateFindings(snapshot({ tickets: [{ id: 'r2', title: 'Review', stage: 'person', action: 'review', silentMinutes: 2000, signals: [] }],
+    state: { paused: false, load: { running: 0, maxWorkers: 3 }, health: { runtime: { state: 'ready' } }, setup: { problem: null } } })))
+    .toEqual([{ kind: 'ticket', id: 'r2', title: 'Review', signals: ['ready-unreviewed'] }])
   expect(module.gateFindings(snapshot({ tickets: [{ id: 'f1', title: 'Flaky', stage: 'working', silentMinutes: 5, signals: [],
     attempts: ['failed', 'failed', 'running'] }],
     state: { paused: false, load: { running: 0, maxWorkers: 3 }, health: { runtime: { state: 'ready' } }, setup: { problem: null } } })))
     .toEqual([{ kind: 'ticket', id: 'f1', title: 'Flaky', signals: ['repeated-failures'] }])
+})
+
+it('waits on one versioned request and returns the version to resume from', async () => {
+  const service = await fakeService(() => snapshot())
+  const config = configure(service.url)
+  const module = await import(pathToFileURL(script).href) as {
+    loadConfig: (path: string) => Record<string, unknown>
+    waitForChange: (config: Record<string, unknown>, since: string | undefined, timeoutSeconds: number) =>
+      Promise<{ version: string, changed: boolean, reason: string }>
+  }
+  const loaded = module.loadConfig(config)
+  const initial = await module.waitForChange(loaded, undefined, 1)
+  expect(initial).toMatchObject({ version: 'version-2' })
+  expect(service.calls.at(-1)?.url).toBe('/orchestrator/api/watchdog/wait?timeout=1&stale_minutes=30')
+  const changed = await module.waitForChange(loaded, 'version-1', 1)
+  expect(changed).toMatchObject({ version: 'version-2', changed: true, reason: 'change' })
+  expect(service.calls.at(-1)?.url).toBe('/orchestrator/api/watchdog/wait?timeout=1&stale_minutes=30&since=version-1')
 })
 
 it('records every observation and reports a finding only when it changes', async () => {
@@ -151,6 +196,34 @@ it('records every observation and reports a finding only when it changes', async
   const status = await run(['--config', config, '--status'])
   expect(status.code).toBe(0)
   expect(JSON.parse(status.stdout)).toMatchObject({ reachable: true, reportedFingerprint: expect.any(String), current: ['t1 waiting-person'] })
+})
+
+it('sends a quiet daily report once per local day and not again on later quiet cycles', async () => {
+  const { calls, url } = await fakeService(() => snapshot())
+  const config = configure(url, { dailyReport: { hour: 0, timezone: 'UTC' } })
+  expect((await run(['--config', config, '--once'])).code).toBe(0)
+  const reports = calls.filter(call => call.url === '/orchestrator/api/watchdog/report')
+  expect(reports).toHaveLength(1)
+  expect(JSON.parse(reports[0]!.body!)).toMatchObject({ chatId: 'oc_test' })
+  expect(JSON.parse(reports[0]!.body!).note).toContain('每日巡检')
+  expect(JSON.parse(readFileSync(join(directory!, 'state', 'state.json'), 'utf8')))
+    .toMatchObject({ reachable: true, quietReportDate: expect.any(String) })
+  // The same local date suppresses the heartbeat; a findings cycle does not replace it and still reports on change.
+  expect((await run(['--config', config, '--once'])).code).toBe(0)
+  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(1)
+})
+
+it('sends the quiet daily report from a quiet gate but never from a risk gate', async () => {
+  const answers: unknown[] = []
+  const { calls, url } = await fakeService(() => answers[0])
+  answers[0] = snapshot()
+  const config = configure(url, { dailyReport: { hour: 0, timezone: 'UTC' } })
+  expect((await run(['--config', config, '--gate'])).code).toBe(0)
+  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(1)
+  answers[0] = snapshot({ tickets: [{ id: 't1', title: 'Stuck', stage: 'working', silentMinutes: 90, signals: ['no-progress'],
+    attempts: ['running'] }] })
+  expect((await run(['--config', config, '--gate'])).code).toBe(2)
+  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(1)
 })
 
 it('reports a missing run route once, logs an unreachable service, and exits 1 without a state from status', async () => {

@@ -1,6 +1,7 @@
 /** Loopback-only management HTTP routes with same-origin enforcement for the web panel. */
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import { createHash } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { z } from 'zod'
 import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
@@ -30,7 +31,7 @@ import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 import { watchdogView, watchdogSummary } from './views/watchdog.ts'
-import { watchdogAction, watchdogRun, type WatchdogRequest } from './watchdog.ts'
+import { watchdogRun, WATCHDOG_STALE_MINUTES } from './watchdog.ts'
 
 export interface HttpHost {
   readonly store: Store
@@ -129,11 +130,81 @@ function watchdogPage(runtime: HttpHost, staleMinutes: number) {
   const at = new Date().toISOString()
   const last = runtime.store.watchdogRuns.last()
   return { ...watchdogView(views(runtime), at, staleMinutes), state: stateView(runtime),
-    watchdog: runtime.store.settings().watchdog, audit: runtime.store.watchdog.recent(20),
     lastRun: last ? { at: last.at, ageMinutes: Math.max(0, Math.floor((Date.parse(at) - Date.parse(last.at)) / 60_000)),
-      mode: last.mode, paused: last.paused, open: last.open, flagged: last.flagged, ...(last.note ? { note: last.note } : {}) } : null }
+      paused: last.paused, open: last.open, flagged: last.flagged, ...(last.note ? { note: last.note } : {}) } : null }
 }
 export type WatchdogPageView = ReturnType<typeof watchdogPage>
+/** A long-poll answer: the snapshot version that the Watchdog should pass back as `since`, and why the wait ended. */
+export interface WatchdogWaitView {
+  at: string
+  version: string
+  changed: boolean
+  reason: 'initial' | 'change' | 'threshold' | 'timeout'
+}
+/** The longest a management wait is held; Node's default request timeout and the Watchdog's own fallback bound it. */
+const WATCHDOG_WAIT_MAX_SECONDS = 240
+/** The in-process check interval while one Watchdog holds a wait request; no external polling happens meanwhile. */
+const WATCHDOG_WAIT_POLL_MS = 500
+/** A ready result that waits this long for a person is a Watchdog finding, so the wait should wake for it too. */
+const WATCHDOG_READY_REVIEW_MINUTES = 1_440
+/**
+ * A hash of the facts the read-only snapshot exposes, excluding `lastRun` so the Watchdog's own run record cannot wake it.
+ * The Watchdog passes the last value back as `since`; any ticket, health, pause or setup change produces a new one.
+ */
+function watchdogVersion(runtime: HttpHost): string {
+  const state = stateView(runtime)
+  const tickets = runtime.store.tickets.open().map(ticket => ({
+    id: ticket.id, updatedAt: ticket.updatedAt,
+    assignments: ticket.assignments.map(item => [item.id, item.state, item.createdAt, item.startedAt ?? '',
+      item.endedAt ?? '', item.deliveredAt ?? '', item.idleAt ?? '', item.report?.at ?? '', item.report?.state ?? '']),
+    inputs: ticket.inputs.map(input => [input.id, input.kind, input.at]),
+    undelivered: ticket.undelivered.length, attention: ticket.attention?.id ?? null,
+    delivery: ticket.delivery?.at ?? null, offPeak: ticket.offPeak === true,
+  }))
+  return createHash('sha1').update(JSON.stringify({ paused: state.paused, health: state.health,
+    setup: state.setup.problem?.code ?? null, feishu: state.setup.feishuProblem?.code ?? null, tickets })).digest('hex')
+}
+/** The next moment a silence/ready threshold may turn a quiet Ticket into a finding, or undefined if none is pending. */
+function watchdogNextWake(runtime: HttpHost, now: number, staleMinutes: number): number | undefined {
+  const view = watchdogView(views(runtime), new Date(now).toISOString(), staleMinutes)
+  let next: number | undefined
+  for (const ticket of view.tickets) {
+    if (ticket.signals.length || ticket.offPeak) continue
+    const activity = Date.parse(ticket.lastActivityAt)
+    if (!Number.isFinite(activity)) continue
+    const minutes = ticket.action === 'review' ? WATCHDOG_READY_REVIEW_MINUTES : staleMinutes
+    // The signal starts just after the threshold, so wake a second later to make the comparison strictly greater.
+    const deadline = activity + minutes * 60_000 + 1_000
+    if (deadline > now && (next === undefined || deadline < next)) next = deadline
+  }
+  return next
+}
+/**
+ * Hold a read-only wait until the snapshot version changes, the next silence/ready threshold arrives, or the timeout
+ * expires. The Watchdog keeps one request in flight instead of polling the full snapshot; a changed answer carries the
+ * new version so the next wait starts from the observed state.
+ */
+async function watchdogWait(runtime: HttpHost, since: string | undefined, timeoutSeconds: number, staleMinutes: number): Promise<WatchdogWaitView> {
+  const end = Date.now() + timeoutSeconds * 1000
+  let version = watchdogVersion(runtime)
+  const answer = (changed: boolean, reason: WatchdogWaitView['reason'], current = version): WatchdogWaitView =>
+    ({ at: new Date().toISOString(), version: current, changed, reason })
+  if (!since) return answer(false, 'initial')
+  if (since !== version) return answer(true, 'change')
+  let next = watchdogNextWake(runtime, Date.now(), staleMinutes)
+  for (;;) {
+    const now = Date.now()
+    if (now >= end) return answer(false, 'timeout')
+    if (next === undefined) next = watchdogNextWake(runtime, now, staleMinutes)
+    // Keep the deadline across the sleep: recomputing only a moment later would drop a deadline that just passed.
+    if (next !== undefined && now >= next) return answer(false, 'threshold')
+    const wake = next === undefined ? end : Math.min(end, next)
+    if (now >= wake) return answer(false, 'timeout')
+    await new Promise(resolve => setTimeout(resolve, Math.min(WATCHDOG_WAIT_POLL_MS, wake - now)))
+    version = watchdogVersion(runtime)
+    if (since !== version) return answer(true, 'change')
+  }
+}
 /** A delivered Watchdog report: the Feishu chat, the rendered observation and when the server sent it. */
 export interface WatchdogReportView { sent: true; at: string; chatId: string; text: string }
 /** Builds a ticket's detail view; `environment` is empty while waiting for setup because it requires the resolved deployment. */
@@ -163,11 +234,10 @@ const offset = z.coerce.number().int().nonnegative().catch(0)
 const limit = (fallback: number, max: number) => z.coerce.number().int().positive().catch(fallback).transform(value => Math.min(max, value))
 const TicketsQuery = z.object({ state: z.enum(TICKET_FILTERS).catch('open'), offset, limit: limit(20, 1000) })
 const WatchdogQuery = z.object({ stale_minutes: limit(30, 1440) })
-const WatchdogBody = z.object({
-  reason: z.string().trim().min(1).max(1000),
-  evidence: z.record(z.string(), z.unknown()).optional(),
-  snapshotAt: z.string().refine(value => Number.isFinite(Date.parse(value)), 'A parseable snapshot timestamp'),
-  idempotencyKey: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/, 'A stable idempotency key'),
+const WatchdogWaitQuery = z.object({
+  since: z.string().trim().max(128).optional(),
+  timeout: z.coerce.number().int().min(1).max(86_400).catch(30).transform(value => Math.min(value, WATCHDOG_WAIT_MAX_SECONDS)),
+  stale_minutes: limit(30, 1440),
 })
 const WatchdogReportBody = z.object({
   chatId: z.string().trim().regex(/^oc_[a-zA-Z0-9]+$/, 'A Feishu chat id (oc_...)'),
@@ -189,7 +259,7 @@ const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.litera
 const count = z.coerce.number().int().nonnegative()
 const PromptsQuery = z.object({ revision: count.optional(), offset: count.default(0) })
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*$/)])
-const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor', 'watchdog']), SourceBlock])
+const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
 const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
 const ActivateBody = z.object({ revision: z.number().int().nonnegative(), confirm: z.string().trim().min(1).optional() })
 
@@ -200,11 +270,9 @@ function routes(runtime: HttpHost): Routes {
   return {
     'GET state': () => stateView(runtime),
     'GET watchdog': ({ query }) => watchdogPage(runtime, WatchdogQuery.parse(query).stale_minutes),
-    'POST watchdog/tickets/:id/:action': async ({ params, body }) => {
-      const action = z.enum(['retry', 'stop']).parse(params.action)
-      const request: WatchdogRequest = { ...WatchdogBody.parse(await body()), ticketId: params.id, action }
-      return watchdogAction({ store: runtime.store, engine: runtime.engine, view: views(runtime), configured: () => runtime.configured(),
-        setupProblem: runtime.setupProblem }, request)
+    'GET watchdog/wait': ({ query }) => {
+      const wait = WatchdogWaitQuery.parse(query)
+      return watchdogWait(runtime, wait.since, wait.timeout, wait.stale_minutes)
     },
     'POST watchdog/report': async ({ body }) => {
       const request = WatchdogReportBody.parse(await body())
@@ -213,17 +281,17 @@ function routes(runtime: HttpHost): Routes {
       if (!source.enabled) throw new RouteError(400, 'The Feishu Source is off')
       if (runtime.feishuProblem) throw new RouteError(400, runtime.feishuProblem.detail)
       if (!runtime.configured()) throw new RouteError(400, 'dsh-superagent is waiting for setup')
-      const page = watchdogPage(runtime, runtime.store.settings().watchdog.staleMinutes)
+      const page = watchdogPage(runtime, WATCHDOG_STALE_MINUTES)
       const text = watchdogSummary({ view: page, paused: page.state.paused, load: page.state.load, health: page.state.health,
-        config: page.watchdog, audit: page.audit, ...request.note ? { note: request.note } : {} })
+        ...request.note ? { note: request.note } : {} })
       await runtime.sources.sendChat('feishu', request.chatId, text, request.idempotencyKey, runtime.commands)
       return { sent: true as const, at: new Date().toISOString(), chatId: request.chatId, text }
     },
     'POST watchdog/runs': async ({ body }) => {
       const request = WatchdogRunBody.parse(await body())
       const state = stateView(runtime)
-      return watchdogRun({ store, engine: runtime.engine, view: views(runtime), configured: () => runtime.configured(),
-        setupProblem: runtime.setupProblem }, { paused: state.paused, load: state.load, health: state.health }, request)
+      return watchdogRun({ store, view: views(runtime) },
+        { paused: state.paused, load: state.load, health: state.health }, request)
     },
     'GET watchdog/runs': ({ query }) => {
       const { limit, before } = WatchdogRunsQuery.parse(query)
