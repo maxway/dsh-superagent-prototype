@@ -261,6 +261,11 @@ it('exposes the platform-specific process, start and argument forms', async () =
     record: m.parseArgv(['watchdog', 'run', '--note', 'No signals']),
     runs: m.parseArgv(['watchdog', 'runs', '--limit', '5']),
     report: m.parseArgv(['watchdog', 'report', '--chat', 'oc_team', '--note', 'Stalled']),
+    verify: m.parseArgv(['verify', '--survival-seconds', '5', '--profile', 'one']),
+    quote: [m.quoteWindowsArg('a b'), m.quoteWindowsArg('a"b'), m.quoteWindowsArg('C:\\\\a b\\\\'), m.quoteWindowsArg('')],
+    outside: m.outsideJobStartCommand({ shell: 'C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe',
+      wrapper: 'C:\\\\a b\\\\scripts\\\\service-start.ps1', checkout: 'C:\\\\a b', environmentFile: 'C:\\\\c\\\\e.json',
+      profile: 'superagent', url: 'http://127.0.0.1:3083', timeout: 60, log: 'C:\\\\c\\\\l.log' }),
     serves: [
       m.serves(['node', '/x/scripts/dsh-superagent', '--profile', 'one', 'start'], 'one'),
       m.serves(['node', '/x/scripts/dsh-superagent', '--profile', 'one', 'restart'], 'one'),
@@ -271,7 +276,7 @@ it('exposes the platform-specific process, start and argument forms', async () =
   })))`
   const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
     (error, stdout) => error ? reject(error) : resolve(stdout)))
-  const value = JSON.parse(out) as { ps: unknown[]; windows: unknown[]; start: unknown; socket: string; command: string; argv: Record<string, unknown>; watchdog: Record<string, unknown>; record: Record<string, unknown>; runs: Record<string, unknown>; report: Record<string, unknown>; serves: boolean[] }
+  const value = JSON.parse(out) as { ps: unknown[]; windows: unknown[]; start: unknown; socket: string; command: string; argv: Record<string, unknown>; watchdog: Record<string, unknown>; record: Record<string, unknown>; runs: Record<string, unknown>; report: Record<string, unknown>; verify: Record<string, unknown>; quote: string[]; outside: string; serves: boolean[] }
   expect(value.ps).toEqual([{ pid: 123, name: 'node', args: ['node', '/opt/my', 'tools/dsh', '--profile', 'superagent', '--no-open'] }])
   expect(value.windows).toEqual([{ pid: 7, name: 'node', args: ['node', '/opt/dsh', '--profile', 'superagent', '--no-open'] },
     { pid: 9, name: 'deepseek harness', args: ['D:\\app\\DeepSeek', 'Harness.exe', '--expose-internals', 'D:\\app\\cli.js', '--profile', 'superagent', '--no-open'] }])
@@ -283,6 +288,12 @@ it('exposes the platform-specific process, start and argument forms', async () =
   expect(value.record).toMatchObject({ action: 'watchdog', watchdog_action: 'run', note: 'No signals' })
   expect(value.runs).toMatchObject({ action: 'watchdog', watchdog_action: 'runs', limit: 5 })
   expect(value.report).toMatchObject({ action: 'watchdog', watchdog_action: 'report', chat: 'oc_team', note: 'Stalled' })
+  expect(value.verify).toMatchObject({ action: 'verify', profile: 'one', survival_seconds: 5 })
+  expect(value.quote).toEqual(['"a b"', '"a\\"b"', '"C:\\a b\\\\"', '""'])
+  // Paths with spaces are quoted; the arguments are the wrapper's fixed set.
+  expect(value.outside).toBe('"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoLogo -NoProfile -NonInteractive -File '
+    + '"C:\\a b\\scripts\\service-start.ps1" -Checkout "C:\\a b" -EnvFile C:\\c\\e.json -Profile superagent '
+    + '-Url http://127.0.0.1:3083 -Timeout 60 -Log C:\\c\\l.log')
   // A control invocation of this script carries --profile too, but only the DSH launcher is the service.
   expect(value.serves).toEqual([false, false, false, true, false])
 })
@@ -333,6 +344,74 @@ it.skipIf(process.platform !== 'win32')('keeps a detached Node shim hidden and w
     await new Promise(resolve => child.once('exit', resolve))
   }
 }, 10_000)
+it.skipIf(process.platform !== 'win32')('proves a service created outside every Job survives and verify notices its loss', async () => {
+  const serviceDirectory = mkdtempSync(join(tmpdir(), 'verify service '))
+  const profile = `p1verify${process.pid}`
+  const portFile = join(serviceDirectory, 'port.txt')
+  const entry = join(serviceDirectory, 'entry.js')
+  writeFileSync(entry, `import { writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+const ready = { health: { runtime: { state: 'ready', detail: '' } }, setup: { problem: null, feishuProblem: null } }
+const server = createServer((request, response) => {
+  if (request.url?.startsWith('/orchestrator/api/state')) {
+    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(ready))
+    return
+  }
+  response.writeHead(404).end()
+})
+server.listen(0, '127.0.0.1', () => writeFileSync(${JSON.stringify(portFile)}, String(server.address().port)))
+setInterval(() => {}, 60_000)
+`)
+  const controlScript = join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')
+  const module = pathToFileURL(controlScript).href
+  const run = (args: string[]) => new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
+    execFile(process.execPath, args, { timeout: 60_000 }, (error, stdout, stderr) =>
+      resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr }))
+  })
+  let servicePid: number | undefined
+  try {
+    // Ask the WMI provider for the service process: a DSH tool command's Job must not own it.
+    const startScript = `import(${JSON.stringify(module)}).then(m => {
+      const commandLine = [process.execPath, ${JSON.stringify(entry)}, '--profile', ${JSON.stringify(profile)}, '--no-open']
+        .map(m.quoteWindowsArg).join(' ')
+      console.log(m.createOutsideJob(commandLine, ${JSON.stringify(serviceDirectory)}))
+    })`
+    try {
+      servicePid = Number((await new Promise<string>((resolve, reject) => {
+        execFile(process.execPath, ['--input-type=module', '-e', startScript], (error, stdout) => error ? reject(error) : resolve(stdout))
+      })).trim())
+    } catch (error) {
+      // A host that cannot create a process through WMI cannot deploy this way either; do not pretend to check it.
+      console.warn('WMI process creation is unavailable; the Job escape could not be checked', error)
+      return
+    }
+    expect(servicePid).toBeGreaterThan(0)
+    let port = 0
+    for (let attempt = 0; attempt < 100 && !port; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      try { port = Number(readFileSync(portFile, 'utf8')) } catch { /* The service has not listened yet. */ }
+    }
+    expect(port).toBeGreaterThan(0)
+    const url = `http://127.0.0.1:${port}`
+    const verified = await run([controlScript, 'verify', '--profile', profile, '--url', url, '--survival-seconds', '1'])
+    expect(verified).toMatchObject({ code: 0, stderr: '' })
+    expect(JSON.parse(verified.stdout)).toMatchObject({ ok: true, pid: servicePid, inJob: false, survivalSeconds: 1 })
+    process.kill(servicePid!)
+    const stopped = servicePid!
+    servicePid = undefined
+    for (let attempt = 0; attempt < 50; attempt++) {
+      try { process.kill(stopped, 0) } catch { break }
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    const lost = await run([controlScript, 'verify', '--profile', profile, '--url', url, '--survival-seconds', '0'])
+    expect(lost.code).toBe(1)
+    expect(lost.stderr).toContain('Expected exactly one running service')
+  } finally {
+    if (servicePid) { try { process.kill(servicePid) } catch { /* It already exited. */ } }
+    rmSync(serviceDirectory, { recursive: true, force: true })
+    rmSync(join(import.meta.dirname, '..', '.artifacts', 'control', 'profiles', profile), { recursive: true, force: true })
+  }
+}, 30_000)
 it('prints the Watchdog snapshot over GET and refuses an unreachable service', async () => {
   const requests: { method?: string; url?: string; header?: string }[] = []
   server = createServer((request, response) => {

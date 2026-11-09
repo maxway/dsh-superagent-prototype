@@ -282,13 +282,42 @@ Windows 上用 `node scripts\dsh-superagent ...`。`--stale-minutes` 只改变�
 
 要让模型成本只发生在真正需要的轮次，可以用 `--gate` 按同样的间隔把它当作门控运行。门控轮次读取快照、记录这次观测；没有风险就退出 0，有风险就退出 2：工单信号、部件报错、安装配置未完成、ready 结果等待超过一天，或连续两次失败尝试。只有退出 2 时才运行上一节的任务级巡检（完整 DSH agent）做详细判定，由 agent 自己记录观测并报告，因此 LLM 只在风险轮次产生费用。门控不发送飞书消息、不修改任何东西；`--status`、状态文件和日志会给出它的退出原因。主机检查项、有界恢复与部署监督（路线图工作流 K、L）后续也放进这个进程。
 
+### 在 Windows Job 之外启动服务
+
+DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Windows Job；从其中启动的服务会在命令结束时被终止，而命令内部此前的健康检查可能已经通过。`scripts/dsh-superagent start` 会检测这一状态，让 WMI 提供程序在 Job 之外创建 `scripts/service-start.ps1`，并等待健康检查。该包装脚本从受限文件中恢复服务环境、启动分离的服务后退出；它从不启动 observer。从普通终端或独立任务启动仍走原路径，`status` 会报告实时的 `inJob` 值以及 `start` 中最近一次启动的方式。无法证明服务位于所有 Windows Job 之外的启动会失败，而不是留下一个可能被关闭命令杀死的服务。
+
+操作员的 `service.ps1` 仍是服务入口：它设置生产 home 并调用控制脚本，因此服务在进程位于 Job 之外时仍使用自己的 profile home 和凭据。`scripts/service-start.ps1` 也可以由独立计划任务直接运行。
+
+`node scripts/dsh-superagent verify --profile superagent --url <url> --survival-seconds 30` 在执行器退出后证明发布有效：恰好一个进程服务该 profile，管理 API 返回 ready（或 paused），进程位于所有 Windows Job 之外，且在存活窗口之后仍是同一进程。退出码 1 会指出未通过的条件。
+
 ### 部署最新 superagent
 
 主会话可以把操作者明确的部署请求发给独立 Watchdog，而不是自己发布任何东西。`orchestrator_deploy` 工具把请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST` 指定的文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` 中的命令（例如 `schtasks /run /tn dsh-superagent-deploy`）；两个值未设置时工具关闭。独立的部署任务读取请求、核验操作者的原话，并在自己的进程里发布最新提交，主实例只负责重启。只有操作者明确要求部署 superagent（“部署superagent”）时才使用该工具；普通请求不会触发部署，主会话也从不自己备份、发布或重启。
 
 部署尽量只做最必要的内容。还没有预构建候选的首次部署走完整受控发布（候选构建与验证、一致性备份、启动检查与回滚路径），会更慢。稳定期由 Watchdog 预构建并预验证最新提交，部署只做停机、切换构建好的 `lib` 与 `prompts`、启动和基础健康检查，保留上一版用于回滚，目标控制在一分钟内；代码质量由仓库检查和外部维护通道保证，因此跳过重复的全量测试与大范围检查。结果由 Watchdog 报告。首次部署（也就是安装这个命令本身）由操作员或 Watchdog 直接带上确认发起；运行中的 superagent 具备该工具和两个环境变量后，后续请求由主会话发送。
 
-**已知限制（2026-11-09）。** 当前独立部署任务运行一个 headless DSH agent，并从它的工具子进程启动服务。服务因此继承该 agent 的 Windows Job；agent 退出时 Job 关闭，服务被连带终止，而 agent 此时已经报告成功。在把服务启动移到部署 agent 之外（例如独立计划任务，或由外层任务在 agent 退出后启动）并增加退出后存活检查之前，这条路径不能作为可靠的生产发布。目标关系与分阶段方案见 `docs/zh/references/watchdog-superagent-mutual-assist.md`。
+独立任务用仓库外的 JSON 配置运行本仓库的 `scripts/deploy.ps1`。脚本读取并归档请求、运行 headless DSH agent，并在该 agent 退出后带存活窗口运行 `verify`；它把 agent 退出码和存活结果写入结果文件，从不启动 observer，也不盲目重试。`-Validate` 只打印解析后的路径，不执行任何操作。部署相关路径、提示词和模型补丁留在仓库外：
+
+```json
+{
+  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-request.json",
+  "promptPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-prompt.md",
+  "modelPatch": "C:\\Users\\dd\\.dsh\\watchdog\\model.patch.yml",
+  "workdir": "F:\\code\\superagent-ops",
+  "node": "D:\\Program Files\\nodejs\\node.exe",
+  "dsh": "C:\\Users\\dd\\.local\\opt\\dsh-0.2.2-rc.1\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
+  "home": "C:\\Users\\dd\\.dsh",
+  "agentsHome": "C:\\Users\\dd\\.dsh-superagent\\agents",
+  "agentProfile": "headless",
+  "serviceProfile": "superagent",
+  "url": "http://127.0.0.1:3083",
+  "logFile": "C:\\Users\\dd\\.dsh\\watchdog\\watchdog-deploy.log",
+  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-result.json",
+  "survivalSeconds": 30
+}
+```
+
+`dsh-superagent-deploy` 任务随后运行 `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`。**上线说明（2026-11-09）。** 把生产服务从 Desktop DSH Job 迁移到这条路径需要操作员维护窗口：拉取已合并提交、把任务指向带版本的脚本，并在 DSH 之外重启一次当前生产实例，使它的进程不再位于该 Job 中。目标关系与剩余阶段见 `docs/zh/references/watchdog-superagent-mutual-assist.md`。
 
 ## 设置
 
