@@ -448,7 +448,10 @@ const server = createServer((request, response) => {
 })
 server.listen(0, '127.0.0.1', () => writeFileSync(${JSON.stringify(portFile)}, String(server.address().port)))
 // A long-running service spawns children (the Feishu event consumer is one) and joins the Job Node creates for them.
-spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000)'], { stdio: 'ignore' })
+// The child ends when this process's standard input closes, so killing the service does not leave a process holding
+// the temporary directory on Windows.
+spawn(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(0))'],
+  { stdio: ['pipe', 'ignore', 'ignore'] })
 setInterval(() => {}, 60_000)
 `)
   const controlScript = join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')
@@ -498,8 +501,13 @@ setInterval(() => {}, 60_000)
     expect(lost.stderr).toContain('Expected exactly one running service')
   } finally {
     if (servicePid) { try { process.kill(servicePid) } catch { /* It already exited. */ } }
-    rmSync(serviceDirectory, { recursive: true, force: true })
-    rmSync(join(home, 'service', 'control', 'profiles', profile), { recursive: true, force: true })
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if (!servicePid) break
+      try { process.kill(servicePid, 0) } catch { break }
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    rmSync(serviceDirectory, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
+    rmSync(join(home, 'service', 'control', 'profiles', profile), { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
   }
 }, 45_000)
 it.skipIf(process.platform !== 'win32')('stops the process that owns the management URL, not another process with the same profile', async () => {
