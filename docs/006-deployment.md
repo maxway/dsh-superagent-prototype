@@ -332,7 +332,7 @@ The independent `dsh-superagent-watchdog-update` task runs `node scripts/watchdo
 }
 ```
 
-The first installation is an operator step: build or copy the artifact into the staging root, install the stable launcher and agent configuration, point the scheduled task at `launch-agent.ps1`, and write `current.txt`. Updating the panel to show both versions and heartbeats is the next P2 increment.
+The first installation is an operator step: build or copy the artifact into the staging root, install the stable launcher and agent configuration, point the scheduled task at `launch-agent.ps1`, and write `current.txt`. The Execution page now shows the Superagent version, the Watchdog artifact version from its latest recorded run, and that run's heartbeat; a missing or stale heartbeat is shown as a warning. The deployment can name the running build with DSH_SUPERAGENT_VERSION; the package version is the fallback.
 
 ## Settings
 

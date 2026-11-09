@@ -148,7 +148,7 @@ Windows Task Scheduler / systemd
 
 **P1 状态（2026-11-09）。** `scripts/dsh-superagent start` 已改为在调用方位于 Windows Job 中时，通过 WMI 让 `scripts/service-start.ps1` 在 Job 之外启动服务，并在启动后验证 `IsProcessInJob=false`；`status` 报告实时归属与最近启动方式。`scripts/deploy.ps1` 在部署 agent 退出后用 `verify` 做存活检查并记录结果。隔离环境中的 Job 关闭复现证明旧路径会杀死服务、新路径不会。剩余操作：生产实例仍需在维护窗口中由独立终端或任务重启一次，部署任务需改指向仓库内的 `deploy.ps1` 与仓库外配置；实际生产部署尚未执行。
 
-**P2 状态（2026-11-09）。** Watchdog agent 脚本已入仓并模板化；`scripts/watchdog-artifact.mjs` 构建带 manifest/摘要的不可变制品，`watchdog-smoke.mjs` 用本地 mock 验证自包含性；`watchdog-launch.ps1` 作为稳定启动器读取 `current.txt`；`watchdog-update.mjs` 实现请求校验、staging 根校验、smoke、安装、指针切换、锁、幂等、心跳和回滚，更新运行记录携带 `version`/`commit`。面板显示双方版本/心跳仍是 P2 的剩余增量；生产安装与更新任务尚未执行。P3–P4 保持方案状态，其待决策项见下一节。
+**P2 状态（2026-11-09）。** Watchdog agent 脚本已入仓并模板化；`scripts/watchdog-artifact.mjs` 构建带 manifest/摘要的不可变制品，`watchdog-smoke.mjs` 用本地 mock 验证自包含性；`watchdog-launch.ps1` 作为稳定启动器读取 `current.txt`；`watchdog-update.mjs` 实现请求校验、staging 根校验、smoke、安装、指针切换、锁、幂等、心跳和回滚，更新运行记录携带 `version`/`commit`。面板已在执行页显示双方版本与最近心跳（缺失或过期显示警告）；current/候选/上一版与最近更新的展示仍未实现；生产安装与更新任务尚未执行。P3–P4 保持方案状态，其待决策项见下一节。
 
 ## 8. 待决策与风险
 

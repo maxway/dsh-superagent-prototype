@@ -334,7 +334,7 @@ Watchdog 不再通过拉取 superagent 检出更新：仓库构建不可变制�
 }
 ```
 
-首次安装是操作员步骤：构建或复制制品到 staging 根目录，安装稳定启动器与 agent 配置，把计划任务指向 `launch-agent.ps1`，并写入 `current.txt`。面板显示双方版本与心跳是 P2 的下一个增量。
+首次安装是操作员步骤：构建或复制制品到 staging 根目录，安装稳定启动器与 agent 配置，把计划任务指向 `launch-agent.ps1`，并写入 `current.txt`。执行页现在显示 Superagent 版本、最近一次 Watchdog 记录中的制品版本和该次心跳；没有心跳或心跳过期会显示为警告。部署可用 DSH_SUPERAGENT_VERSION 命名运行版本，未设置时回退到包版本。
 
 ## 设置
 

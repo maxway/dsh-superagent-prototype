@@ -117,8 +117,9 @@ function setupView(runtime: HttpHost) {
 /** Build the `/orchestrator/api/state` response consumed by the management panel and `scripts/dsh-superagent status` (`docs/006-deployment.md`). */
 export function stateView(runtime: HttpHost) {
   const settings = runtime.store.settings()
-  return { setup: setupView(runtime), load: { ...executorLoad(runtime.store, runtime.executor.activeCount()),
-    maxWorkers: settings.executor.maxWorkers },
+  // The deployment may name the running build; the package version is the conservative fallback for a local run.
+  return { version: process.env.DSH_SUPERAGENT_VERSION || '0.1.0', setup: setupView(runtime),
+    load: { ...executorLoad(runtime.store, runtime.executor.activeCount()), maxWorkers: settings.executor.maxWorkers },
     masterId: runtime.masterId, paused: settings.paused, health: runtime.health }
 }
 const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
