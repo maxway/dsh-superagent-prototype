@@ -265,7 +265,9 @@ Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --
 
 DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Windows Job；从其中启动的服务会在命令结束时被终止，而命令内部此前的健康检查可能已经通过。`scripts/dsh-superagent start` 会检测这一状态，让 WMI 提供程序在 Job 之外创建 `scripts/service-start.ps1`，并等待健康检查。该包装脚本从受限文件中恢复服务环境、启动分离的服务后退出；它从不启动 observer。不在 Job 中的普通终端启动仍走原路径；计划任务所在的 Job 也按同样方式离开，`status` 会报告实时的 `inJob` 值以及 `start` 中最近一次启动的方式。无法证明服务位于所有 Windows Job 之外的启动会失败，而不是留下一个可能被关闭命令杀死的服务。
 
-操作员的 `service.ps1` 仍是服务入口：它设置生产 home 并调用控制脚本，因此服务在进程位于 Job 之外时仍使用自己的 profile home 和凭据。`scripts/service-start.ps1` 也可以由独立计划任务直接运行。
+操作员的 `service.ps1` 仍是服务入口：它设置生产 home 并调用控制脚本，因此服务在进程位于 Job 之外时仍使用自己的 profile home 和凭据。`scripts/service-start.ps1` 也可以由独立计划任务直接运行；该任务应通过 `wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\service-start.ps1 ...` 启动，使包装脚本和它运行的 node 控制脚本都没有窗口。
+
+计划任务没有可继承的控制台，Windows 会给它启动的第一个控制台程序（`node` 或 `pwsh`）一个可见窗口。因此所有非交互入口都经过 `scripts/launch-hidden.vbs`：`wscript.exe` 自身没有控制台，启动器以隐藏窗口运行命令、等待并返回它的退出码，该命令的所有控制台子进程共享这个隐藏控制台。这适用于部署、Watchdog 更新和服务启动任务；Watchdog agent 的启动器（`launch-agent.vbs`、`launch-observer.vbs`）遵循同样的模式。只有人在交互查看时才直接运行命令。控制脚本也会隐藏它自己的 PowerShell、`git` 和 Windows ACL 辅助进程，因此后台的 `status`、`start` 或 `stop` 也不会闪出它们。
 
 `node scripts/dsh-superagent verify --profile superagent --url <url> --survival-seconds 30` 在执行器退出后证明发布有效：恰好一个进程服务该 profile，管理 API 返回 ready（或 paused），进程位于所有 Windows Job 之外，且在存活窗口之后仍是同一进程。退出码 1 会指出未通过的条件。
 
@@ -310,7 +312,7 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 }
 ```
 
-`dsh-superagent-deploy` 任务随后运行 `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`。**上线说明（2026-11-09）。** 把生产服务从 Desktop DSH Job 迁移到这条路径需要操作员维护窗口：拉取已合并提交、把任务指向带版本的脚本，并在 DSH 之外重启一次当前生产实例，使它的进程不再位于该 Job 中。目标关系与剩余阶段见 `docs/zh/references/watchdog-superagent-mutual-assist.md`。
+`dsh-superagent-deploy` 任务随后在后台运行它：`wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`。启动器等待部署结束并返回它的退出码，任务和它启动的 node 进程都没有可见窗口。**上线说明（2026-11-09）。** 把生产服务从 Desktop DSH Job 迁移到这条路径需要操作员维护窗口：拉取已合并提交、把任务指向带版本的脚本，并在 DSH 之外重启一次当前生产实例，使它的进程不再位于该 Job 中。目标关系与剩余阶段见 `docs/zh/references/watchdog-superagent-mutual-assist.md`。
 
 ### 版本化 Watchdog 制品与更新任务
 
@@ -320,7 +322,7 @@ Watchdog 不再通过拉取 superagent 检出更新：仓库构建不可变制�
 
 agent 必须运行在自己的工作区，而不是 checkout。不需要人工填写路径：未设置 `workspace` 时，包装脚本使用 `<配置目录>\workspaces\watchdog_<service profile>` —— 本部署是 `watchdog_superagent`，service profile 为 `sheepdoku` 时是 `watchdog_sheepdoku` —— 因此同一主机上的多个 Watchdog 不会共用工作区。只有想换名字或位置时才需要设置 `workspace`。`run.ps1` 在目录缺失时创建它，拒绝等于 checkout 或位于 checkout 内的路径，并在运行 gate 和完整 agent 前切换进去。提示词用绝对路径引用 checkout，因此 agent 仍能读取部署文档并运行 `node <checkout>\scripts\dsh-superagent ...`。DSH 按工作目录把 Session 归入工作区，因此 Watchdog 的 Session 不再进入 checkout 的 Desktop DSH 工作区；把该工作区目录添加为 DSH 项目即可在自己的工作区下查看，否则它们保持未分组。已有安装必须使用重新构建的制品；superagent 发布不会更新当前本机部署的旧包装脚本。这只隔离工作区，不是安全边界：agent 仍可完全访问 checkout，共享 DSH home 时仍共享其 Session 与工作区存储。
 
-独立的 `dsh-superagent-watchdog-update` 任务运行 `node scripts/watchdog-update.mjs --config <update.json>`。主会话或操作员写入 `watchdog-update-request.json`，包含操作者确认、目标版本、制品路径、可选摘要和幂等键。任务校验制品位于 staging 根目录内且与 manifest 一致，做 smoke、安装、切换 `current.txt`、触发计划任务，并等待带新版本的已记录运行。smoke、触发或心跳失败时恢复上一个指针；锁让并发更新被拒绝，重复幂等键返回已记录结果。更新任务不自行启动观察器，也从不备份、重启或替换 superagent。快照的 `lastRun` 与已记录运行携带 Watchdog 的 `version` 和 `commit`，供面板与审计使用。
+独立的 `dsh-superagent-watchdog-update` 任务通过同一个隐藏启动器运行 `node scripts/watchdog-update.mjs --config <update.json>`：`wscript.exe <checkout>\scripts\launch-hidden.vbs <node> <checkout>\scripts\watchdog-update.mjs --config <update.json>`。主会话或操作员写入 `watchdog-update-request.json`，包含操作者确认、目标版本、制品路径、可选摘要和幂等键。任务校验制品位于 staging 根目录内且与 manifest 一致，做 smoke、安装、切换 `current.txt`、触发计划任务，并等待带新版本的已记录运行。smoke、触发或心跳失败时恢复上一个指针；锁让并发更新被拒绝，重复幂等键返回已记录结果。更新任务不自行启动观察器，也从不备份、重启或替换 superagent。快照的 `lastRun` 与已记录运行携带 Watchdog 的 `version` 和 `commit`，供面板与审计使用。
 
 ```json
 {

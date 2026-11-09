@@ -99,7 +99,7 @@ export function buildArtifact(root, out, options = {}) {
 
 function gitCommit(root) {
   try {
-    return execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() || undefined
+    return execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true }).trim() || undefined
   } catch { return undefined }
 }
 

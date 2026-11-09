@@ -367,6 +367,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `scripts/watchdog-smoke.mjs` | 用本地 mock 管理 API 验证未安装的制品：观察器与 agent gate 必须记录带 manifest 版本的运行，不接触生产服务或飞书 |
 | `scripts/watchdog-launch.ps1` | 计划任务运行的稳定启动器：读取 `current.txt` 并启动该版本的 agent 包装，因此切换版本不需要改写任务动作 |
 | `scripts/watchdog-launch.vbs` | 该计划任务的无窗口入口：`wscript.exe` 没有控制台，VBS 以隐藏窗口运行 `launch-agent.ps1` 并等待其退出码，因此定时检查不会闪出 PowerShell 窗口 |
+| `scripts/launch-hidden.vbs` | 其他非交互 Windows 任务（部署、Watchdog 更新、服务启动）的无窗口入口：以隐藏窗口运行给定命令、等待并返回其退出码，因此计划任务里的 `node` 或 `pwsh` 及其控制台子进程不会出现在桌面上 |
 | `scripts/watchdog-update.mjs` | 独立 Watchdog 更新：请求与 staging 根校验、锁、smoke、安装、原子指针切换、agent 心跳、幂等与回滚；从不重启 superagent |
 | `src/app/views/threads.ts` | 线程列表、线程时间线、搜索和决定列表 |
 | `src/app/views/sources.ts` | 来源状态：每个来源实例的状态、它最后一天的计数，以及它在那一天过滤和丢弃的内容 |

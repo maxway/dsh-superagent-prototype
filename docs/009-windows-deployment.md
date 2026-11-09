@@ -78,6 +78,8 @@ Two Windows starts through the service script produced empty log files even thou
 
 The operator then reported another Node window. Its PID was the Feishu event consumer, a child of the otherwise hidden service; the consumer launch did not set `windowsHide`. The fix adds that setting to the consumer and its Windows termination helper. An isolated fake-consumer test passed; after deployment the production Source was configured with the native `lark-cli.exe`, and both the service and consumer had no visible window while GitLab and Feishu reported ready. The final token URL authenticated the browser root with HTTP 200 and the startup log had a protected ACL. The Executor remained paused throughout these observations; this does not verify actual Ticket execution.
 
+The remaining non-interactive entry points had the same class of gap. A scheduled task that starts `node` or `pwsh` directly has no console to inherit, so Windows creates a visible console for it and every console child that shares it. On 2026-11-10 the deployment, Watchdog update and service-start tasks moved to `scripts/launch-hidden.vbs`: `wscript.exe` has no console, the launcher starts the command hidden, waits for it and returns its exit code. The control script also hides its own PowerShell, `git` and Windows ACL helper processes, and its release preflight now reads revision, branch and dirtiness from one `git status --porcelain=v2 --branch` process instead of three Git starts. The hidden-launcher test checks both the exit code and that the started Node process has no main window.
+
 ## Is it necessary?
 
 ### Scenarios
