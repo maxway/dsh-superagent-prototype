@@ -42,3 +42,31 @@ the service after the DSH child has exited and then perform the health check.
   let the outer task start and verify the service, avoiding the Job-object
   failure.
 - No production deployment was performed by this change.
+
+## Mechanical executor, 2026-11-10
+
+The routine deployment no longer starts a DSH agent. `scripts/deploy.mjs` (run
+through `scripts/deploy.ps1`) performs a read-only preflight, stops the service,
+copies the stopped SQLite state, switches an explicit runtime manifest, starts
+the service outside every foreign Windows Job, verifies one process and API
+readiness after a 3-second survival window, and rolls the runtime files back and
+restarts the previous build when verification fails. The pre-built candidate is
+produced before the maintenance window. A `mechanical` deployment configuration
+selects this path; without it, `deploy.ps1` keeps the headless-agent fallback.
+
+The preflight keeps only what a switch needs: one process, a ready runtime, no
+setup problem, an unstopped and idle service, a resolved bundle inside the
+runtime root, a clean candidate at the requested revision, an explicit manifest
+including `lib`, a SQLite database to back up, and a post-start survival check.
+It deliberately drops the agent's discovery and judgement, unrelated health
+parts such as `evals`, repeated repository tests and builds, whole-checkout
+hashing and ACL/hardlink/index audits. Those checks did not make the switch
+safer within the window; the first eight minutes of the measured runs above
+were discovery, not release work.
+
+The executor is covered by `tests/deploy-executor.spec.ts` against a fake
+control script and a local state API: plan without changes, stopped-state
+backup, manifest switch, start and verify, rollback on failed verification, and
+refusals for a busy service, an escaping manifest and a wrong candidate
+revision. Production has not yet run a mechanical release, so the
+under-one-minute target remains a design target rather than a measurement.

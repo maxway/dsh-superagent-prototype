@@ -442,6 +442,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/gitlab-webhook.spec.ts` | GitLab webhook：监听器校验、唤醒合并和项目 hook 的创建、更新与删除 |
 | `tests/commands.spec.ts` | 以部署账号执行的 CLI 调用、渠道的回答，以及限定在仓库范围内的 GitHub 调用 |
 | `tests/deploy-command.spec.ts` | 主 Session 的部署请求：从环境读取配置、原子写请求文件、启动独立任务，以及命令失败 |
+| `tests/deploy-executor.spec.ts` | 机械部署执行器：只读计划、停机状态备份、按清单切换、启动与存活检查、校验失败时回滚，headless agent 回退与操作员服务包装脚本，以及服务繁忙、清单越界、候选 revision 不符和 lockfile 变化时拒绝 |
 | `tests/commands-window.spec.ts` | 后台 CLI 命令运行时隐藏窗口 |
 | `tests/github-read.spec.ts` | GitHub 读取 |
 | `tests/admission-context.spec.ts` | 研判的线程窗口 |

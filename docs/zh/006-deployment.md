@@ -293,26 +293,36 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 ### 部署最新 superagent
 
-主会话可以把操作者明确的部署请求发给独立 Watchdog，而不是自己发布任何东西。`orchestrator_deploy` 工具把请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST` 指定的文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` 中的命令（例如 `schtasks /run /tn dsh-superagent-deploy`）；两个值未设置时工具关闭。独立的部署任务读取请求、核验操作者的原话，并在自己的进程里发布最新提交，主实例只负责停机；外层任务在 agent 退出后启动并核验它。请求文件路径必须与部署任务配置里的 `requestPath` 一致，否则任务会以 `no deploy request` 正常退出而不会发布；本部署使用 `C:\Users\dd\.dsh\watchdog-deploy\deploy-request.json`。只有操作者明确要求部署 superagent（“部署superagent”）时才使用该工具；普通请求不会触发部署，主会话也从不自己备份、发布或重启。
+主会话可以把操作者明确的部署请求发给独立 Watchdog，而不是自己发布任何东西。`orchestrator_deploy` 工具把请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST` 指定的文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` 中的命令（例如 `schtasks /run /tn dsh-superagent-deploy`）；两个值未设置时工具关闭。独立的部署任务读取请求、核验操作者的原话，并在自己的进程里发布最新提交，主实例只负责停机；外层任务在执行器退出后启动并核验它。请求文件路径必须与部署任务配置里的 `requestPath` 一致，否则任务会以 `no deploy request` 正常退出而不会发布；本部署使用 `C:\Users\dd\.dsh\watchdog-deploy\deploy-request.json`。只有操作者明确要求部署 superagent（“部署superagent”）时才使用该工具；普通请求不会触发部署，主会话也从不自己备份、发布或重启。
 
-部署尽量只做最必要的内容。还没有预构建候选的首次部署走完整受控发布（候选构建与验证、一致性备份、启动检查与回滚路径），会更慢。稳定期由 Watchdog 预构建并预验证最新提交，部署只做停机、切换构建好的 `lib` 与 `prompts`（以及 `scripts/watchdog`、`locale/` 等实际运行的变更文件）、启动和基础健康检查，保留上一版用于回滚，目标控制在一分钟内。代码质量由仓库检查和外部维护通道保证，因此跳过重复的全量测试与大范围检查。结果由 Watchdog 报告。首次部署（也就是安装这个命令本身）由操作员或 Watchdog 直接带上确认发起；运行中的 superagent 具备该工具和两个环境变量后，后续请求由主会话发送。
+`scripts/deploy.ps1` 是计划任务的入口，只是 `scripts/deploy.mjs` 的 Windows 薄封装；两条部署路径都在后者里。它读取并归档请求，只在配置了相应命令时暂停并重新启动独立 observer，且从不盲目重试。
 
-#### 部署复盘与提速
+- **例行机械发布（不调用模型）。** 配置里有 `mechanical` 段时，`deploy.mjs` 做只读预检、停服、备份停机状态的 SQLite、按显式清单切换运行文件、在外部 Windows Job 之外启动并做存活校验；任一环节失败就恢复运行文件并启动上一版。候选在维护窗口之前构建并检查。这是稳定期的常规路径：不启动 DSH Session，也不调用模型。
+- **Agent 回退。** 没有 `mechanical`，或显式 `-Agent` 时，`deploy.ps1` 用原来的 headless DSH agent 按操作者提示词部署，然后做同样的存活检查。它保留首次部署（安装本命令本身）和需要判断的请求，但不是常规路径。
 
-2026-11-09 的部署历史在 `C:\Users\dd\.dsh\watchdog-archive-20261109-2234\watchdog-deploy.log` 里（旧目录已归档），能看出时间花在哪。两次部署端到端都约十分钟：08:46:58 那次到 08:56:53，10:33:47 那次到 10:43:09。第二次服务约 10:40:56 停止、约 10:41:50 就绪，实际切换约 54 秒；其余时间几乎都在前期准备，而不是发布本身。准备阶段重复了部署早就知道的事：运行中的服务用哪个 DSH home 和 profile 目录、stateDir 与 bundle 链接在哪、已有的候选构建是否已经匹配目标树、哪些 watchdog 写入者需要暂停。请求本身也有歧义（“部署 !43 并设置两个环境变量”），监督器要先还原意图才能开始。
+`deploy.ps1` 透传 `-Validate`、`-Plan`、`-Agent`。`-Validate` 只打印解析后的路径，不执行任何操作；`-Plan` 执行与发布相同的只读预检并打印计划：目标 revision、候选、要替换的路径、要备份的数据库和存活窗口。它不停服、不切换、不归档请求，适合在候选准备好之后、维护窗口之前跑一次。
 
-下次按这几点缩短前期准备：
+#### 机械预检保留与去掉的检查
 
-1. 在稳定 checkout 中先运行一次 `pwsh scripts\dsh-superagent.ps1 status`。`status` 会报告 profile 目录、`service.ps1`、按 home 存放的 `serviceDirectory`/`logs`/`control`、配置的 `stateDir`、bundle 链接与目标、checkout 版本与分支、构建出的 `lib`、监听身份（`identity`、`listener`、`unlistening`、`foreign`），以及服务的 Windows Job 归属与最近一次启动方式；直接读这些，不再重新发现。
-2. 每个目标版本只保留一份候选，并记录 revision、产物哈希与测试证据。候选 worktree 的 `git rev-parse HEAD^{tree}` 与目标树相同、构建产物也一致时直接复用；不要在维护窗口里重新构建或重跑全量测试。
-3. 用同一份 `status` 输出确认服务空闲，并记录进行中与排队工单数。做一致性备份前停止常驻 observer（`schtasks /end /tn dsh-superagent-watchdog-observer`），服务恢复后重新启动并核验它继续记录运行。
-4. 在“文件已切换、服务已停止”的状态停下。`scripts/dsh-superagent start` 会检测 Windows Job，并通过 `service-start.ps1` 在 Job 之外创建服务；不要在 agent 的 shell 工具里直接启动一个裸子进程。DSH agent 退出后，外层部署任务运行 `verify --survival-seconds 30`；只有服务仍存活、在所有 Job 之外且管理 API 回答 ready，才算成功。
-5. 把实测的停机、启动和就绪时间写进部署日志。日志就是复盘材料：慢的那次可以和上一次比较，切换本身应保持在一分钟内。
-6. 部署 `scripts/watchdog` 的改动后，重新构建并安装制品；常驻任务应运行版本化制品的 `launch-observer.vbs -Config observer.json`，不要再从 checkout 运行旧的 `gate.mjs`，也不要恢复每 30 分钟的定时 gate。需要一次性门控时用同一制品的 `agent\gate.mjs`（或 `scripts/watchdog --gate`）。
+预检刻意只保留切换真正需要的部分：
 
-身份核验、备份、回滚准备与维护窗口仍由发布监督器负责；这些事实只缩短发现过程，不替代那些步骤。汇总的时间记录见[部署提速证据](../evidence/deployment-speed/)。
+- 有非空的操作者确认；只有真正开始发布时才归档请求；
+- 恰好一个进程服务该 profile，runtime ready，setup 无问题，服务不是人工停止，`load.running` 为 0（暂停 observer 后、停服前会再查一次）；
+- 运行中的 bundle 链接解析后位于运行时根目录内，确保替换的就是服务实际加载的文件；
+- 候选 worktree 位于请求的 revision（已 fetch 的 `origin/main`、完整提交或 `mechanical.targetRevision`），且没有未提交文件；
+- 候选的 `pnpm-lock.yaml` 与运行时 checkout 一致，因为这条路径只切换运行文件、不切换 `node_modules`；依赖有变化时走 agent 回退或先做一次明确的依赖安装；
+- 清单显式、使用相对路径、位于候选与运行时根目录内，包含构建出的 `lib`，且只列运行路径；
+- 状态目录里存在 SQLite 数据库；停机状态的副本做哈希后放在备份根目录；
+- 启动后由 `verify` 证明一个进程、管理 API 可用、存活窗口后仍是同一 PID、且不在外部 Windows Job 中；
+- 切换、启动或校验失败时恢复所有被替换的路径并启动上一版。
 
-独立任务用仓库外的 JSON 配置运行本仓库的 `scripts/deploy.ps1`。脚本读取并归档请求、运行 headless DSH agent，并在该 agent 退出后带存活窗口运行 `verify`；它把 agent 退出码和存活结果写入结果文件，从不启动 observer，也不盲目重试。`-Validate` 只打印解析后的路径，不执行任何操作。部署相关路径、提示词和模型补丁留在仓库外：
+执行器证明的是候选 worktree 的 revision，而不是构建出的 `lib` 来自该 revision：窗口前的构建流程必须构建这个 revision，按 revision 保留候选目录才能让这项检查有意义。
+
+它不会在窗口里重复仓库测试或构建（代码质量由 CI 负责），不会因 `evals` 等无关健康部件阻塞，不要求飞书完成配置，不重算整个 checkout 的哈希，也不审计 ACL、硬链接或 Git 索引标记；确定性请求不交给模型判断。机械路径的存活窗口默认 3 秒，因为 `start` 已经等到 ready；`survivalSeconds` 可以调大，agent 路径仍默认 30 秒。
+
+#### 配置与清单
+
+部署相关路径留在仓库外。Agent 回退继续使用 `promptPath`、`modelPatch`、`workdir` 和 `dsh`；机械路径需要 `candidateRoot`、`manifestPath`、`backupRoot`，通常还需要 `runtimeRoot`：
 
 ```json
 {
@@ -323,16 +333,54 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
   "node": "D:\\Program Files\\nodejs\\node.exe",
   "dsh": "C:\\Users\\dd\\.local\\opt\\dsh-0.2.2-rc.1\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
   "home": "C:\\Users\\dd\\.dsh",
+  "serviceHome": "C:\\Users\\dd\\.dsh-superagent",
+  "serviceAgentsHome": "C:\\Users\\dd\\.dsh-superagent\\agents",
+  "serviceScript": "F:\\code\\dsh-superagent-prototype\\scripts\\dsh-superagent.ps1",
   "agentProfile": "headless",
   "serviceProfile": "superagent",
   "url": "http://127.0.0.1:3083",
   "logFile": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy.log",
   "resultFile": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-result.json",
-  "survivalSeconds": 30
+  "survivalSeconds": 3,
+  "mechanical": {
+    "candidateRoot": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\candidates\\<revision>",
+    "manifestPath": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\release-manifest.json",
+    "backupRoot": "C:\\Users\\dd\\.dsh\\state\\superagent-backups",
+    "runtimeRoot": "F:\\code\\dsh-superagent-prototype",
+    "stateDir": "C:\\Users\\dd\\.dsh\\state\\superagent",
+    "observerStopCommand": "schtasks /end /tn dsh-superagent-watchdog-observer",
+    "observerStartCommand": "schtasks /run /tn dsh-superagent-watchdog-observer"
+  }
 }
 ```
 
-`dsh-superagent-deploy` 任务随后运行 `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`。**上线状态（2026-11-09）。** 生产服务已由独立部署任务切到 `0cf6a69`，2026-11-10 00:39 的 `verify --survival-seconds 3` 以 `foreignJob=false` 通过：服务不在外部 Job 中，`recovery=enforce`，管理 API ready。任务指向带版本的控制脚本与本文的 `requestPath` 仍是操作员步骤；部署执行器退出后的存活校验会写进 `deploy-result.json`。目标关系与剩余阶段见 `docs/zh/references/watchdog-superagent-mutual-assist.md`。
+`home` 是部署 agent 的 DSH home；`serviceHome` 是运行中服务自己的 DSH home，省略时等于 `home`，因此服务使用独立 home 的主机必须设置它。`serviceScript` 是服务入口包装脚本——带版本的 `scripts\dsh-superagent.ps1`，或操作员的 `service.ps1` 兼容 shim——必须接受 `start` 和 `stop`；设置后 start/stop 都经它执行，因此它固定的 home、profile、URL 必须与 `serviceHome`、`serviceProfile`、`url` 一致。`runtimeRoot` 默认取 `checkout` 字段或任务脚本所在的 checkout；`stateDir` 默认取 `status.deployment.stateDir`；`control` 默认 `<checkout>\scripts\dsh-superagent`，顶层 `control` 可指向带版本的控制脚本。清单只列本次实际变化的路径；`lib` 必需，`prompts`、`locale`、`skills`、`cordis.patch.yml` 或控制脚本有变化时才加入：
+
+```json
+{ "entries": [
+  { "source": "lib", "target": "lib" },
+  { "source": "prompts", "target": "prompts" },
+  { "source": "scripts/dsh-superagent", "target": "scripts/dsh-superagent" }
+] }
+```
+
+每个被替换的路径会在同目录改名为 `<name>.previous-<revision>-<token>`；服务停止后，状态数据库和 WAL 文件复制到 `<backupRoot>\deploy-<revision>-<timestamp>\state`。执行器从不恢复数据库；回滚只恢复运行文件并启动上一版。因此上一版无法读取的数据库迁移需要人工恢复，执行器会把它报告为需要人工介入，而不是声称回滚成功。结果文件记录阶段（`verified`、`rolled_back` 等）、revision、耗时、备份路径和是否需要人工介入；回滚失败或服务无法重启时保留部署锁并设置 `manualIntervention`。
+
+#### 准备与启用一次机械发布
+
+启用是操作员步骤，不改计划任务：
+
+1. 在独立 worktree 构建目标提交（绝不在运行中的稳定 checkout 里构建）：`git -C <clone> worktree add <candidate> <revision>`，然后用 Windows Node 安装依赖并构建。保持 worktree 干净；`lib` 已被忽略，构建产物不会让它变脏。
+2. 为与运行版本不同的运行路径写清单。安装本次改动本身时，清单必须包含 `scripts/deploy.mjs` 和 `scripts/deploy.ps1`；缺少执行器文件时任务入口无法启动。
+3. 把 `mechanical` 指向候选、清单和已存在的备份根目录，把 `serviceHome` 与 `serviceScript` 指向运行中服务的 home 和包装脚本，`survivalSeconds` 设为 3（或操作者希望的值）。
+4. 运行 `deploy.ps1 -Config <configuration> -Plan`，检查 revision、条目、数据库和备份目录。
+5. 生产任务不用改；下一次请求就走机械路径。完成之前，现有 agent 路径继续可用。
+
+安装这个执行器的首次部署仍走 agent 回退；用包含 `deploy.mjs` 的提交构建一次候选后，后续请求就会走机械路径。
+
+**已测基线。** 2026-11-09 的部署历史在 `C:\Users\dd\.dsh\watchdog-archive-20261109-2234\watchdog-deploy.log` 里：两次部署端到端都约十分钟（08:46:58 到 08:56:53，10:33:47 到 10:43:09）。第二次服务约 10:40:56 停止、约 10:41:50 就绪，实际切换约 54 秒；其余时间几乎都是 agent 在重新发现服务身份、候选和需要暂停的写入者。机械路径把这些发现和判断移出窗口：候选准备好后，实测工作就是停机、停机状态备份、文件复制、启动和 3 秒存活检查。时间记录见[部署提速证据](../evidence/deployment-speed/)；生产尚未跑过机械发布，因此“一分钟内”是设计目标而不是实测值。`status` 的事实（带版本的 `scripts\dsh-superagent.ps1 status`，或控制脚本的 `--home`、profile、按 home 存放的 service/log/control 目录、`stateDir`、bundle 目标、Git revision、监听身份与启动/Job 信息）仍对 agent 回退和人工检查计划有用。
+
+`dsh-superagent-deploy` 任务运行 `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`。**上线状态（2026-11-09）。** 生产服务已由独立部署任务切到 `0cf6a69`，2026-11-10 00:39 的 `verify --survival-seconds 3` 以 `foreignJob=false` 通过：服务不在外部 Job 中，`recovery=enforce`，管理 API ready。生产配置还没有 `mechanical` 段，因此任务继续使用 agent 回退，直到操作员按上面的步骤准备候选并启用。任务指向带版本的控制脚本与本文的 `requestPath` 仍是操作员步骤；结果写进 `deploy-result.json`。目标关系与剩余阶段见 `docs/zh/references/watchdog-superagent-mutual-assist.md`。
 
 ### 版本化 Watchdog 制品与更新任务
 
