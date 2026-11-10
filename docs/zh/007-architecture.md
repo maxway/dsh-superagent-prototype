@@ -359,6 +359,8 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/views/watchdog.ts` | 只读的 Watchdog 视图与 `watchdogSummary`：每个进行中工单的阶段、最近派工与报告、静默时长和机械信号（包括运行中的 Assignment 没有存活 worker Session 时的 `session-missing`），并渲染成飞书观察报告 |
 | `src/app/watchdog.ts` | 只读的 Watchdog 观测：从实时快照记录一次运行，并把渲染出的观测保存为“最近运行”心跳 |
 | `src/app/watchdog-recovery.ts` | enforce 模式下的有界恢复：重新检查缺失 worker Session、快照新鲜度、暂停状态和每 Session 恢复上限，然后 retry 一次并写审计行；绝不重启服务 |
+| `scripts/dsh-superagent` | 跨平台服务控制脚本：start、stop、restart、status、verify 与 Watchdog 命令；`--url` 的监听套接字所有者才是权威目标，Windows 上不传 `--url` 的 stop 会从管理状态自动发现正在运行的 superagent，日志和控制文件位于 `<DSH home>/service/`，需要时在 Windows Job 之外启动 |
+| `scripts/dsh-superagent.ps1` | 带版本的 Windows 操作入口：一个动作词（start/stop/restart/status）加可选的 `-Config`/`-RespectStop`；checkout 之外的机器 JSON 固定 checkout/home/profile/回环 URL，命令行不再暴露目标或时序参数 |
 | `scripts/watchdog` | 常驻的独立 Watchdog 进程：自有配置、状态、日志与 pid；挂一个带版本号的等待请求，等待返回后读取面板快照、每轮记录一次运行，发送配置好的安静日报，并可在服务不可达时写独立本地告警/恢复记录；配置 `agentConfig` 时，新的机械风险直接交给同版本完整 agent 判定与报告，不再由 30 分钟定时 gate 驱动；`--gate` 仅保留为一次性诊断入口 |
 | `scripts/watchdog-agent/` | agent 包装、机械 gate、提示词与配置/模型模板，与观察器同版本：普通 gate 记录运行后退出，风险轮次从同一制品在自己的工作区（不是 checkout）启动完整 DSH agent；常驻 observer 在出现新风险时调用它 |
 | `scripts/watchdog-artifact.mjs` | 构建不可变 Watchdog 制品及 manifest（文件哈希、总摘要、`apiVersion`、`minServiceVersion`），并在安装前校验制品 |
@@ -481,7 +483,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/cards.spec.ts` | 内置文本必须陈述的规则，逐文件验证 |
 | `tests/model-surface.spec.ts` | 模型读到的一切：工具、提示词、技能和输入，对照工具 schema、执行环境和术语表检查，每种角色有大小预算 |
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | 插件配置和安装配置、智能体的进程环境、插件入口 |
-| `tests/service-script.spec.ts` | `scripts/dsh-superagent` 对照伪造的 `ps`、`tmux` 和 `dsh`，以及它的 Watchdog 快照、观测记录、部署事实与飞书报告 |
+| `tests/service-script.spec.ts` | `scripts/dsh-superagent` 对照伪造的 `ps`、`tmux` 和 `dsh`，加上真实 Windows 监听所有者停止、零参数发现选择、启动事实指向另一 home 时的停止、外部监听者拒绝、按 home 存放的控制文件、旧停止标记兼容，以及它的 Watchdog 快照、观测记录、部署事实与飞书报告 |
 | `tests/launch.spec.ts` | Windows 启动器：`.cmd` shim 解析、`.js` 入口，以及拒绝只能走 shell 的包装 |
 | `tests/commands-window.spec.ts` | CLI 传输在运行后台命令时隐藏窗口 |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | 客户端插件的注册和轮询、Session 导航和路由记忆、本地控件，以及面板的导入（没有循环） |

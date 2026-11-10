@@ -4,7 +4,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 ## Production host for this checkout
 
-The intended production host is native Windows, using the stable checkout at `F:\code\dsh-superagent-prototype` and a DSH home separate from Desktop. A different profile alone does not isolate workspace and session storage. On 2026-11-08 the operator authorized a cutover to `C:\Users\dd\.dsh-superagent`, with `DSH_AGENTS_HOME` set to its `agents` subdirectory. The local `C:\Users\dd\.dsh-superagent\service.ps1` sets these variables for `start`, `stop`, `restart` and `status`; using the generic script without them can start against the shared Desktop home. The existing dedicated state directory remains at `C:\Users\dd\.dsh\state\superagent`, outside the new home. Startup reported runtime and Feishu ready, with GitLab starting; workspace and session recovery and end-to-end behavior were not independently verified after cutover at the operator's request. This separation is not an OS security boundary. The profile links the bundle directly to the F: checkout; do not rename that checkout to match the package name. Use the Windows profile example in `examples/profile.cordis.patch.yml`; the POSIX / WSL example remains in `examples/profile.posix.cordis.patch.yml` for a separately managed deployment. Historical WSL state and worktrees are not Windows worker directories and must not be pruned or resumed on Windows.
+The intended production host is native Windows, using the stable checkout at `F:\code\dsh-superagent-prototype` and a DSH home separate from Desktop. A different profile alone does not isolate workspace and session storage. On 2026-11-08 the operator authorized a cutover to `C:\Users\dd\.dsh-superagent`, with `DSH_AGENTS_HOME` set to its `agents` subdirectory. The versioned entry `scripts\dsh-superagent.ps1` reads a machine configuration from `%USERPROFILE%\.dsh-superagent\service.json` outside the checkout and pins the checkout, DSH home, profile, loopback URL, Node path, optional PATH additions and deployment request/command; a generic invocation without that file can start against the shared Desktop home. `C:\Users\dd\.dsh-superagent\service.ps1` remains the compatibility entry for the operator's existing tools; after cutover it should be reduced to a shim that passes `-Config` to the versioned entry. The existing dedicated state directory remains at `C:\Users\dd\.dsh\state\superagent`, outside the new home. Startup reported runtime and Feishu ready, with GitLab starting; workspace and session recovery and end-to-end behavior were not independently verified after cutover at the operator's request. This separation is not an OS security boundary. The profile links the bundle directly to the F: checkout; do not rename that checkout to match the package name. Use the Windows profile example in `examples/profile.cordis.patch.yml`; the POSIX / WSL example remains in `examples/profile.posix.cordis.patch.yml` for a separately managed deployment. Historical WSL state and worktrees are not Windows worker directories and must not be pruned or resumed on Windows.
 
 A Windows process cannot safely rely on WSL-created dependency links in a shared checkout. Prepare and verify a complete Windows dependency installation at the final path with the production service stopped and other users of that dependency tree quiesced. A pnpm `Already up to date` message is not proof: build and import the actual bundle with Windows Node, then require `GET /orchestrator/api/state` with `x-orchestrator-request: 1` to return 200 and check Source health. A listening web port alone is insufficient. Keep WSL and Windows dependency trees separate when both are needed. When running in the background, also verify the service and Feishu consumer have no visible console and the token-bearing startup log is accessible only to the intended user and administrators.
 
@@ -174,26 +174,73 @@ After the first start, edit machine limits in **Settings → Deployment** or the
 
 ## Start and stop
 
+On Windows the versioned entry is the operator command. It reads a machine configuration outside the checkout, so the
+target cannot drift with the current directory or an unrelated environment variable:
+
+```powershell
+pwsh scripts\dsh-superagent.ps1 status
+pwsh scripts\dsh-superagent.ps1 start
+pwsh scripts\dsh-superagent.ps1 stop
+pwsh scripts\dsh-superagent.ps1 restart
+```
+
+It reads `%USERPROFILE%\.dsh-superagent\service.json` unless `-Config` or `DSH_SUPERAGENT_SERVICE_CONFIG` names another
+file; `examples/service.windows.json` is a template. The file pins `checkout`, `home`, `agentsHome`, `profile`, the
+loopback `url`, the `node` executable, optional `path` additions and the optional `deployRequest`/`deployCommand`, and it
+holds no secret. A start also needs the user-level `LUMOS_API_KEY`, which the wrapper copies from the user environment.
+The entry exposes only the action (plus optional `-Config` and `-RespectStop`); target and timing facts stay in the
+file. It refuses a checkout that does not exist, a non-loopback URL, or (for a start) a missing profile directory.
+
+After cutover, replace the old hard-coded `C:\Users\dd\.dsh-superagent\service.ps1` with a compatibility shim so existing
+tools keep working:
+
+```powershell
+param([ValidateSet('start', 'stop', 'restart', 'status', 'verify')][string]$Action = 'status')
+& 'F:\code\dsh-superagent-prototype\scripts\dsh-superagent.ps1' $Action -Config "$env:USERPROFILE\.dsh-superagent\service.json"
+exit $LASTEXITCODE
+```
+
+The Node script remains the implementation and is available on both platforms when the environment is already set:
+
 ```sh
 scripts/dsh-superagent start
 scripts/dsh-superagent status
 ```
 
-On Windows, run the same script through Node, because the file has no `.cmd` shim:
+On Windows that is `node scripts\dsh-superagent start` and the same actions; `node` is required because the file has no
+`.cmd` shim.
 
-```powershell
-node scripts\dsh-superagent start
-node scripts\dsh-superagent status
-node scripts\dsh-superagent stop
-```
+The process that owns the listening socket of `--url` is authoritative. `status` reports `identity: "listener"`, the
+`listener` PIDs, `unlistening` (processes that match the profile but do not own this URL) and `foreign` (another process
+owns the URL). `start` refuses a foreign listener or a process this home recorded but that no longer listens. On
+Windows, `stop` without `--url` discovers running superagent servers from their management state and stops the only
+one, or the one matching `--profile`, so a matching home or URL is not required; an explicit `--url` is exact. A foreign listener is
+never stopped, and neither action force-kills. When listener lookup is unavailable, `identity: "scan"` says the older
+command-line fallback was used.
 
-`start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script. Each profile uses its own named tmux socket. The pane uses the caller's `DSH_HOME`, `HOME`, and `PATH` (including unset values) and clears `TMUX` and `TMUX_PANE` before starting DSH, so a worker does not inherit the service socket. Setting `TMUX_TMPDIR` alone does not override an inherited `TMUX`; these measures are guardrails, not an OS security boundary.
+`start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits
+up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing
+setup information. It refuses duplicate instances, including ones started outside this script. Each profile uses its own
+named tmux socket. The pane uses the caller's `DSH_HOME`, `HOME`, and `PATH` (including unset values) and clears `TMUX`
+and `TMUX_PANE` before starting DSH, so a worker does not inherit the service socket. Setting `TMUX_TMPDIR` alone does not
+override an inherited `TMUX`; these measures are guardrails, not an OS security boundary.
 
-On Windows, `start` requires `dsh` on `PATH` (the npm `.cmd` shim), spawns `dsh --profile <profile> --no-open` as a detached process with the same log and control files, and waits for the management API; it does not use tmux. `status` lists processes through Windows PowerShell (`powershell.exe`, part of Windows). `stop` asks DSH to exit through `POST /orchestrator/api/service/stop` instead of sending a signal; it waits up to five minutes and never force-kills. The tmux socket and `TMUX` details above apply to POSIX only. The same exit codes, log names and `manually-stopped` marker apply on both.
+On Windows, `start` requires `dsh` on `PATH` (the npm `.cmd` shim), spawns `dsh --profile <profile> --no-open` as a
+detached process with the same log and control files, and waits for the management API; it does not use tmux. When the
+caller is inside a Windows Job, it creates the service outside that Job through `scripts\service-start.ps1`, which also
+receives the same `--home`. `status` lists processes through Windows PowerShell (`powershell.exe`, part of Windows).
+`stop` asks DSH to exit through `POST /orchestrator/api/service/stop` instead of sending a signal; it waits up to five
+minutes and never force-kills. The tmux socket and `TMUX` details above apply to POSIX only. The same exit codes, log
+names and `manually-stopped` marker apply on both.
 
-`stop` and `restart` request a graceful drain and wait up to five minutes for the process to exit. The Executor drain is bounded at ten seconds and DSH's launcher adds a five-second grace, so a stop normally finishes within about fifteen seconds; a worker still in a turn after the drain can be interrupted. On POSIX they never force-kill the process or touch other tmux sessions.
+`stop` and `restart` request a graceful drain and wait up to five minutes for the process to exit. The Executor drain is
+bounded at ten seconds and DSH's launcher adds a five-second grace, so a stop normally finishes within about fifteen
+seconds; a worker still in a turn after the drain can be interrupted. On POSIX they never force-kill the process or
+touch other tmux sessions.
 
-`status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`; in PowerShell, set `$env:DSH_SUPERAGENT_PROFILE` and `$env:DSH_SUPERAGENT_URL`.
+`status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or
+set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`; in PowerShell, set `$env:DSH_SUPERAGENT_PROFILE` and
+`$env:DSH_SUPERAGENT_URL`.
 
 `status`, `start` and `restart` exit with one of four codes:
 
@@ -208,10 +255,18 @@ A Source that is still starting counts as normal operation. So does a Feishu bot
 
 `status` returns failed parts and their details under `errors`, and setup requirements under `setup`. `start` and `restart` print those problems as lines; they exit 1 if the service never comes up. Only an intentional `stop` pauses automatic recovery.
 
-Each profile stores logs and control files under `.artifacts/`:
+Each DSH home stores its service's logs and control files under `service/`, so a dirty or shared checkout is not runtime
+state:
 
-- Startup logs: `dsh-superagent-<profile>-<date>-<time>-<pid>.log`, where the pid belongs to the script. The newest 20 are kept.
-- Control files: `control/profiles/<profile>/`, containing the stop marker, lock and process id.
+- Startup logs: `<DSH home>\service\logs\dsh-superagent-<profile>-<date>-<time>-<pid>.log`, where the pid belongs to the
+  script. The newest 20 are kept.
+- Control files: `<DSH home>\service\control\profiles\<profile>\`, containing the stop marker, lock, process id and the
+  newest start facts.
+
+This build still reads the old `<checkout>\.artifacts\control\profiles\<profile>\` stop marker, recorded PID and start
+facts so an intentional stop and the current start survive the upgrade. A normal start writes nothing there, but
+stopping a service still recorded there writes its stop marker back so the recovery check sees it. Archive that
+directory after the new entry is deployed and no old invocation remains.
 
 Open the URL printed in the log, then choose **Superagent** in the sidebar.
 
@@ -220,10 +275,10 @@ Open the URL printed in the log, then choose **Superagent** in the sidebar.
 Create the hourly check in the DeepSeek Harness profile you normally use, not in `superagent`. It must keep running when the agent service is down. Ask an agent in that profile to create an hourly schedule using this prompt, with the checkout path filled in:
 
 ```text
-Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest .artifacts/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
+Check dsh-superagent: run `scripts/dsh-superagent --profile superagent --home <DSH home> status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --home <DSH home> --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest <DSH home>/service/logs/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
 ```
 
-`--respect-stop` preserves an intentional stop. Only `stop` writes the marker; `start` clears it. `restart` writes no marker, so the check can recover a restart whose shutdown timed out. On Windows, use the same prompt with `node scripts\dsh-superagent ...` as the command.
+`--respect-stop` preserves an intentional stop. Only `stop` writes the marker; `start` clears it. `restart` writes no marker, so the check can recover a restart whose shutdown timed out. On Windows, use `pwsh scripts\dsh-superagent.ps1 status` and `pwsh scripts\dsh-superagent.ps1 restart -RespectStop` instead, and read the same log under the configured DSH home.
 
 ### Task-level check (Watchdog)
 
@@ -268,7 +323,7 @@ A tool command run by DSH belongs to a Windows Job with `JOB_OBJECT_LIMIT_KILL_O
 
 Node puts a long-running service into its own kill-on-close Job the first time it spawns a child (the Feishu event consumer is one), so plain `inJob` is also true for a healthy service. The service holds that Job, and it closes only when the service exits, so it cannot kill the service from outside; `foreignJob` is the fact the checks gate on. A Job the service merely inherited from its launch chain still fails them.
 
-The operator's `service.ps1` remains the service entry point: it sets the production home and calls the control script, so the service keeps its own profile home and credentials while its process is outside the Job. `scripts/service-start.ps1` can also run directly from an independent scheduled task.
+The versioned `scripts\dsh-superagent.ps1` is the service entry point: it validates the machine configuration and calls the control script, so the service keeps its own profile home and credentials while its process is outside the Job. The operator's `C:\Users\dd\.dsh-superagent\service.ps1` remains the compatibility entry for existing tools; after cutover it should be reduced to a shim to that entry. `scripts/service-start.ps1` can also run directly from an independent scheduled task; it receives the same `-DshHome` as the parent.
 
 `node scripts/dsh-superagent verify --profile superagent --url <url> --survival-seconds 30` proves a release after its executor has exited: exactly one process serves the profile, the management API answers ready (or paused), the process belongs to no Windows Job it did not create, and the same process is alive after the survival window. Exit 1 names the failed condition.
 
@@ -284,7 +339,7 @@ The 2026-11-09 deployment history in `C:\Users\dd\.dsh\watchdog-archive-20261109
 
 Use these facts to keep the next preflight short:
 
-1. From the stable checkout, run `node scripts/dsh-superagent status --profile superagent --url <panel URL> --home <DSH home>` once. `status` reports the profile directory, `service.ps1`, the configured `stateDir`, the bundle link and target, the checkout revision and branch, the built `lib`, the service's Windows Job membership (`inJob` and `foreignJob`) and how the newest start began; read those instead of rediscovering them.
+1. From the stable checkout, run `pwsh scripts\dsh-superagent.ps1 status` once. `status` reports the profile directory, `service.ps1`, the home-scoped `serviceDirectory`/`logs`/`control`, the configured `stateDir`, the bundle link and target, the checkout revision and branch, the built `lib`, the listener identity (`identity`, `listener`, `unlistening`, `foreign`), the service's Windows Job membership (`inJob` and `foreignJob`) and how the newest start began; read those instead of rediscovering them.
 2. Keep one candidate per target revision and record its revision, artifact hashes and test evidence. If `git rev-parse HEAD^{tree}` of the candidate worktree equals the target tree and the built files match, reuse it; do not rebuild or rerun the full suite during the maintenance window.
 3. Confirm the service is idle with the same `status` output and record open and queued Ticket counts. Stop the standing observer before the consistent backup (`schtasks /end /tn dsh-superagent-watchdog-observer`), then restart it after the service is ready and verify that it records runs again.
 4. Stop at the switched, stopped state. `scripts/dsh-superagent start` detects a Windows Job and creates the service outside it through `service-start.ps1`, so do not start a raw detached child from the agent's shell tool. After the DSH agent exits, the outer deployment task runs `verify --survival-seconds 30`; only a service that is alive, in no Job it did not create, and answering ready counts as success.
@@ -498,7 +553,9 @@ The steps below apply only to deployments where an in-place upgrade has been exp
 3. Run `git pull && pnpm install && pnpm build`.
 4. Run `scripts/dsh-superagent restart` and inspect its status.
 
-On Windows, run the same steps in PowerShell; `&&` works in PowerShell 7, and the service command is `node scripts\dsh-superagent restart`.
+On Windows, run the same steps in PowerShell; `&&` works in PowerShell 7, and the service command is
+`pwsh scripts\dsh-superagent.ps1 restart`. The entry takes only the action (and an optional `-Config`/`-RespectStop`);
+target facts stay in `%USERPROFILE%\.dsh-superagent\service.json`, created from `examples/service.windows.json`.
 
 A restart ends running Assignments and starts replacements with recovery notes. Team text and overridden prompt parts are retained; parts without overrides follow the new defaults. Review parts marked **Default updated** after upgrading.
 
@@ -523,7 +580,10 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | A finished Ticket's worktree stays at `<stateDir>/work/…` | It has uncommitted or untracked changes, commits not on a remote, another checked-out branch, or is not a linked worktree. Commit and push or discard the work; the next host start tries the cleanup again |
 | `pwsh` is not found, or the prepare command fails with a PowerShell error | Install PowerShell 7 and put `pwsh` on `PATH`; Windows PowerShell 5.1 is not used for the prepare command |
 | `dsh must be on PATH.` when starting on Windows | Install DSH globally and open a new shell; `start` resolves the npm `dsh.cmd` |
-| PowerShell or `cmd.exe` cannot run `scripts\dsh-superagent` | The script has no `.cmd` shim on Windows; run `node scripts\dsh-superagent <command>` |
+| PowerShell or `cmd.exe` cannot run `scripts\dsh-superagent` | The script has no `.cmd` shim on Windows; run `pwsh scripts\dsh-superagent.ps1 <action>`, or `node scripts\dsh-superagent <command>` when the environment is already set |
+| `The service configuration does not exist` or a target mismatch | Create `%USERPROFILE%\.dsh-superagent\service.json` from `examples/service.windows.json`; the entry refuses a checkout or non-loopback URL, and a start also needs the profile directory |
+| `The management URL … is owned by PID …` | Another process owns the port; stop it or choose the service's real `url`. The entry never kills a foreign listener |
+| `This home's dsh-superagent process … does not listen` | The recorded process is running but not serving the target URL. Inspect it, fix its listener, or restart it from an independent task; `start` and an explicit-URL `stop` refuse, while a zero-parameter `stop` discovers another running server |
 | A `.cmd` wrapper for `gh` or `glab` drops or corrupts an argument | Use the native `gh.exe` or `glab.exe` with its configuration directory (see Windows credentials); never pass JSON or message text through `cmd.exe` |
 | The Feishu Source is refused on a Windows host | Point the Source's **Bot lark-cli** field at `lark-cli` (the npm `.cmd` shim) or at the package's Node entry; a custom `.cmd` wrapper without a Node entry is refused |
 | `git does not read the credential configuration dsh-superagent writes` | Install git 2.32 or later |

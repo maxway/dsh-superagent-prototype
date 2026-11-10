@@ -1,0 +1,14 @@
+{
+  "checkout": "C:\\code\\dsh-superagent-prototype",
+  "home": "C:\\Users\\me\\.dsh-superagent",
+  "agentsHome": "C:\\Users\\me\\.dsh-superagent\\agents",
+  "profile": "superagent",
+  "url": "http://127.0.0.1:3083",
+  "node": "C:\\Program Files\\nodejs\\node.exe",
+  "path": [
+    "C:\\Users\\me\\.local\\opt\\dsh-0.2.2-rc.1",
+    "C:\\Users\\me\\bin"
+  ],
+  "deployRequest": "C:\\Users\\me\\.dsh\\watchdog-deploy\\deploy-request.json",
+  "deployCommand": "schtasks /run /tn dsh-superagent-deploy"
+}

@@ -24,8 +24,10 @@ const PLATFORM = process.platform
 const WINDOWS = PLATFORM === 'win32'
 const SCRIPT = realpathSync(fileURLToPath(import.meta.url))
 const ROOT = dirname(dirname(SCRIPT))
-const ARTIFACTS = join(ROOT, '.artifacts')
-const CONTROL = join(ARTIFACTS, 'control')
+// Control files and logs belong to one DSH home, not to the checkout: a checkout may be dirty, shared by a deployment,
+// or serve a second isolated profile home, and runtime state must not be mistaken for source or leak across homes.
+const SERVICE_DIRECTORY = 'service'
+const LEGACY_ARTIFACTS = join(ROOT, '.artifacts')
 const KEEP_LOGS = 20
 const LOCK_STALE_MS = 10 * 60_000
 const PART_ERROR = 2
@@ -33,16 +35,39 @@ const SETUP_WAITS = 3
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
-/** Return the control directory for `profile`, creating it if needed. */
-function control(profile) {
-  const directory = join(CONTROL, 'profiles', profile)
+/** The service's own directory inside one DSH home; it holds logs and control files. */
+function serviceDirectory(home) {
+  return join(resolve(home), SERVICE_DIRECTORY)
+}
+
+/** The directory holding this deployment's startup logs. */
+function logsDirectory(home) {
+  return join(serviceDirectory(home), 'logs')
+}
+
+/** The control directory for `profile` in `home`, without creating it. */
+function controlDirectory(profile, home) {
+  return join(serviceDirectory(home), 'control', 'profiles', profile)
+}
+
+/** Return the control directory for `profile` in `home`, creating it if needed. */
+function control(profile, home) {
+  const directory = controlDirectory(profile, home)
   mkdirSync(directory, { recursive: true })
   return directory
 }
 
-/** Return whether `profile` was intentionally stopped. */
-function stopped(profile) {
-  return existsSync(join(control(profile), 'manually-stopped'))
+/**
+ * The pre-2026-11-10 location of the same files. It is read only so an intentional stop and the newest start facts
+ * survive the upgrade to home-scoped control files; nothing writes there any more.
+ */
+function legacyControl(profile) {
+  return join(LEGACY_ARTIFACTS, 'control', 'profiles', profile)
+}
+
+/** Return whether `profile` was intentionally stopped, before or after the control files moved into the home. */
+function stopped(profile, home) {
+  return existsSync(join(controlDirectory(profile, home), 'manually-stopped')) || existsSync(join(legacyControl(profile), 'manually-stopped'))
 }
 
 /** Run a PowerShell command and return its trimmed standard output; a failure carries the standard error. */
@@ -271,8 +296,8 @@ export function quoteWindowsArg(value) {
 /** The command line that runs `scripts/service-start.ps1`, the independent start wrapper, through WMI. */
 export function outsideJobStartCommand(input) {
   return [input.shell, '-NoLogo', '-NoProfile', '-NonInteractive', '-File', input.wrapper,
-    '-Checkout', input.checkout, '-EnvFile', input.environmentFile, '-Profile', input.profile, '-Url', input.url,
-    '-Timeout', String(input.timeout), '-Log', input.log].map(quoteWindowsArg).join(' ')
+    '-Checkout', input.checkout, '-EnvFile', input.environmentFile, '-DshHome', input.home, '-Profile', input.profile,
+    '-Url', input.url, '-Timeout', String(input.timeout), '-Log', input.log].map(quoteWindowsArg).join(' ')
 }
 
 /**
@@ -285,8 +310,19 @@ const START_ENVIRONMENT = ['PATH', 'PATHEXT', 'SystemRoot', 'ComSpec', 'TEMP', '
   'DSH_SUPERAGENT_DEPLOY_REQUEST', 'DSH_SUPERAGENT_DEPLOY_COMMAND']
 
 /** Write the caller environment the independent start wrapper restores, restricted to the current account. */
-export function writeStartEnvironment(profile, environment = process.env) {
-  const path = join(control(profile), `start-environment-${process.pid}-${Date.now()}.json`)
+export function writeStartEnvironment(profile, home, environment = process.env) {
+  const directory = control(profile, home)
+  // A wrapper that never ran can leave a restricted file holding the model key; remove only files old enough that no
+  // live start can still be waiting for them.
+  try {
+    for (const entry of readdirSync(directory)) {
+      if (!entry.startsWith('start-environment-')) continue
+      const candidate = join(directory, entry)
+      if (Date.now() - statSync(candidate).mtimeMs < 10 * 60_000) continue
+      rmSync(candidate, { force: true })
+    }
+  } catch { /* A missing or unreadable directory fails the write below with a clear error. */ }
+  const path = join(directory, `start-environment-${process.pid}-${Date.now()}.json`)
   const value = Object.fromEntries(START_ENVIRONMENT.filter(name => environment[name] !== undefined)
     .map(name => [name, String(environment[name])]))
   writeFileSync(path, '{}', { mode: 0o600 })
@@ -296,15 +332,18 @@ export function writeStartEnvironment(profile, environment = process.env) {
 }
 
 /** The facts of the newest start, kept beside the profile's control files so `status` can show how the service began. */
-function startFacts(profile) {
-  try {
-    const value = JSON.parse(readFileSync(join(control(profile), 'service-start.json'), 'utf8'))
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null
-  } catch { return null }
+function startFacts(profile, home) {
+  for (const directory of [controlDirectory(profile, home), legacyControl(profile)]) {
+    try {
+      const value = JSON.parse(readFileSync(join(directory, 'service-start.json'), 'utf8'))
+      if (value && typeof value === 'object' && !Array.isArray(value)) return value
+    } catch { /* Try the next location. */ }
+  }
+  return null
 }
 
-function recordStartFacts(profile, facts) {
-  const path = join(control(profile), 'service-start.json')
+function recordStartFacts(profile, home, facts) {
+  const path = join(control(profile, home), 'service-start.json')
   const temporary = `${path}.${process.pid}.tmp`
   writeFileSync(temporary, `${JSON.stringify(facts, null, 2)}\n`, { mode: 0o600 })
   renameSync(temporary, path)
@@ -387,21 +426,203 @@ function serviceProcess(item, profile) {
   return (isDshHost(item.name) || isDshHost(program)) && serves(item.args, profile)
 }
 
-/** Return whether `pid` is currently running the DSH service for `profile`. */
-function running(pid, profile) {
-  if (pid === process.pid) return false
-  const found = WINDOWS ? windowsProcesses().filter(item => item.pid === pid) : ps(['-p', String(pid)]).filter(item => item.pid === pid)
-  return found.some(item => serviceProcess(item, profile))
+/**
+ * Whether a PID still exists, without a shell: used only while waiting for an already verified service to exit. The
+ * identity was checked before the stop request, so this avoids spawning PowerShell every half second.
+ */
+function alive(pid) {
+  try { process.kill(pid, 0); return true } catch { return false }
 }
 
-/** Return PIDs of all running DSH service processes for `profile`, including instances started outside this script and a recorded PID that still runs it. */
-function processes(profile) {
-  // Exclude this control process itself, which also carries `--profile <name>` on its command line.
-  const found = (WINDOWS ? windowsProcesses() : ps(['-ax'], true))
-    .filter(item => item.pid !== process.pid).filter(item => serviceProcess(item, profile)).map(item => item.pid)
-  let recorded
-  try { recorded = Number(readFileSync(join(control(profile), 'service.pid'), 'utf8').trim()) } catch { return found }
-  return Number.isInteger(recorded) && recorded > 0 && !found.includes(recorded) && running(recorded, profile) ? [...found, recorded] : found
+/** The PID this home last recorded for `profile`, whether or not it still runs. */
+function recordedServicePid(profile, home) {
+  for (const directory of [controlDirectory(profile, home), legacyControl(profile)]) {
+    try {
+      const pid = Number(readFileSync(join(directory, 'service.pid'), 'utf8').trim())
+      if (Number.isInteger(pid) && pid > 0) return pid
+    } catch { /* Try the next location. */ }
+  }
+  return undefined
+}
+
+/** The PowerShell that lists the PIDs owning the listening TCP socket for one port. A missing socket is an empty list. */
+const LISTENER_PROBE = `$ErrorActionPreference = 'Stop'
+$pids = @()
+try { $pids = @(Get-NetTCPConnection -LocalPort __PORT__ -State Listen | Select-Object -ExpandProperty OwningProcess -Unique) }
+catch { if ($_.CategoryInfo.Category -ne 'ObjectNotFound') { throw } }
+ConvertTo-Json -Compress -InputObject @($pids)`
+
+/** Parse listener output, either a JSON array from PowerShell or whitespace-separated lsof PIDs. Null when unreadable. */
+export function parseListenerPids(value) {
+  const numbers = values => [...new Set(values.map(Number).filter(pid => Number.isInteger(pid) && pid > 0))]
+  if (Array.isArray(value)) return numbers(value)
+  if (typeof value === 'number') return numbers([value])
+  const text = String(value ?? '').trim()
+  if (text === '') return []
+  if (text.startsWith('[')) {
+    try { return numbers(JSON.parse(text)) } catch { return null }
+  }
+  const tokens = text.split(/\s+/).filter(Boolean)
+  const parsed = numbers(tokens)
+  return parsed.length || !tokens.length ? parsed : null
+}
+
+/**
+ * The PIDs listening on the TCP port that `url` names: the exact process a person means by "the service at this URL".
+ * Null when the platform cannot answer, so the caller can fall back to the older command-line scan rather than call a
+ * running service stopped.
+ */
+export function listenerPids(url, run = (script) => runPowerShell(script), platform = PLATFORM) {
+  let target
+  try { target = new URL(url) } catch { return null }
+  const port = Number(target.port || (target.protocol === 'https:' ? 443 : 80))
+  if (!Number.isInteger(port) || port <= 0) return null
+  if (platform === 'win32') {
+    try { return parseListenerPids(run(LISTENER_PROBE.replace('__PORT__', String(port)))) } catch { return null }
+  }
+  const lsof = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' })
+  if (lsof.error) return null
+  if (lsof.status !== 0) {
+    return lsof.status === 1 && !(lsof.stderr ?? '').trim() ? [] : null
+  }
+  return parseListenerPids(lsof.stdout)
+}
+
+/** The TCP port a management URL names; undefined when the URL is not parseable. */
+export function urlPort(url) {
+  try {
+    const target = new URL(url)
+    return Number(target.port || (target.protocol === 'https:' ? 443 : 80)) || undefined
+  } catch { return undefined }
+}
+
+/** The `--profile` a DSH service command line names, if any. */
+export function profileFromArgs(args) {
+  for (let index = 1; index < (args?.length ?? 0); index++) {
+    const word = args[index]
+    if (word === '--profile') {
+      const value = args[index + 1]
+      return value && !value.startsWith('-') ? value : undefined
+    }
+    if (word.startsWith('--profile=')) return word.slice('--profile='.length) || undefined
+  }
+  return undefined
+}
+
+/**
+ * Whether a management state belongs to dsh-superagent rather than a plain DSH app. Its bundle adds these parts; a
+ * desktop or bare DSH profile has only the runtime, relay, notice and launch parts.
+ */
+export function isSuperagentState(current) {
+  const health = current?.health
+  return Boolean(health && typeof health === 'object' && !Array.isArray(health)
+    && (health.assessment !== undefined || health.delivery !== undefined || health.reply !== undefined))
+}
+
+/** The PowerShell that lists the ports a PID listens on. */
+const PORTS_FOR_PID = `$ErrorActionPreference = 'Stop'
+$ports = @()
+try { $ports = @(Get-NetTCPConnection -State Listen -OwningProcess __PID__ | Select-Object -ExpandProperty LocalPort -Unique) }
+catch { if ($_.CategoryInfo.Category -ne 'ObjectNotFound') { throw } }
+ConvertTo-Json -Compress -InputObject @($ports)`
+
+/** Parse a JSON array or whitespace-separated list of TCP ports; invalid entries are dropped. */
+export function parsePorts(value) {
+  const numbers = values => [...new Set(values.map(Number).filter(port => Number.isInteger(port) && port > 0 && port <= 65_535))]
+  if (Array.isArray(value)) return numbers(value)
+  if (typeof value === 'number') return numbers([value])
+  const text = String(value ?? '').trim()
+  if (text === '') return []
+  if (text.startsWith('[')) {
+    try { return numbers(JSON.parse(text)) } catch { return [] }
+  }
+  const ports = []
+  for (const line of text.split('\n')) {
+    const match = /(?:^|[^0-9])(\d+)$/.exec(line.trim())
+    if (match) ports.push(Number(match[1]))
+  }
+  return numbers(ports)
+}
+
+/** The ports a DSH process listens on; empty when the platform cannot answer. */
+export function portsForPid(pid, run = script => runPowerShell(script), platform = PLATFORM) {
+  if (platform === 'win32') {
+    try { return parsePorts(run(PORTS_FOR_PID.replace('__PID__', String(pid)))) } catch { return [] }
+  }
+  const lsof = spawnSync('lsof', ['-nP', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-Fn'], { encoding: 'utf8' })
+  if (lsof.error || lsof.status !== 0) return []
+  return parsePorts((lsof.stdout ?? '').split('\n').filter(line => line.startsWith('n')).join('\n'))
+}
+
+/**
+ * Find the running dsh-superagent servers without being told a port or home: every DSH process's listening ports are
+ * asked for the management state, and only a state carrying the superagent parts is accepted. `records`, `portsOf` and
+ * `probe` are injectable so selection is testable without a live host.
+ */
+export async function discoverServers(records, portsOf = portsForPid, probe = url => state(url, 1_000)) {
+  const servers = []
+  for (const item of records) {
+    if (item.pid === process.pid || !isDshHost(item.name)) continue
+    const profile = profileFromArgs(item.args)
+    if (!profile || !serves(item.args, profile)) continue
+    for (const port of portsOf(item.pid)) {
+      if (!Number.isInteger(port) || port <= 0) continue
+      const url = `http://127.0.0.1:${port}`
+      const current = await probe(url)
+      if (!isSuperagentState(current)) continue
+      servers.push({ pid: item.pid, profile, port, url, health: current.health })
+      break
+    }
+  }
+  return servers
+}
+
+/** Pick one discovered server; one candidate, an explicit URL, or the profile name resolves it. */
+export function chooseServer(candidates, { url, profile, urlExplicit = false, profileExplicit = false } = {}) {
+  if (!candidates.length) return undefined
+  if (urlExplicit) {
+    const port = urlPort(url)
+    if (!port) return undefined
+    const matches = candidates.filter(candidate => candidate.port === port)
+    return matches.length === 1 ? matches[0] : undefined
+  }
+  if (profile) {
+    const matches = candidates.filter(candidate => candidate.profile === profile)
+    if (matches.length === 1) return matches[0]
+    if (matches.length > 1 || profileExplicit) return undefined
+  }
+  return candidates.length === 1 ? candidates[0] : undefined
+}
+
+function serverList(candidates) {
+  return candidates.map(candidate => `PID ${candidate.pid} profile ${candidate.profile} ${candidate.url}`).join('; ')
+}
+
+/**
+ * Resolve the one process the command targets. The listener on the configured URL is authoritative; a process merely
+ * matching the profile name elsewhere is reported separately and is never stopped by mistake. When listener lookup is
+ * unavailable, the older command-line scan is the fallback and `identity` says so.
+ */
+function target(args) {
+  // One process listing serves both the profile scan and the recorded PID, so a status costs one PowerShell query in
+  // addition to the listener probe instead of three.
+  const records = WINDOWS ? windowsProcesses() : ps(['-ax'], true)
+  const found = records.filter(item => item.pid !== process.pid).filter(item => serviceProcess(item, args.profile)).map(item => item.pid)
+  const recorded = recordedServicePid(args.profile, args.home)
+  const recordedRunning = recorded !== undefined && records.some(item => item.pid === recorded && serviceProcess(item, args.profile))
+  const scan = recordedRunning && !found.includes(recorded) ? [...found, recorded] : found
+  const listener = listenerPids(args.url)
+  if (listener === null) return { pids: scan, scan, recorded: recordedRunning ? recorded : undefined, listener: null, foreign: [], unlistening: [], identity: 'scan' }
+  const ours = listener.filter(pid => records.some(item => item.pid === pid && serviceProcess(item, args.profile)))
+  return {
+    pids: ours,
+    scan,
+    recorded: recordedRunning ? recorded : undefined,
+    listener,
+    foreign: listener.filter(pid => !ours.includes(pid)).map(pid => ({ pid })),
+    unlistening: scan.filter(pid => !ours.includes(pid)),
+    identity: 'listener',
+  }
 }
 
 function apiRequest(url, method, path, headers, timeout, content) {
@@ -430,8 +651,8 @@ function apiRequest(url, method, path, headers, timeout, content) {
 }
 
 /** Fetch health and setup status from the management API, or return null if unreachable. */
-export async function state(url) {
-  const response = await apiRequest(url, 'GET', '/orchestrator/api/state', { 'x-orchestrator-request': '1' }, 2_000)
+export async function state(url, timeout = 2_000) {
+  const response = await apiRequest(url, 'GET', '/orchestrator/api/state', { 'x-orchestrator-request': '1' }, timeout)
   if (response === null || response.status < 200 || response.status >= 300) return null
   let value
   try { value = JSON.parse(response.body) } catch { return null }
@@ -466,17 +687,26 @@ export function outcome(pids, current) {
 }
 
 /** Read the service's process, health and ownership facts without printing them. */
-async function statusValue(args) {
-  const pids = processes(args.profile)
-  const current = pids.length ? await state(args.url) : null
+async function statusValue(args, stateTimeout = 2_000, stateAttempts = 1) {
+  const found = target(args)
+  const pids = found.pids
+  let current = pids.length ? await state(args.url, stateTimeout) : null
+  // A deployment survival check must not fail on one slow answer while the process still owns the URL.
+  for (let attempt = 1; attempt < stateAttempts && pids.length && !current; attempt++) {
+    await sleep(500)
+    current = await state(args.url, stateTimeout)
+  }
   const job = WINDOWS && pids.length === 1 ? processJobFacts(pids[0]) : null
   const inJob = job ? job.inJob : null
   const foreignJob = job ? job.foreignJob : null
-  const value = { pids, cwd: ROOT, url: args.url, profile: args.profile, manually_stopped: stopped(args.profile),
-    deployment: deploymentFacts(args.profile, args.home), health: current ? current.health : null,
+  const facts = startFacts(args.profile, args.home)
+  const homeMatches = !facts?.home || resolve(facts.home) === resolve(args.home)
+  const value = { pids, cwd: ROOT, url: args.url, profile: args.profile, manually_stopped: stopped(args.profile, args.home),
+    identity: found.identity, listener: found.listener, foreign: found.foreign, unlistening: found.unlistening,
+    home_matches: homeMatches, deployment: deploymentFacts(args.profile, args.home), health: current ? current.health : null,
     errors: current ? current.errors : null, setup: current ? current.setup : null, feishu: current ? current.feishu : null,
-    inJob, foreignJob, start: startFacts(args.profile) }
-  return { pids, current, inJob, foreignJob, value }
+    inJob, foreignJob, start: facts }
+  return { pids, current, inJob, foreignJob, identity: found.identity, listener: found.listener, value }
 }
 
 async function status(args) {
@@ -521,6 +751,7 @@ export function deploymentFacts(profile, home = process.env.DSH_HOME || join(hom
   const changed = gitFact('status', '--porcelain')
   return {
     profile, home, profileDir, serviceScript: existsSync(join(home, 'service.ps1')) ? join(home, 'service.ps1') : undefined,
+    serviceDirectory: serviceDirectory(home), logs: logsDirectory(home), control: controlDirectory(profile, home),
     stateDir: configuredStateDir(home, profile), bundleLink, ...bundle ? { bundleTarget: bundle } : {},
     git: head ? { head, branch, dirty: changed === undefined ? undefined : changed.length > 0 } : undefined,
     ...libFacts ? { lib: libFacts } : {},
@@ -548,8 +779,15 @@ async function verify(args) {
     }
     return undefined
   }
-  const first = await statusValue(args)
+  const first = await statusValue(args, 5_000, 2)
+  if (first.identity !== 'listener') {
+    return fail('Cannot prove which process owns the management URL; the listener lookup is unavailable.')
+  }
   if (first.pids.length !== 1) return fail(`Expected exactly one running service for ${args.profile}; found ${first.pids.length}.`)
+  if (first.value.foreign.length) return fail('Another process also owns the management URL; the service identity is ambiguous.')
+  if (first.value.home_matches === false) {
+    return fail(`The service at ${args.url} was started from another DSH home (${first.value.start?.home}); it is not this target.`)
+  }
   if (!runtimeUp(first.current)) return fail('The management API did not answer ready (or paused); the service is not usable.')
   if (WINDOWS) {
     const problem = jobProblem(first, '')
@@ -557,16 +795,16 @@ async function verify(args) {
   }
   const pid = first.pids[0]
   if (args.survival_seconds > 0) await sleep(args.survival_seconds * 1_000)
-  const second = await statusValue(args)
-  if (second.pids.length !== 1 || second.pids[0] !== pid) {
-    return fail(`The service did not keep its process across the ${args.survival_seconds}s survival window; it was ${pid}.`)
+  const second = await statusValue(args, 5_000, 2)
+  if (second.pids.length !== 1 || second.pids[0] !== pid || !(second.listener ?? []).includes(pid)) {
+    return fail(`The service did not keep its process and management URL across the ${args.survival_seconds}s survival window; it was ${pid}.`)
   }
   if (!runtimeUp(second.current)) return fail('The management API stopped answering usable within the survival window.')
   if (WINDOWS) {
     const problem = jobProblem(second, ' after the survival window')
     if (problem) return fail(problem)
   }
-  const value = { ok: true, at, pid, url: args.url, profile: args.profile, inJob: second.inJob,
+  const value = { ok: true, at, pid, url: args.url, profile: args.profile, identity: second.identity, inJob: second.inJob,
     foreignJob: second.foreignJob, survivalSeconds: args.survival_seconds, health: second.current.health,
     start: second.value.start }
   process.stdout.write(JSON.stringify(value, null, 2) + '\n')
@@ -713,33 +951,147 @@ export function stopRequest(url) {
   return apiRequest(url, 'POST', '/orchestrator/api/service/stop', { 'x-orchestrator-request': '1', 'content-length': '0' }, 10_000)
 }
 
-async function stop(args, intentional = true) {
-  const pids = processes(args.profile)
-  if (pids.length > 1) throw new Error('Multiple dsh-superagent processes found; refusing to choose one.')
-  // Write the stop marker before waiting so monitors respect the intentional stop even if graceful shutdown times out.
-  if (intentional) writeFileSync(join(control(args.profile), 'manually-stopped'), localStamp() + '\n')
+/** The PID a control directory records, from the pid file or the newest start facts. */
+function controlPid(directory) {
+  try {
+    const pid = Number(readFileSync(join(directory, 'service.pid'), 'utf8').trim())
+    if (Number.isInteger(pid) && pid > 0) return pid
+  } catch { /* Try the start facts. */ }
+  try {
+    const pid = Number(JSON.parse(readFileSync(join(directory, 'service-start.json'), 'utf8'))?.pid)
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined
+  } catch { return undefined }
+}
+
+/** Homes worth checking for a discovered server's control files: the asked-for one and the usual .dsh* homes. */
+function homesToSearch(preferredHome) {
+  const homes = new Set([resolve(preferredHome), join(homedir(), '.dsh-superagent')])
+  try {
+    for (const entry of readdirSync(homedir(), { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name.startsWith('.dsh')) homes.add(join(homedir(), entry.name))
+    }
+  } catch { /* The preferred home is still checked. */ }
+  return [...homes]
+}
+
+/** The control directory and home that record `pid`, so a stop marker reaches the monitor that reads it. */
+function findServerControl(server, preferredHome) {
+  for (const home of homesToSearch(preferredHome)) {
+    const directory = controlDirectory(server.profile, home)
+    if (controlPid(directory) === server.pid) return { home, profile: server.profile, directory, legacy: false }
+  }
+  const legacy = legacyControl(server.profile)
+  if (controlPid(legacy) === server.pid) return { home: ROOT, profile: server.profile, directory: legacy, legacy: true }
+  return undefined
+}
+
+/** Write the intentional-stop marker beside the server's own control files, with a best-effort fallback. */
+function markServerStopped(server, preferredHome) {
+  const found = findServerControl(server, preferredHome)
+  if (found) {
+    writeFileSync(join(found.directory, 'manually-stopped'), localStamp() + '\n')
+    return found
+  }
+  const directory = control(server.profile, preferredHome)
+  writeFileSync(join(directory, 'manually-stopped'), localStamp() + '\n')
+  return { home: resolve(preferredHome), profile: server.profile, directory, fallback: true }
+}
+
+/** Remove the recorded PID in every control directory that names this server. */
+function removeServerPid(server, preferredHome) {
+  const found = findServerControl(server, preferredHome)
+  const directories = new Set([controlDirectory(server.profile, preferredHome), legacyControl(server.profile)])
+  if (found) directories.add(found.directory)
+  for (const directory of directories) {
+    try {
+      if (Number(readFileSync(join(directory, 'service.pid'), 'utf8').trim()) === server.pid) {
+        rmSync(join(directory, 'service.pid'), { force: true })
+      }
+    } catch { /* The file is already gone. */ }
+  }
+}
+
+/** Gracefully stop one discovered or explicit server and wait for exactly that process to exit. */
+async function stopServer(args, server, intentional) {
+  const marker = intentional ? markServerStopped(server, args.home) : undefined
+  if (marker?.fallback) {
+    process.stderr.write(`Warning: no control directory matched PID ${server.pid}; the stop marker was written to ${marker.directory}, `
+      + 'so a recovery monitor using another home may not see it.\n')
+  }
   if (WINDOWS) {
-    if (pids.length) await stopRequest(args.url)
+    const response = await stopRequest(server.url)
+    if (response === null) throw new Error(`Could not ask ${server.url} to stop PID ${server.pid}; no forced kill was sent.`)
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`The management API at ${server.url} answered ${response.status} to the stop request; no forced kill was sent.`)
+    }
   } else {
-    for (const pid of pids) process.kill(pid, 'SIGINT')
+    try { process.kill(server.pid, 'SIGINT') } catch { /* It exited while being resolved. */ }
   }
   const deadline = Date.now() + args.stop_timeout * 1000
-  while (pids.some(pid => running(pid, args.profile))) {
+  while (alive(server.pid)) {
     if (Date.now() >= deadline) throw new Error('Graceful stop timed out; no forced kill was sent. Check status.')
     await sleep(500)
   }
-  rmSync(join(control(args.profile), 'service.pid'), { force: true })
-  process.stdout.write(intentional ? 'dsh-superagent stopped. Automatic recovery is paused until start/restart.\n' : 'dsh-superagent stopped.\n')
+  if (server.port) {
+    const remaining = listenerPids(server.url) ?? []
+    if (remaining.includes(server.pid)) throw new Error('The stopped process still owns its management URL; no forced kill was sent. Check status.')
+  }
+  removeServerPid(server, args.home)
+  process.stdout.write(intentional
+    ? `dsh-superagent stopped (PID ${server.pid}, ${server.url}, profile ${server.profile}). Automatic recovery is paused until start/restart.\n`
+    : `dsh-superagent stopped (PID ${server.pid}, ${server.url}, profile ${server.profile}).\n`)
+}
+
+async function stop(args, intentional = true) {
+  let server
+  // Windows has a management API and WMI; discover there. An explicit URL is always exact, and POSIX keeps the older
+  // scan-based stop so its profile-scoped tmux lifecycle is unchanged.
+  if (args.url_explicit || !WINDOWS) {
+    const found = target(args)
+    if (found.foreign.length) {
+      const owners = found.foreign.map(entry => entry.pid).join(', ')
+      throw new Error(`The management URL ${args.url} is owned by PID ${owners}, which is not the dsh-superagent process for profile ${args.profile}; refusing to stop it.`)
+    }
+    if (found.pids.length > 1) throw new Error('Multiple dsh-superagent processes found; refusing to choose one.')
+    if (found.pids.length === 1) {
+      server = { pid: found.pids[0], profile: args.profile, port: urlPort(args.url), url: args.url }
+    } else {
+      if (found.recorded) {
+        throw new Error(`dsh-superagent process PID ${found.recorded} is running but does not listen at ${args.url}; it cannot be stopped gracefully.`)
+      }
+      if (intentional) writeFileSync(join(control(args.profile, args.home), 'manually-stopped'), localStamp() + '\n')
+      process.stdout.write(`No dsh-superagent server is listening at ${args.url}; nothing to stop. `
+        + 'Automatic recovery is paused until start/restart.\n')
+      return
+    }
+  } else {
+    // No URL was named: find the server instead of making a person discover its port and home.
+    const records = windowsProcesses()
+    const candidates = await discoverServers(records)
+    server = chooseServer(candidates, { profile: args.profile, url: args.url, urlExplicit: false, profileExplicit: args.profile_explicit })
+    if (!server) {
+      if (candidates.length) {
+        throw new Error(`Multiple dsh-superagent servers are running: ${serverList(candidates)}. Pass --url or --profile to choose one.`)
+      }
+      if (intentional) writeFileSync(join(control(args.profile, args.home), 'manually-stopped'), localStamp() + '\n')
+      process.stdout.write('No running dsh-superagent server was found; nothing to stop. '
+        + 'Automatic recovery is paused until start/restart.\n')
+      return
+    }
+  }
+  await stopServer(args, server, intentional)
 }
 
 function profileLogName(profile) {
   return new RegExp(`^dsh-superagent-${profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d{8}-\\d{6}-\\d+\\.log$`)
 }
 
-/** Retain only the newest `KEEP_LOGS` log files for `profile`. */
-function pruneLogs(profile) {
+/** Retain only the newest `KEEP_LOGS` log files for `profile` in this home. Logs from the old checkout location stay. */
+function pruneLogs(profile, home) {
   const name = profileLogName(profile)
-  const logs = readdirSync(ARTIFACTS).filter(entry => name.test(entry)).map(entry => join(ARTIFACTS, entry))
+  const directory = logsDirectory(home)
+  mkdirSync(directory, { recursive: true })
+  const logs = readdirSync(directory).filter(entry => name.test(entry)).map(entry => join(directory, entry))
     .sort((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs)
   for (const path of logs.slice(0, Math.max(0, logs.length - KEEP_LOGS))) rmSync(path, { force: true })
 }
@@ -812,8 +1164,28 @@ export function restrictWindowsLog(path) {
 
 async function start(args) {
   const session = 'dsh-' + args.profile
-  let pids = processes(args.profile)
-  if (pids.length > 1) throw new Error('Multiple dsh-superagent processes found; refusing to start another.')
+  const found = target(args)
+  let pids = found.pids
+  if (args.url_explicit && found.foreign.length) {
+    const owners = found.foreign.map(entry => entry.pid).join(', ')
+    throw new Error(`The management URL ${args.url} is owned by PID ${owners}, which is not the dsh-superagent process for profile ${args.profile}; refusing to start a second instance.`)
+  }
+  if (pids.length > 1) throw new Error('Multiple dsh-superagent processes listen at the management URL; refusing to start another.')
+  if (!pids.length && found.recorded) {
+    throw new Error(`This home's dsh-superagent process (PID ${found.recorded}) is running but does not listen at ${args.url}; refusing to start another. Check --url, or stop the other instance.`)
+  }
+  if (!pids.length && !args.url_explicit && WINDOWS) {
+    // Without a named URL, find an already running server instead of starting a second one on a guessed port.
+    const candidates = await discoverServers(windowsProcesses())
+    const running = chooseServer(candidates, { profile: args.profile, url: args.url, urlExplicit: false, profileExplicit: args.profile_explicit })
+    if (running) {
+      process.stdout.write(`dsh-superagent is already running (PID ${running.pid}, ${running.url}, profile ${running.profile}); no duplicate started.\n`)
+      return 0
+    }
+    if (candidates.length) {
+      throw new Error(`Multiple dsh-superagent servers are running: ${serverList(candidates)}. Pass --url or --profile to choose one.`)
+    }
+  }
   let method = pids.length ? 'existing' : undefined
   let outsideJobLog
   let outsideJobEnvironment
@@ -836,20 +1208,21 @@ async function start(args) {
     // Probe the tmux session before the URL so an existing orchestrator is still refused without touching tmux.
     const sessionExists = WINDOWS || outsideJob ? false : spawnSync('tmux', ['-L', socket, 'has-session', '-t', '=' + session]).status === 0
     if (await state(args.url) !== null) throw new Error('An existing orchestrator answers at this URL; refusing duplicate startup.')
-    mkdirSync(ARTIFACTS, { recursive: true })
+    const logs = logsDirectory(args.home)
+    mkdirSync(logs, { recursive: true })
     const stamp = new Date()
     const pad = value => String(value).padStart(2, '0')
-    const log = join(ARTIFACTS, `dsh-superagent-${args.profile}-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}`
+    const log = join(logs, `dsh-superagent-${args.profile}-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}`
       + `-${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}-${process.pid}.log`)
     if (outsideJob) {
       const wrapper = join(ROOT, 'scripts', 'service-start.ps1')
       if (!existsSync(wrapper)) throw new Error(`Cannot start outside a Windows Job: ${wrapper} is missing.`)
       // The same prune-friendly name the ordinary service log uses; the child's service log has its own PID.
       outsideJobLog = log
-      outsideJobEnvironment = writeStartEnvironment(args.profile)
+      outsideJobEnvironment = writeStartEnvironment(args.profile, args.home)
       const shell = findExecutable('pwsh') ?? 'powershell.exe'
       const commandLine = outsideJobStartCommand({ shell, wrapper, checkout: ROOT, environmentFile: outsideJobEnvironment,
-        profile: args.profile, url: args.url, timeout: args.timeout, log: outsideJobLog })
+        home: args.home, profile: args.profile, url: args.url, timeout: args.timeout, log: outsideJobLog })
       try {
         createOutsideJob(commandLine, ROOT)
       } catch (error) {
@@ -862,7 +1235,7 @@ async function start(args) {
     } else {
       writeFileSync(log, '', { mode: 0o600 })
       if (WINDOWS) restrictWindowsLog(log)
-      pruneLogs(args.profile)
+      pruneLogs(args.profile, args.home)
       if (WINDOWS) {
         const invocation = windowsStart(dsh, args.profile)
         const environment = { ...process.env }
@@ -873,35 +1246,38 @@ async function start(args) {
           cwd: ROOT, windowsHide: true, env: environment })
         child.unref()
         closeSync(output)
-        // The recorded PID is a convenience; the process scan is authoritative after a restart.
+        // The recorded PID is a convenience; the listening owner is authoritative after a restart.
         const deadline = Date.now() + 5_000
-        while (Date.now() < deadline && !processes(args.profile).length) await sleep(200)
-        pids = processes(args.profile)
-        if (pids.length) writeFileSync(join(control(args.profile), 'service.pid'), `${pids[0]}\n`)
+        while (Date.now() < deadline && !target(args).pids.length) await sleep(200)
+        pids = target(args).pids
+        if (pids.length) writeFileSync(join(control(args.profile, args.home), 'service.pid'), `${pids[0]}\n`)
         method = 'spawn'
       } else {
-        const target = sessionExists ? ['new-window', '-t', '=' + session + ':'] : ['new-session', '-s', session]
-        const started = spawnSync('tmux', ['-L', socket, ...tmuxStart(target, dsh, args.profile, log)], { encoding: 'utf8' })
+        const tmuxTarget = sessionExists ? ['new-window', '-t', '=' + session + ':'] : ['new-session', '-s', session]
+        const started = spawnSync('tmux', ['-L', socket, ...tmuxStart(tmuxTarget, dsh, args.profile, log)], { encoding: 'utf8' })
         if (started.error) throw started.error
         if (started.status !== 0) throw new Error((started.stderr ?? '').trim() || `tmux exited with code ${started.status}`)
         const pane = (started.stdout ?? '').trim()
-        if (/^\d+$/.test(pane)) writeFileSync(join(control(args.profile), 'service.pid'), pane + '\n')
+        if (/^\d+$/.test(pane)) writeFileSync(join(control(args.profile, args.home), 'service.pid'), pane + '\n')
         method = 'tmux'
       }
     }
     process.stdout.write('Log: ' + (outsideJob ? outsideJobLog : log) + '\n')
   } else {
-    writeFileSync(join(control(args.profile), 'service.pid'), `${pids[0]}\n`)
+    writeFileSync(join(control(args.profile, args.home), 'service.pid'), `${pids[0]}\n`)
     process.stdout.write(`dsh-superagent already running (PID ${pids[0]}); no duplicate started.\n`)
   }
-  rmSync(join(control(args.profile), 'manually-stopped'), { force: true })
+  for (const directory of [control(args.profile, args.home), legacyControl(args.profile)]) {
+    rmSync(join(directory, 'manually-stopped'), { force: true })
+  }
   // A wrapper child only launches the detached service; the parent that holds the profile lock waits for health.
   if (args.outside_job_child) return 0
   const deadline = Date.now() + args.timeout * 1000
   while (Date.now() < deadline) {
     const current = await state(args.url)
-    if (processes(args.profile).length && runtimeUp(current)) {
+    if (runtimeUp(current)) {
       const inspected = await statusValue(args)
+      if (!inspected.pids.length) { await sleep(1000); continue }
       process.stdout.write(JSON.stringify(inspected.value, null, 2) + '\n')
       const code = outcome(inspected.pids, inspected.current)
       if (current.setup) {
@@ -916,8 +1292,10 @@ async function start(args) {
         process.stdout.write(`${name} reports an error, which a restart does not fix: ${detail}\n`)
       }
       if (method !== 'existing' && inspected.pids.length === 1) {
-        recordStartFacts(args.profile, { at: new Date().toISOString(), pid: inspected.pids[0], method,
-          inJob: inspected.inJob, foreignJob: inspected.foreignJob, url: args.url, launchedBy: process.pid })
+        writeFileSync(join(control(args.profile, args.home), 'service.pid'), `${inspected.pids[0]}\n`)
+        recordStartFacts(args.profile, args.home, { at: new Date().toISOString(), pid: inspected.pids[0], method,
+          home: resolve(args.home), identity: inspected.identity, inJob: inspected.inJob,
+          foreignJob: inspected.foreignJob, url: args.url, launchedBy: process.pid })
       }
       if (outsideJobEnvironment) rmSync(outsideJobEnvironment, { force: true })
       if (WINDOWS && method !== 'existing') {
@@ -934,6 +1312,7 @@ async function start(args) {
     }
     await sleep(1000)
   }
+  if (outsideJobEnvironment) rmSync(outsideJobEnvironment, { force: true })
   if (outsideJobLog) {
     const tail = logTail(outsideJobLog)
     if (tail) process.stderr.write('The independent start wrapper logged:\n' + tail + '\n')
@@ -947,8 +1326,9 @@ export function parseArgv(argv, env = process.env) {
   const args = { action: undefined, watchdog_action: undefined, chat: undefined, note: undefined,
     ticket: undefined, reason: undefined, snapshot_at: undefined, idempotency_key: undefined,
     profile: env.DSH_SUPERAGENT_PROFILE || 'superagent', url: env.DSH_SUPERAGENT_URL || 'http://127.0.0.1:3082',
-home: env.DSH_HOME || join(homedir(), '.dsh'), timeout: 60, stop_timeout: 300, stale_minutes: 30, limit: 20,
-    respect_stop: false, survival_seconds: 20, outside_job_child: false }
+    home: env.DSH_HOME || join(homedir(), '.dsh'), timeout: 60, stop_timeout: 300, stale_minutes: 30, limit: 20,
+    respect_stop: false, survival_seconds: 20, outside_job_child: false,
+    profile_explicit: false, home_explicit: false, url_explicit: false }
   const positionals = []
   const value = (index, name) => {
     const next = argv[index + 1]
@@ -963,12 +1343,12 @@ home: env.DSH_HOME || join(homedir(), '.dsh'), timeout: 60, stop_timeout: 300, s
   }
   for (let index = 0; index < argv.length; index++) {
     const word = argv[index]
-    if (word === '--profile') { args.profile = value(index, '--profile'); index++ }
-    else if (word.startsWith('--profile=')) args.profile = word.slice('--profile='.length)
-    else if (word === '--home') { args.home = value(index, '--home'); index++ }
-    else if (word.startsWith('--home=')) args.home = word.slice('--home='.length)
-    else if (word === '--url') { args.url = value(index, '--url'); index++ }
-    else if (word.startsWith('--url=')) args.url = word.slice('--url='.length)
+    if (word === '--profile') { args.profile = value(index, '--profile'); args.profile_explicit = true; index++ }
+    else if (word.startsWith('--profile=')) { args.profile = word.slice('--profile='.length); args.profile_explicit = true }
+    else if (word === '--home') { args.home = value(index, '--home'); args.home_explicit = true; index++ }
+    else if (word.startsWith('--home=')) { args.home = word.slice('--home='.length); args.home_explicit = true }
+    else if (word === '--url') { args.url = value(index, '--url'); args.url_explicit = true; index++ }
+    else if (word.startsWith('--url=')) { args.url = word.slice('--url='.length); args.url_explicit = true }
     else if (word === '--timeout') { args.timeout = Number(value(index, '--timeout')); index++ }
     else if (word === '--stop-timeout') { args.stop_timeout = Number(value(index, '--stop-timeout')); index++ }
     else if (word === '--survival-seconds') { args.survival_seconds = Number(value(index, '--survival-seconds')); index++ }
@@ -1045,8 +1425,8 @@ home: env.DSH_HOME || join(homedir(), '.dsh'), timeout: 60, stop_timeout: 300, s
 }
 
 /** Take the profile's control lock without waiting; a stale lock from a crashed operation is removed after ten minutes. */
-function acquireLock(profile) {
-  const lock = join(control(profile), 'operation.lock')
+function acquireLock(profile, home) {
+  const lock = join(control(profile, home), 'operation.lock')
   const take = () => { mkdirSync(lock); return () => rmSync(lock, { recursive: true, force: true }) }
   try { return take() } catch (error) {
     if (error?.code !== 'EEXIST') throw error
@@ -1061,13 +1441,21 @@ function acquireLock(profile) {
   }
 }
 
-const USAGE = `Usage: dsh-superagent [--respect-stop] <start|stop|restart|status|watchdog|verify> [options]
+const USAGE = `Usage: dsh-superagent <start|stop|restart|status>
+       dsh-superagent verify [--survival-seconds <n>]
+       dsh-superagent watchdog <snapshot|run|runs|recover|report> [options]
+       dsh-superagent --respect-stop start|restart
 
-Manage a local dsh-superagent service (one DSH profile, default \`superagent\`).
+Manage one local dsh-superagent service (default profile \`superagent\`). The lifecycle actions need no options, and
+normal use should not pass a target: on Windows, \`stop\` finds the running superagent from its management state and
+stops the only one (or the one matching the configured profile); \`start\` reports an already running server instead
+of starting a second one. The versioned PowerShell entry (\`scripts\\dsh-superagent.ps1 <action>\`) reads the machine
+configuration for the checkout, home, profile and URL, so an operator or an LLM never constructs those by hand.
 
-\`start\` and \`restart\` start the service outside any Windows Job when the caller is inside one, so a closing DSH tool
-command cannot kill it; \`status\` reports the process's Job membership and how the newest start began. A service that
+The process that owns the listening socket of the configured URL is authoritative for a direct target; a process that
+merely matches the profile elsewhere is reported as \`unlistening\` and is never stopped by mistake. A service that
 spawns a child joins its own kill-on-close Job, which it holds, so \`status\` separates that from a Job it inherited.
+Logs and control files live under \`<home>/service/\`.
 \`verify\` proves the service survived a deployment executor's exit: one process, the management API usable, no Windows
 Job it did not create, and the same process after --survival-seconds.
 \`watchdog\` prints a read-only JSON snapshot of the service, its open Tickets and the last recorded observation;
@@ -1078,22 +1466,24 @@ worker Session is missing, when the service's recovery mode is enforce;
 \`watchdog report --chat <chat id> [--note <text>]\` asks the server to send the current observation summary to that
 Feishu chat through the Feishu Source's bot.
 
-Options:
+Advanced targeting and timing (operators and tests only; the machine configuration normally supplies these):
   --profile <name>       DSH profile that loads dsh-superagent (default: $DSH_SUPERAGENT_PROFILE or superagent).
-  --home <path>          DSH home holding that profile (default: $DSH_HOME or ~/.dsh); \`status\` reports it.
-  --url <url>            Health-check URL (default: $DSH_SUPERAGENT_URL or http://127.0.0.1:3082).
+  --home <path>          DSH home holding that profile and its service logs/control files (default: $DSH_HOME or ~/.dsh).
+  --url <url>            Exact health-check target; omit it to let Windows discover the running server.
   --timeout <seconds>    Startup timeout (default: 60).
   --stop-timeout <s>     Graceful shutdown timeout (default: 300).
   --survival-seconds <n> How long \`verify\` waits before its second health check (default: 20, at most 3600).
+  --respect-stop         For monitoring: never start/restart after an intentional stop.
+
+Watchdog options:
   --stale-minutes <n>    Watchdog signal threshold in minutes (default: 30, at most 1440).
   --chat <chat id>       Feishu chat that \`watchdog report\` posts to (required, an \`oc_\` id the bot is in).
-  --note <text>          The Watchdog's one-sentence judgement for \`watchdog run\` or \`watchdog report\` (at most 500 characters).
+  --note <text>          The Watchdog's one-sentence judgement (at most 500 characters).
   --ticket <id>          Ticket for \`watchdog recover\`.
   --reason <text>        One-sentence evidence for \`watchdog recover\` (at most 2000 characters).
   --snapshot-at <time>   The snapshot's \`at\` value for \`watchdog recover\`; an older one is refused.
   --idempotency-key <k>  Optional stable recovery key; the default names the Ticket and snapshot.
-  --limit <n>            How many recent runs \`watchdog runs\` prints (default: 20, at most 100).
-  --respect-stop         For monitoring: never start/restart after an intentional stop.`
+  --limit <n>            How many recent runs \`watchdog runs\` prints (default: 20, at most 100).`
 
 async function main(argv = process.argv.slice(2)) {
   const args = parseArgv(argv)
@@ -1111,9 +1501,9 @@ async function main(argv = process.argv.slice(2)) {
     if (args.action !== 'start') throw new Error('--outside-job-child is only valid for start')
     return await start(args)
   }
-  const release = acquireLock(args.profile)
+  const release = acquireLock(args.profile, args.home)
   try {
-    if (args.respect_stop && (args.action === 'start' || args.action === 'restart') && stopped(args.profile)) {
+    if (args.respect_stop && (args.action === 'start' || args.action === 'restart') && stopped(args.profile, args.home)) {
       process.stdout.write('Intentional stop is active; automatic recovery skipped.\n')
       return 0
     }

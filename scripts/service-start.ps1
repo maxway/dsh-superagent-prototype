@@ -9,6 +9,7 @@
 param(
   [Parameter(Mandatory = $true)][string]$Checkout,
   [string]$EnvFile = '',
+  [string]$DshHome = '',
   [Parameter(Mandatory = $true)][string]$Profile,
   [Parameter(Mandatory = $true)][string]$Url,
   [int]$TimeoutSeconds = 60,
@@ -28,12 +29,15 @@ try {
   # A WMI-created process starts with the user's default environment, which normally already has this; restore it when the
   # caller supplied it only for its own session.
   if (-not $env:LUMOS_API_KEY) { $env:LUMOS_API_KEY = [Environment]::GetEnvironmentVariable('LUMOS_API_KEY', 'User') }
+  # Pin the same DSH home as the parent even when the caller did not pass it in the environment file.
+  if ($DshHome) { $env:DSH_HOME = $DshHome }
 
   $node = (Get-Command node -ErrorAction Stop).Source
   $controlScript = Join-Path $Checkout 'scripts\dsh-superagent'
   if (-not (Test-Path -LiteralPath $controlScript)) { throw "The control script does not exist: $controlScript" }
   $arguments = @($controlScript, 'start', '--outside-job-child', '--profile', $Profile, '--url', $Url,
     '--timeout', [string]$TimeoutSeconds)
+  if ($DshHome) { $arguments += @('--home', $DshHome) }
 
   Set-Location -LiteralPath $Checkout
   if ($Log) { & $node @arguments *>> $Log } else { & $node @arguments }
