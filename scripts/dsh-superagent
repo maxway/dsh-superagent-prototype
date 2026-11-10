@@ -261,8 +261,9 @@ export function processJobFacts(pid, run = runPowerShell) {
 
 /** The PowerShell that asks the WMI provider to create a process outside the caller's Job and environment. */
 const WMI_CREATE = '$ErrorActionPreference = \'Stop\'\n'
+  + '$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }\n'
   + '$process = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ '
-  + 'CommandLine = $env:DSH_OUTSIDE_JOB_COMMAND; CurrentDirectory = $env:DSH_OUTSIDE_JOB_CWD }\n'
+  + 'CommandLine = $env:DSH_OUTSIDE_JOB_COMMAND; CurrentDirectory = $env:DSH_OUTSIDE_JOB_CWD; ProcessStartupInformation = $startup }\n'
   + 'if ($process.ReturnValue -ne 0) { throw "Win32_Process.Create returned $($process.ReturnValue)" }\n'
   + '$process.ProcessId'
 
