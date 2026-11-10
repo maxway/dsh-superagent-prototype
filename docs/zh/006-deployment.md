@@ -285,7 +285,7 @@ Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --
 
 ### 在 Windows Job 之外启动服务
 
-DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Windows Job；从其中启动的服务会在命令结束时被终止，而命令内部此前的健康检查可能已经通过。`scripts/dsh-superagent start` 会检测这一状态，让 WMI 提供程序在 Job 之外创建 `scripts/service-start.ps1`，并等待健康检查。该包装脚本从受限文件中恢复服务环境、启动分离的服务后退出；它从不启动 observer。不在 Job 中的普通终端启动仍走原路径；计划任务所在的 Job 也按同样方式离开，`status` 会报告实时的 `inJob` 值以及 `start` 中最近一次启动的方式。无法证明服务位于所有 Windows Job 之外的启动会失败，而不是留下一个可能被关闭命令杀死的服务。
+DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Windows Job；从其中启动的服务会在命令结束时被终止，而命令内部此前的健康检查可能已经通过。`scripts/dsh-superagent start` 会检测这一状态，让 WMI 提供程序在 Job 之外创建 `scripts/service-start.ps1`，并等待健康检查。WMI 创建进程时会请求隐藏窗口。该包装脚本从受限文件中恢复服务环境、启动分离的服务后退出；它从不启动 observer。不在 Job 中的普通终端启动仍走原路径；计划任务所在的 Job 也按同样方式离开，`status` 会报告实时的 `inJob` 值以及 `start` 中最近一次启动的方式。无法证明服务位于所有 Windows Job 之外的启动会失败，而不是留下一个可能被关闭命令杀死的服务。
 
 带版本的 `scripts\dsh-superagent.ps1` 是服务入口：它校验机器配置并调用控制脚本，因此服务在进程位于 Job 之外时仍使用自己的 profile home 和凭据。操作员的 `C:\Users\dd\.dsh-superagent\service.ps1` 仍是既有工具的兼容入口；切换后应缩减为指向该入口的 shim。`scripts/service-start.ps1` 也可以由独立计划任务直接运行；它会收到与父进程相同的 `-DshHome`。该任务应通过 `wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\service-start.ps1 ...` 启动，使包装脚本和它运行的 node 控制脚本都没有窗口。
 

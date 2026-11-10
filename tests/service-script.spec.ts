@@ -590,6 +590,22 @@ setInterval(() => {}, 60_000)
       try { port = Number(readFileSync(portFile, 'utf8')) } catch { /* The service has not listened yet. */ }
     }
     expect(port).toBeGreaterThan(0)
+    const consoleVisible = execFileSync('powershell.exe', ['-NoProfile', '-Command', `
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class ConsoleVisibility {
+  [DllImport("kernel32.dll")] public static extern bool FreeConsole();
+  [DllImport("kernel32.dll")] public static extern bool AttachConsole(uint pid);
+  [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+}
+'@
+[ConsoleVisibility]::FreeConsole() | Out-Null
+if (-not [ConsoleVisibility]::AttachConsole(${servicePid})) { throw 'Could not attach to the test service console' }
+[ConsoleVisibility]::IsWindowVisible([ConsoleVisibility]::GetConsoleWindow())
+`], { encoding: 'utf8', windowsHide: true }).trim()
+    expect(consoleVisible).toBe('False')
     const url = `http://127.0.0.1:${port}`
     const verified = await run([controlScript, 'verify', '--profile', profile, '--url', url, '--home', home, '--survival-seconds', '1'])
     expect(verified).toMatchObject({ code: 0, stderr: '' })
