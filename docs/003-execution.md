@@ -28,6 +28,12 @@ Executor Sessions run commands without approval as the operator's OS user. Their
 
 The main Session uses `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for routing. Sessions retain the preset selected at creation. Worker subagents use DeepSeek Harness's `standard` preset.
 
+### Ticket categories and models
+
+Every new Ticket carries one category, fixed at acceptance: `query` answers a question with read-only investigation, `research` investigates and reports with read-only means, and `development` changes code and runs checks. A read-only reply question defaults to `query`; an accept without a category defaults to `development`. Out-of-category work is not done under the Ticket: the worker stops and hands the findings back so a person can raise a new request. One Trigger decides one Ticket; a mixed request keeps its primary deliverable, and the rest becomes a new request.
+
+A worker starts on `executor.models.<category>` from the `executor` settings block, falling back to `executor.model`, then to the host default. The model is seeded when the worker Session is created; an existing Session keeps the model it started with, so changing the setting never switches a running worker. The panel's Execution settings edit the fallback model; category models can be saved in the same `executor` block through the management API or `orchestrator_settings_save`, for example `"models": {"query": {"provider": "…", "model": "…"}, "research": null, "development": null}`. A category model does not grant execution: `query` and `research` remain read-only instructions, not an OS sandbox.
+
 ### Reply-only tickets
 
 A Ticket accepted from a read-only reply question has the `reply` Mandate strength. Only a group scope can admit one; an unlisted direct message is not admitted and never becomes a reply-only Ticket. Its Executor may investigate with read-only means and answer, but must not modify, create or delete files, commit, push, open, merge or close a change request, or change settings or accounts. It answers with `orchestrator_report`, naming the question in `reply_to_trigger_id` and putting the answer in the summary; the main Session sends that answer in the conversation where the question was written. A `ready` report ends the Ticket as completed, and it delivers no pull request.

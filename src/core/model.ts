@@ -98,6 +98,11 @@ export const settled = (decision: Pick<Decision, 'kind' | 'reason'>): boolean =>
  * read-only question only, or `inferred` as a proactive candidate.
  */
 export type Strength = 'explicit' | 'reply' | 'inferred'
+/** One Ticket's deliverable kind: a read-only answer, a read-only investigation, or a code change. */
+export const CATEGORIES = ['query', 'research', 'development'] as const
+export type Category = typeof CATEGORIES[number]
+/** A Ticket accepted before categories existed, and one accepted without a choice, is development work. */
+export const DEFAULT_CATEGORY: Category = 'development'
 /** The cells of a receiving scope's row in the admission table, by whether the sender is listed and addresses the agent. */
 export type AdmissionCell = 'listedUnaddressed' | 'unlistedAddressed' | 'unlistedUnaddressed'
 /**
@@ -287,6 +292,8 @@ export interface Ticket {
   id: string
   title: string
   decisionId: string
+  /** The one deliverable this Ticket carries; absent on Tickets accepted before categories existed. */
+  category?: Category
   mandate: Mandate
   /** The Channels of the messages it was accepted from, which its replies go to. */
   channels: ChannelRef[]
@@ -330,6 +337,9 @@ export interface Ticket {
 export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed' } }
 export interface Execution { name: string; directory: string; assignment: string }
 
+/** A Ticket's effective category: its recorded one, or the one its mandate implies for a Ticket accepted before categories. */
+export const ticketCategory = (ticket: Pick<Ticket, 'category' | 'mandate'>): Category =>
+  ticket.category ?? (ticket.mandate.strength === 'reply' ? 'query' : DEFAULT_CATEGORY)
 /** Whether a ticket is open: it has not ended. */
 export const liveTicket = (ticket: Pick<Ticket, 'ended'>): boolean => !ticket.ended
 /** How a ticket ended. */

@@ -4,7 +4,9 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import { initializeRoleModel } from '../src/app/role-models.ts'
+import { initializeRoleModel, workerModel } from '../src/app/role-models.ts'
+import type { Ticket } from '../src/core/index.ts'
+import { SettingsSchema } from '../src/policy.ts'
 const contexts: Context[] = []
 afterEach(async () => { await Promise.all(contexts.splice(0).map(ctx => ctx.fiber.dispose())); vi.restoreAllMocks() })
 async function fixture() {
@@ -50,4 +52,16 @@ it('inherits the host when unset and fails unavailable routes before recording a
   resolve.mockRejectedValueOnce(new Error('unknown provider'))
   await expect(initializeRoleModel(ctx, agent, { provider: 'unknown', model: 'x' })).rejects.toThrow('unknown provider')
   expect(selections()).toEqual([])
+})
+it('selects a worker model by Ticket category, falling back to the executor default', () => {
+  const settings = SettingsSchema.parse({ executor: { model: { provider: 'p', model: 'default' },
+    models: { query: { provider: 'p', model: 'luna' }, research: null, development: { provider: 'p', model: 'terra' } } } })
+  const ticket = (category: Ticket['category'], strength: Ticket['mandate']['strength'] = 'explicit') =>
+    ({ category, mandate: { strength } as Ticket['mandate'] })
+  expect(workerModel(settings, ticket('query'))).toEqual({ provider: 'p', model: 'luna' })
+  expect(workerModel(settings, ticket('research'))).toEqual({ provider: 'p', model: 'default' })
+  expect(workerModel(settings, ticket('development'))).toEqual({ provider: 'p', model: 'terra' })
+  // A Ticket accepted before categories keeps its old model behavior: reply questions read as query, the rest development.
+  expect(workerModel(settings, ticket(undefined, 'reply'))).toEqual({ provider: 'p', model: 'luna' })
+  expect(workerModel(settings, ticket(undefined))).toEqual({ provider: 'p', model: 'terra' })
 })

@@ -40,6 +40,18 @@ it('refuses a save of a block that another save changed during its model or acco
   expect(store.settings().sources.github!.config).toMatchObject({ cli: value.config.cli, pollSeconds: 90 })
 })
 
+it('validates a category model before saving the executor block', async () => {
+  h = await startRuntime()
+  const { settings, store } = h.runtime
+  const llm = (h.ctx as unknown as { llm: { resolveCallConfig: ReturnType<typeof vi.fn> } }).llm
+  llm.resolveCallConfig.mockRejectedValueOnce(new Error('unknown category provider'))
+  const executor = store.settings().executor
+  const revision = store.blockRevision('executor')
+  await expect(settings.save('executor', { ...executor, models: { ...executor.models, query: { provider: 'nowhere', model: 'x' } } },
+    revision, 'panel')).rejects.toMatchObject({ code: 'modelUnavailable' })
+  expect(store.settings().executor.models.query).toBeNull()
+})
+
 it('records nothing for a pause that changes nothing, and names an unknown block', async () => {
   h = await startRuntime()
   const { settings, store } = h.runtime
