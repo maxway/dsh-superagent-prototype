@@ -53,6 +53,12 @@ function Value([string]$name, $fallback) {
 }
 
 if (-not $Checkout) { $Checkout = [string](Value 'checkout' (Split-Path -Parent $PSScriptRoot)) }
+$urlGiven = $PSBoundParameters.ContainsKey('Url') -and -not [string]::IsNullOrWhiteSpace($Url)
+if (-not $urlGiven -and $env:DSH_SUPERAGENT_URL) { $urlGiven = $true }
+if (-not $urlGiven -and $null -ne $value) {
+  $urlProperty = $value.PSObject.Properties['url']
+  $urlGiven = $null -ne $urlProperty -and -not [string]::IsNullOrWhiteSpace([string]$urlProperty.Value)
+}
 if (-not $DshHome) { $DshHome = [string](Value 'home' $env:DSH_HOME) }
 if (-not $DshHome) { $DshHome = [System.IO.Path]::Combine($userHome, '.dsh') }
 if (-not $DshProfile) { $DshProfile = [string](Value 'profile' $env:DSH_SUPERAGENT_PROFILE) }
@@ -69,7 +75,8 @@ if (-not (Test-Path -LiteralPath $Checkout -PathType Container)) { Fail "The che
 $control = Join-Path $Checkout 'scripts\dsh-superagent'
 if (-not (Test-Path -LiteralPath $control -PathType Leaf)) { Fail "The control script does not exist: $control" }
 $profileDirectory = Join-Path $DshHome (Join-Path 'profiles' $DshProfile)
-if (-not (Test-Path -LiteralPath $profileDirectory -PathType Container)) {
+# A stop may discover the running server from another home/profile, so only a start needs this profile locally.
+if ($Action -in @('start', 'restart') -and -not (Test-Path -LiteralPath $profileDirectory -PathType Container)) {
   Fail "The DSH profile '$DshProfile' does not exist in $DshHome."
 }
 
@@ -101,7 +108,9 @@ $deployCommand = [string](Value 'deployCommand' '')
 if ($deployRequest) { $env:DSH_SUPERAGENT_DEPLOY_REQUEST = $deployRequest }
 if ($deployCommand) { $env:DSH_SUPERAGENT_DEPLOY_COMMAND = $deployCommand }
 
-$arguments = @($control, $Action, '--profile', $DshProfile, '--url', $Url, '--home', $DshHome)
+$arguments = @($control, $Action, '--profile', $DshProfile, '--home', $DshHome)
+# A stop without a named URL discovers the running server; keep a configured/explicit URL exact.
+if ($urlGiven -or $Action -ne 'stop') { $arguments += @('--url', $Url) }
 if ($Action -in @('start', 'restart')) { $arguments += @('--timeout', [string]$Timeout) }
 if ($Action -in @('stop', 'restart')) { $arguments += @('--stop-timeout', [string]$StopTimeout) }
 if ($Action -eq 'verify') { $arguments += @('--survival-seconds', [string]$SurvivalSeconds) }

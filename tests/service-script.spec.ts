@@ -81,7 +81,7 @@ async function fakeService(profile: string): Promise<{ child: ChildProcess; pid:
   const entry = join(directory, 'entry.js')
   writeFileSync(entry, `import { writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-const ready = { health: { runtime: { state: 'ready', detail: '' } }, setup: { problem: null, feishuProblem: null } }
+const ready = { health: { runtime: { state: 'ready', detail: '' }, assessment: { state: 'ready' } }, setup: { problem: null, feishuProblem: null } }
 const server = createServer((request, response) => {
   if (request.url?.startsWith('/orchestrator/api/state')) {
     response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(ready))
@@ -308,6 +308,8 @@ it('exposes the platform-specific process, start and argument forms', async () =
     runs: m.parseArgv(['watchdog', 'runs', '--limit', '5']),
     report: m.parseArgv(['watchdog', 'report', '--chat', 'oc_team', '--note', 'Stalled']),
     verify: m.parseArgv(['verify', '--survival-seconds', '5', '--profile', 'one']),
+    stopDefault: m.parseArgv(['stop', '--profile', 'one']),
+    stopUrl: m.parseArgv(['stop', '--profile', 'one', '--url', 'http://127.0.0.1:3999']),
     quote: [m.quoteWindowsArg('a b'), m.quoteWindowsArg('a"b'), m.quoteWindowsArg('C:\\\\a b\\\\'), m.quoteWindowsArg('')],
     outside: m.outsideJobStartCommand({ shell: 'C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe',
       wrapper: 'C:\\\\a b\\\\scripts\\\\service-start.ps1', checkout: 'C:\\\\a b', environmentFile: 'C:\\\\c\\\\e.json',
@@ -323,7 +325,7 @@ it('exposes the platform-specific process, start and argument forms', async () =
   })))`
   const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
     (error, stdout) => error ? reject(error) : resolve(stdout)))
-  const value = JSON.parse(out) as { ps: unknown[]; windows: unknown[]; start: unknown; socket: string; command: string; argv: Record<string, unknown>; watchdog: Record<string, unknown>; record: Record<string, unknown>; runs: Record<string, unknown>; report: Record<string, unknown>; verify: Record<string, unknown>; quote: string[]; outside: string; listeners: unknown[]; serves: boolean[] }
+  const value = JSON.parse(out) as { ps: unknown[]; windows: unknown[]; start: unknown; socket: string; command: string; argv: Record<string, unknown>; watchdog: Record<string, unknown>; record: Record<string, unknown>; runs: Record<string, unknown>; report: Record<string, unknown>; verify: Record<string, unknown>; stopDefault: Record<string, unknown>; stopUrl: Record<string, unknown>; quote: string[]; outside: string; listeners: unknown[]; serves: boolean[] }
   expect(value.ps).toEqual([{ pid: 123, name: 'node', args: ['node', '/opt/my', 'tools/dsh', '--profile', 'superagent', '--no-open'] }])
   expect(value.windows).toEqual([{ pid: 7, name: 'node', args: ['node', '/opt/dsh', '--profile', 'superagent', '--no-open'] },
     { pid: 9, name: 'deepseek harness', args: ['D:\\app\\DeepSeek', 'Harness.exe', '--expose-internals', 'D:\\app\\cli.js', '--profile', 'superagent', '--no-open'] }])
@@ -336,6 +338,8 @@ it('exposes the platform-specific process, start and argument forms', async () =
   expect(value.runs).toMatchObject({ action: 'watchdog', watchdog_action: 'runs', limit: 5 })
   expect(value.report).toMatchObject({ action: 'watchdog', watchdog_action: 'report', chat: 'oc_team', note: 'Stalled' })
   expect(value.verify).toMatchObject({ action: 'verify', profile: 'one', survival_seconds: 5 })
+  expect(value.stopDefault).toMatchObject({ action: 'stop', profile: 'one', profile_explicit: true, url_explicit: false })
+  expect(value.stopUrl).toMatchObject({ action: 'stop', url_explicit: true })
   expect(value.quote).toEqual(['"a b"', '"a\\"b"', '"C:\\a b\\\\"', '""'])
   // Paths with spaces are quoted; the arguments are the wrapper's fixed set.
   expect(value.outside).toBe('"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoLogo -NoProfile -NonInteractive -File '
@@ -344,6 +348,47 @@ it('exposes the platform-specific process, start and argument forms', async () =
   expect(value.listeners).toEqual([[75240], [], [123, 456], null])
   // A control invocation of this script carries --profile too, but only the DSH launcher is the service.
   expect(value.serves).toEqual([false, false, false, true, false])
+})
+it('discovers a superagent server from its management state and resolves one stop target', async () => {
+  const module = pathToFileURL(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')).href
+  const script = `import(${JSON.stringify(module)}).then(async m => {
+    const records = [
+      { pid: 10, name: 'node', args: ['node', '/opt/dsh', '--profile', 'superagent', '--no-open'] },
+      { pid: 11, name: 'node', args: ['node', '/opt/dsh', '--profile', 'desktop', '--no-open'] },
+      { pid: 12, name: 'node', args: ['node', '/x/scripts/dsh-superagent', '--profile', 'superagent', 'start'] }
+    ]
+    const portsOf = pid => pid === 10 ? [3999] : pid === 11 ? [3998] : []
+    const probe = async url => url.endsWith(':3999')
+      ? { health: { runtime: 'ready', assessment: 'ready' } }
+      : { health: { runtime: 'ready' } }
+    const servers = await m.discoverServers(records, portsOf, probe)
+    const other = { pid: 13, profile: 'other', port: 4000, url: 'http://127.0.0.1:4000' }
+    const same = { pid: 14, profile: 'superagent', port: 4001, url: 'http://127.0.0.1:4001' }
+    console.log(JSON.stringify({
+      servers,
+      sole: m.chooseServer(servers, { profile: 'superagent' }),
+      ambiguous: m.chooseServer([...servers, same], { profile: 'superagent' }) ?? null,
+      byUrl: m.chooseServer([...servers, other], { url: 'http://127.0.0.1:4000', profile: 'superagent', urlExplicit: true }),
+      states: [m.isSuperagentState({ health: { assessment: 'ready' } }), m.isSuperagentState({ health: { runtime: 'ready' } })],
+      profiles: [m.profileFromArgs(['node', '/opt/dsh', '--profile', 'one']), m.profileFromArgs(['node', '/opt/dsh', '--profile=two'])],
+      ports: [m.parsePorts('[3083]'), m.parsePorts('n127.0.0.1:3083')]
+    }))
+  })`
+  const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
+    (error, stdout) => error ? reject(error) : resolve(stdout)))
+  const value = JSON.parse(out) as {
+    servers: { pid: number; profile: string; port: number; url: string }[]
+    sole: { pid: number } | null; ambiguous: unknown; byUrl: { pid: number } | null
+    states: boolean[]; profiles: (string | undefined)[]; ports: number[][]
+  }
+  expect(value.servers).toEqual([{ pid: 10, profile: 'superagent', port: 3999, url: 'http://127.0.0.1:3999',
+    health: { runtime: 'ready', assessment: 'ready' } }])
+  expect(value.sole).toMatchObject({ pid: 10 })
+  expect(value.ambiguous).toBeNull()
+  expect(value.byUrl).toMatchObject({ pid: 13 })
+  expect(value.states).toEqual([true, false])
+  expect(value.profiles).toEqual(['one', 'two'])
+  expect(value.ports).toEqual([[3083], [3083]])
 })
 it.skipIf(process.platform !== 'win32')('reads Job ownership from the probe rather than plain membership', async () => {
   const module = pathToFileURL(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')).href
@@ -438,7 +483,7 @@ it.skipIf(process.platform !== 'win32')('proves a service created outside every 
   writeFileSync(entry, `import { writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-const ready = { health: { runtime: { state: 'ready', detail: '' } }, setup: { problem: null, feishuProblem: null } }
+const ready = { health: { runtime: { state: 'ready', detail: '' }, assessment: { state: 'ready' } }, setup: { problem: null, feishuProblem: null } }
 const server = createServer((request, response) => {
   if (request.url?.startsWith('/orchestrator/api/state')) {
     response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(ready))
@@ -522,15 +567,14 @@ it.skipIf(process.platform !== 'win32')('stops the process that owns the managem
   expect((await status('precision-test', second.url)).pids).toEqual([second.pid])
   second.child.kill()
 }, 30_000)
-it.skipIf(process.platform !== 'win32')('refuses an existing listener started from another DSH home', async () => {
+it.skipIf(process.platform !== 'win32')('stops a listener even when its start facts name another DSH home', async () => {
   const service = await fakeService('home-mismatch')
   mkdirSync(control('home-mismatch'), { recursive: true })
   writeFileSync(join(control('home-mismatch'), 'service-start.json'), JSON.stringify({ home: 'C:\\another-home', pid: service.pid }))
-  expect(await run('start', '--profile', 'home-mismatch', '--url', service.url, '--timeout', '2'))
-    .toMatchObject({ code: 1, stderr: expect.stringContaining('started from DSH home') })
-  expect(await run('stop', '--profile', 'home-mismatch', '--url', service.url, '--stop-timeout', '2'))
-    .toMatchObject({ code: 1, stderr: expect.stringContaining('started from DSH home') })
-  service.child.kill()
+  expect(await run('stop', '--profile', 'home-mismatch', '--url', service.url, '--stop-timeout', '10'))
+    .toMatchObject({ code: 0, stdout: expect.stringContaining('dsh-superagent stopped') })
+  await waitForExit(service.child)
+  expect(existsSync(join(control('home-mismatch'), 'manually-stopped'))).toBe(true)
 }, 30_000)
 it.skipIf(process.platform !== 'win32')('refuses a foreign listener and a recorded process that no longer listens', async () => {
   const foreign = await fakeService('another-profile')
@@ -566,9 +610,9 @@ it.skipIf(process.platform !== 'win32')('wraps the control script with a pinned 
   mkdirSync(join(home, 'profiles', profile), { recursive: true })
   const config = join(root, 'service.json')
   writeFileSync(config, JSON.stringify({ checkout: root, home, profile, url: 'http://127.0.0.1:9', node: process.execPath }))
-  const call = (args: string[]) => new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
-    execFile('pwsh', ['-NoProfile', '-File', entry, ...args], { timeout: 30_000 }, (error, stdout, stderr) =>
-      resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr }))
+  const call = (args: string[], environment: NodeJS.ProcessEnv = {}) => new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
+    execFile('pwsh', ['-NoProfile', '-File', entry, ...args], { timeout: 30_000, env: { ...process.env, ...environment } },
+      (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr }))
   })
   const checked = await call(['-Action', 'status', '-Config', config])
   expect(checked.code).toBe(1)
@@ -579,6 +623,25 @@ it.skipIf(process.platform !== 'win32')('wraps the control script with a pinned 
   const missing = await call(['-Action', 'status', '-Config', join(root, 'missing.json')])
   expect(missing.code).toBe(1)
   expect(missing.stderr).toContain('does not exist')
+
+  // A stop without a configured URL lets the control script discover the server; a named URL stays exact.
+  const entryCheckout = join(root, 'entry-checkout')
+  mkdirSync(join(entryCheckout, 'scripts'), { recursive: true })
+  writeFileSync(join(entryCheckout, 'scripts', 'dsh-superagent'), 'console.log(JSON.stringify(process.argv.slice(2)))\n')
+  const noConfig = { DSH_SUPERAGENT_SERVICE_CONFIG: join(root, 'no-service.json'), DSH_SUPERAGENT_URL: '' }
+  const stopDefault = await call(['-Action', 'stop', '-Checkout', entryCheckout, '-DshHome', home, '-DshProfile', profile], noConfig)
+  expect(stopDefault.code).toBe(0)
+  expect(JSON.parse(stopDefault.stdout)).toContain('stop')
+  expect(JSON.parse(stopDefault.stdout)).not.toContain('--url')
+  const stopUrl = await call(['-Action', 'stop', '-Checkout', entryCheckout, '-DshHome', home, '-DshProfile', profile,
+    '-Url', 'http://127.0.0.1:3999'], noConfig)
+  expect(stopUrl.code).toBe(0)
+  expect(JSON.parse(stopUrl.stdout)).toEqual(expect.arrayContaining(['--url', 'http://127.0.0.1:3999']))
+  const stopConfig = join(root, 'stop-service.json')
+  writeFileSync(stopConfig, JSON.stringify({ checkout: entryCheckout, home, profile, url: 'http://127.0.0.1:4000' }))
+  const stopConfigured = await call(['-Action', 'stop', '-Config', stopConfig])
+  expect(stopConfigured.code).toBe(0)
+  expect(JSON.parse(stopConfigured.stdout)).toEqual(expect.arrayContaining(['--url', 'http://127.0.0.1:4000']))
 }, 60_000)
 it('prints the Watchdog snapshot over GET and refuses an unreachable service', async () => {
   const requests: { method?: string; url?: string; header?: string }[] = []

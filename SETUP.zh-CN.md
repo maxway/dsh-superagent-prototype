@@ -24,7 +24,7 @@ Windows 支持以原型质量覆盖 Git 来源和飞书来源：代码路径已�
 - **前置条件：** Windows 10/11 或 Windows Server，Node.js 24.9+、pnpm、Git for Windows 2.32+、PowerShell 7（`pwsh` 在 `PATH` 上），以及原生的 `gh.exe` 或 `glab.exe`。不需要 tmux、Python 或 WSL。
 - **探测：** 在 PowerShell 中运行 `node -v; pnpm -v; git --version; gh --version; dsh --version`、`Get-Command pwsh` 和 `Get-ChildItem "$env:USERPROFILE\.dsh\profiles\*\cordis.patch.yml"`。不需要 `tmux` 和 `python3`。
 - **账号：** 用配置目录以智能体账号登录原生 CLI，然后把同一个目录填进来源的 **智能体账号的配置目录** 高级字段（见 [docs/zh/006-deployment.md](docs/zh/006-deployment.md) 的 Windows 凭据）。不要写 `.cmd` 包装脚本：它会破坏参数。
-- **服务：** 按 `examples/service.windows.json` 创建 `%USERPROFILE%\.dsh-superagent\service.json`，然后使用 `pwsh scripts\dsh-superagent.ps1 status`、`pwsh scripts\dsh-superagent.ps1 start`、`pwsh scripts\dsh-superagent.ps1 stop` 和 `pwsh scripts\dsh-superagent.ps1 restart`。入口会固定 checkout、DSH home、profile 和回环 URL，并拒绝不匹配的目标。环境已配置好时仍可用 `node scripts\dsh-superagent start` 等 Node 入口。
+- **服务：** 按 `examples/service.windows.json` 创建 `%USERPROFILE%\.dsh-superagent\service.json`，然后使用 `pwsh scripts\dsh-superagent.ps1 status`、`pwsh scripts\dsh-superagent.ps1 start`、`pwsh scripts\dsh-superagent.ps1 stop` 和 `pwsh scripts\dsh-superagent.ps1 restart`。入口会固定 checkout、DSH home、profile 和回环 URL；未配置 URL 的 `stop` 会自动发现正在运行的实例，`start` 仍要求本机存在该 profile。环境已配置好时仍可用 `node scripts\dsh-superagent start` 等 Node 入口。
 - **准备命令：** 用 PowerShell 编写。变量是 `$env:DSH_SUPERAGENT_DIR`、`$env:DSH_SUPERAGENT_NAME`、`$env:DSH_SUPERAGENT_TICKET` 和 `$env:DSH_SUPERAGENT_GITHUB_REPOSITORY`（或 GitLab 的对应变量）；[docs/zh/006-deployment.md](docs/zh/006-deployment.md) 有完整示例。
 - **隔离：** 服务以运营者的 Windows 账号、以 `danger-full-access` 运行；命令 shim 只是护栏，不是沙箱。请使用一个只持有智能体凭据和仓库访问权限的专用 Windows 账号。
 

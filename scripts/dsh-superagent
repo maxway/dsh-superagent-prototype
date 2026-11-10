@@ -488,6 +488,116 @@ export function listenerPids(url, run = (script) => runPowerShell(script), platf
   return parseListenerPids(lsof.stdout)
 }
 
+/** The TCP port a management URL names; undefined when the URL is not parseable. */
+export function urlPort(url) {
+  try {
+    const target = new URL(url)
+    return Number(target.port || (target.protocol === 'https:' ? 443 : 80)) || undefined
+  } catch { return undefined }
+}
+
+/** The `--profile` a DSH service command line names, if any. */
+export function profileFromArgs(args) {
+  for (let index = 1; index < (args?.length ?? 0); index++) {
+    const word = args[index]
+    if (word === '--profile') {
+      const value = args[index + 1]
+      return value && !value.startsWith('-') ? value : undefined
+    }
+    if (word.startsWith('--profile=')) return word.slice('--profile='.length) || undefined
+  }
+  return undefined
+}
+
+/**
+ * Whether a management state belongs to dsh-superagent rather than a plain DSH app. Its bundle adds these parts; a
+ * desktop or bare DSH profile has only the runtime, relay, notice and launch parts.
+ */
+export function isSuperagentState(current) {
+  const health = current?.health
+  return Boolean(health && typeof health === 'object' && !Array.isArray(health)
+    && (health.assessment !== undefined || health.delivery !== undefined || health.reply !== undefined))
+}
+
+/** The PowerShell that lists the ports a PID listens on. */
+const PORTS_FOR_PID = `$ErrorActionPreference = 'Stop'
+$ports = @()
+try { $ports = @(Get-NetTCPConnection -State Listen -OwningProcess __PID__ | Select-Object -ExpandProperty LocalPort -Unique) }
+catch { if ($_.CategoryInfo.Category -ne 'ObjectNotFound') { throw } }
+ConvertTo-Json -Compress -InputObject @($ports)`
+
+/** Parse a JSON array or whitespace-separated list of TCP ports; invalid entries are dropped. */
+export function parsePorts(value) {
+  const numbers = values => [...new Set(values.map(Number).filter(port => Number.isInteger(port) && port > 0 && port <= 65_535))]
+  if (Array.isArray(value)) return numbers(value)
+  if (typeof value === 'number') return numbers([value])
+  const text = String(value ?? '').trim()
+  if (text === '') return []
+  if (text.startsWith('[')) {
+    try { return numbers(JSON.parse(text)) } catch { return [] }
+  }
+  const ports = []
+  for (const line of text.split('\n')) {
+    const match = /(?:^|[^0-9])(\d+)$/.exec(line.trim())
+    if (match) ports.push(Number(match[1]))
+  }
+  return numbers(ports)
+}
+
+/** The ports a DSH process listens on; empty when the platform cannot answer. */
+export function portsForPid(pid, run = script => runPowerShell(script), platform = PLATFORM) {
+  if (platform === 'win32') {
+    try { return parsePorts(run(PORTS_FOR_PID.replace('__PID__', String(pid)))) } catch { return [] }
+  }
+  const lsof = spawnSync('lsof', ['-nP', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-Fn'], { encoding: 'utf8' })
+  if (lsof.error || lsof.status !== 0) return []
+  return parsePorts((lsof.stdout ?? '').split('\n').filter(line => line.startsWith('n')).join('\n'))
+}
+
+/**
+ * Find the running dsh-superagent servers without being told a port or home: every DSH process's listening ports are
+ * asked for the management state, and only a state carrying the superagent parts is accepted. `records`, `portsOf` and
+ * `probe` are injectable so selection is testable without a live host.
+ */
+export async function discoverServers(records, portsOf = portsForPid, probe = url => state(url, 1_000)) {
+  const servers = []
+  for (const item of records) {
+    if (item.pid === process.pid || !isDshHost(item.name)) continue
+    const profile = profileFromArgs(item.args)
+    if (!profile || !serves(item.args, profile)) continue
+    for (const port of portsOf(item.pid)) {
+      if (!Number.isInteger(port) || port <= 0) continue
+      const url = `http://127.0.0.1:${port}`
+      const current = await probe(url)
+      if (!isSuperagentState(current)) continue
+      servers.push({ pid: item.pid, profile, port, url, health: current.health })
+      break
+    }
+  }
+  return servers
+}
+
+/** Pick one discovered server; one candidate, an explicit URL, or the profile name resolves it. */
+export function chooseServer(candidates, { url, profile, urlExplicit = false } = {}) {
+  if (!candidates.length) return undefined
+  if (urlExplicit) {
+    const port = urlPort(url)
+    if (!port) return undefined
+    const matches = candidates.filter(candidate => candidate.port === port)
+    return matches.length === 1 ? matches[0] : undefined
+  }
+  if (profile) {
+    const matches = candidates.filter(candidate => candidate.profile === profile)
+    if (matches.length === 1) return matches[0]
+    if (matches.length > 1) return undefined
+  }
+  return candidates.length === 1 ? candidates[0] : undefined
+}
+
+function serverList(candidates) {
+  return candidates.map(candidate => `PID ${candidate.pid} profile ${candidate.profile} ${candidate.url}`).join('; ')
+}
+
 /**
  * Resolve the one process the command targets. The listener on the configured URL is authoritative; a process merely
  * matching the profile name elsewhere is reported separately and is never stopped by mistake. When listener lookup is
@@ -841,47 +951,135 @@ export function stopRequest(url) {
   return apiRequest(url, 'POST', '/orchestrator/api/service/stop', { 'x-orchestrator-request': '1', 'content-length': '0' }, 10_000)
 }
 
-async function stop(args, intentional = true) {
-  const found = target(args)
-  if (found.foreign.length) {
-    const owners = found.foreign.map(entry => entry.pid).join(', ')
-    throw new Error(`The management URL ${args.url} is owned by PID ${owners}, which is not the dsh-superagent process for profile ${args.profile}; refusing to stop it.`)
+/** The PID a control directory records, from the pid file or the newest start facts. */
+function controlPid(directory) {
+  try {
+    const pid = Number(readFileSync(join(directory, 'service.pid'), 'utf8').trim())
+    if (Number.isInteger(pid) && pid > 0) return pid
+  } catch { /* Try the start facts. */ }
+  try {
+    const pid = Number(JSON.parse(readFileSync(join(directory, 'service-start.json'), 'utf8'))?.pid)
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined
+  } catch { return undefined }
+}
+
+/** Homes worth checking for a discovered server's control files: the asked-for one and the usual .dsh* homes. */
+function homesToSearch(preferredHome) {
+  const homes = new Set([resolve(preferredHome), join(homedir(), '.dsh-superagent')])
+  try {
+    for (const entry of readdirSync(homedir(), { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name.startsWith('.dsh')) homes.add(join(homedir(), entry.name))
+    }
+  } catch { /* The preferred home is still checked. */ }
+  return [...homes]
+}
+
+/** The control directory and home that record `pid`, so a stop marker reaches the monitor that reads it. */
+function findServerControl(server, preferredHome) {
+  for (const home of homesToSearch(preferredHome)) {
+    const directory = controlDirectory(server.profile, home)
+    if (controlPid(directory) === server.pid) return { home, profile: server.profile, directory, legacy: false }
   }
-  if (found.pids.length > 1) throw new Error('Multiple dsh-superagent processes listen at the management URL; refusing to choose one.')
-  if (!found.pids.length && found.recorded) {
-    throw new Error(`This home's dsh-superagent process (PID ${found.recorded}) is running but does not listen at ${args.url}; refusing to stop the wrong instance. Check --url, or inspect it manually.`)
+  const legacy = legacyControl(server.profile)
+  if (controlPid(legacy) === server.pid) return { home: ROOT, profile: server.profile, directory: legacy, legacy: true }
+  return undefined
+}
+
+/** Write the intentional-stop marker beside the server's own control files, with a best-effort fallback. */
+function markServerStopped(server, preferredHome) {
+  const found = findServerControl(server, preferredHome)
+  if (found) {
+    writeFileSync(join(found.directory, 'manually-stopped'), localStamp() + '\n')
+    return found
   }
-  const facts = startFacts(args.profile, args.home)
-  if (facts?.home && resolve(facts.home) !== resolve(args.home)) {
-    throw new Error(`The service at ${args.url} was started from DSH home ${facts.home}; refusing to stop it with --home ${args.home}.`)
+  const directory = control(server.profile, preferredHome)
+  writeFileSync(join(directory, 'manually-stopped'), localStamp() + '\n')
+  return { home: resolve(preferredHome), profile: server.profile, directory, fallback: true }
+}
+
+/** Remove the recorded PID in every control directory that names this server. */
+function removeServerPid(server, preferredHome) {
+  const found = findServerControl(server, preferredHome)
+  const directories = new Set([controlDirectory(server.profile, preferredHome), legacyControl(server.profile)])
+  if (found) directories.add(found.directory)
+  for (const directory of directories) {
+    try {
+      if (Number(readFileSync(join(directory, 'service.pid'), 'utf8').trim()) === server.pid) {
+        rmSync(join(directory, 'service.pid'), { force: true })
+      }
+    } catch { /* The file is already gone. */ }
   }
-  const pids = found.pids
-  // Write the stop marker before waiting so monitors respect the intentional stop even if graceful shutdown times out.
-  if (!pids.length && found.unlistening.length) {
-    process.stderr.write(`Warning: ${found.unlistening.length} dsh-superagent process(es) matching ${args.profile} do not own `
-      + `${args.url} and were left untouched.\n`)
+}
+
+/** Gracefully stop one discovered or explicit server and wait for exactly that process to exit. */
+async function stopServer(args, server, intentional) {
+  const marker = intentional ? markServerStopped(server, args.home) : undefined
+  if (marker?.fallback) {
+    process.stderr.write(`Warning: no control directory matched PID ${server.pid}; the stop marker was written to ${marker.directory}, `
+      + 'so a recovery monitor using another home may not see it.\n')
   }
-  if (intentional) writeFileSync(join(control(args.profile, args.home), 'manually-stopped'), localStamp() + '\n')
   if (WINDOWS) {
-    if (pids.length) await stopRequest(args.url)
+    const response = await stopRequest(server.url)
+    if (response === null) throw new Error(`Could not ask ${server.url} to stop PID ${server.pid}; no forced kill was sent.`)
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`The management API at ${server.url} answered ${response.status} to the stop request; no forced kill was sent.`)
+    }
   } else {
-    for (const pid of pids) process.kill(pid, 'SIGINT')
+    try { process.kill(server.pid, 'SIGINT') } catch { /* It exited while being resolved. */ }
   }
   const deadline = Date.now() + args.stop_timeout * 1000
-  while (pids.some(pid => alive(pid))) {
+  while (alive(server.pid)) {
     if (Date.now() >= deadline) throw new Error('Graceful stop timed out; no forced kill was sent. Check status.')
     await sleep(500)
   }
-  if (found.identity === 'listener') {
-    const remaining = listenerPids(args.url) ?? []
-    if (remaining.some(pid => pids.includes(pid))) {
-      throw new Error('The stopped process still owns the management URL; no forced kill was sent. Check status.')
+  if (server.port) {
+    const remaining = listenerPids(server.url) ?? []
+    if (remaining.includes(server.pid)) throw new Error('The stopped process still owns its management URL; no forced kill was sent. Check status.')
+  }
+  removeServerPid(server, args.home)
+  process.stdout.write(intentional
+    ? `dsh-superagent stopped (PID ${server.pid}, ${server.url}, profile ${server.profile}). Automatic recovery is paused until start/restart.\n`
+    : `dsh-superagent stopped (PID ${server.pid}, ${server.url}, profile ${server.profile}).\n`)
+}
+
+async function stop(args, intentional = true) {
+  let server
+  // Windows has a management API and WMI; discover there. An explicit URL is always exact, and POSIX keeps the older
+  // scan-based stop so its profile-scoped tmux lifecycle is unchanged.
+  if (args.url_explicit || !WINDOWS) {
+    const found = target(args)
+    if (found.foreign.length) {
+      const owners = found.foreign.map(entry => entry.pid).join(', ')
+      throw new Error(`The management URL ${args.url} is owned by PID ${owners}, which is not the dsh-superagent process for profile ${args.profile}; refusing to stop it.`)
+    }
+    if (found.pids.length > 1) throw new Error('Multiple dsh-superagent processes found; refusing to choose one.')
+    if (found.pids.length === 1) {
+      server = { pid: found.pids[0], profile: args.profile, port: urlPort(args.url), url: args.url }
+    } else {
+      if (found.recorded) {
+        throw new Error(`dsh-superagent process PID ${found.recorded} is running but does not listen at ${args.url}; it cannot be stopped gracefully.`)
+      }
+      if (intentional) writeFileSync(join(control(args.profile, args.home), 'manually-stopped'), localStamp() + '\n')
+      process.stdout.write(`No dsh-superagent server is listening at ${args.url}; nothing to stop. `
+        + 'Automatic recovery is paused until start/restart.\n')
+      return
+    }
+  } else {
+    // No URL was named: find the server instead of making a person discover its port and home.
+    const records = windowsProcesses()
+    const candidates = await discoverServers(records)
+    server = chooseServer(candidates, { profile: args.profile, url: args.url, urlExplicit: false })
+    if (!server) {
+      if (candidates.length) {
+        throw new Error(`Multiple dsh-superagent servers are running: ${serverList(candidates)}. Pass --url or --profile to choose one.`)
+      }
+      if (intentional) writeFileSync(join(control(args.profile, args.home), 'manually-stopped'), localStamp() + '\n')
+      process.stdout.write('No running dsh-superagent server was found; nothing to stop. '
+        + 'Automatic recovery is paused until start/restart.\n')
+      return
     }
   }
-  for (const directory of [control(args.profile, args.home), legacyControl(args.profile)]) {
-    rmSync(join(directory, 'service.pid'), { force: true })
-  }
-  process.stdout.write(intentional ? 'dsh-superagent stopped. Automatic recovery is paused until start/restart.\n' : 'dsh-superagent stopped.\n')
+  await stopServer(args, server, intentional)
 }
 
 function profileLogName(profile) {
@@ -968,7 +1166,7 @@ async function start(args) {
   const session = 'dsh-' + args.profile
   const found = target(args)
   let pids = found.pids
-  if (found.foreign.length) {
+  if (args.url_explicit && found.foreign.length) {
     const owners = found.foreign.map(entry => entry.pid).join(', ')
     throw new Error(`The management URL ${args.url} is owned by PID ${owners}, which is not the dsh-superagent process for profile ${args.profile}; refusing to start a second instance.`)
   }
@@ -976,10 +1174,16 @@ async function start(args) {
   if (!pids.length && found.recorded) {
     throw new Error(`This home's dsh-superagent process (PID ${found.recorded}) is running but does not listen at ${args.url}; refusing to start another. Check --url, or stop the other instance.`)
   }
-  if (pids.length) {
-    const facts = startFacts(args.profile, args.home)
-    if (facts?.home && resolve(facts.home) !== resolve(args.home)) {
-      throw new Error(`The service at ${args.url} was started from DSH home ${facts.home}; refusing to treat it as this home's service.`)
+  if (!pids.length && !args.url_explicit && WINDOWS) {
+    // Without a named URL, find an already running server instead of starting a second one on a guessed port.
+    const candidates = await discoverServers(windowsProcesses())
+    const running = chooseServer(candidates, { profile: args.profile, url: args.url, urlExplicit: false })
+    if (running) {
+      process.stdout.write(`dsh-superagent is already running (PID ${running.pid}, ${running.url}, profile ${running.profile}); no duplicate started.\n`)
+      return 0
+    }
+    if (candidates.length) {
+      throw new Error(`Multiple dsh-superagent servers are running: ${serverList(candidates)}. Pass --url or --profile to choose one.`)
     }
   }
   let method = pids.length ? 'existing' : undefined
@@ -1122,8 +1326,9 @@ export function parseArgv(argv, env = process.env) {
   const args = { action: undefined, watchdog_action: undefined, chat: undefined, note: undefined,
     ticket: undefined, reason: undefined, snapshot_at: undefined, idempotency_key: undefined,
     profile: env.DSH_SUPERAGENT_PROFILE || 'superagent', url: env.DSH_SUPERAGENT_URL || 'http://127.0.0.1:3082',
-home: env.DSH_HOME || join(homedir(), '.dsh'), timeout: 60, stop_timeout: 300, stale_minutes: 30, limit: 20,
-    respect_stop: false, survival_seconds: 20, outside_job_child: false }
+    home: env.DSH_HOME || join(homedir(), '.dsh'), timeout: 60, stop_timeout: 300, stale_minutes: 30, limit: 20,
+    respect_stop: false, survival_seconds: 20, outside_job_child: false,
+    profile_explicit: false, home_explicit: false, url_explicit: false }
   const positionals = []
   const value = (index, name) => {
     const next = argv[index + 1]
@@ -1138,12 +1343,12 @@ home: env.DSH_HOME || join(homedir(), '.dsh'), timeout: 60, stop_timeout: 300, s
   }
   for (let index = 0; index < argv.length; index++) {
     const word = argv[index]
-    if (word === '--profile') { args.profile = value(index, '--profile'); index++ }
-    else if (word.startsWith('--profile=')) args.profile = word.slice('--profile='.length)
-    else if (word === '--home') { args.home = value(index, '--home'); index++ }
-    else if (word.startsWith('--home=')) args.home = word.slice('--home='.length)
-    else if (word === '--url') { args.url = value(index, '--url'); index++ }
-    else if (word.startsWith('--url=')) args.url = word.slice('--url='.length)
+    if (word === '--profile') { args.profile = value(index, '--profile'); args.profile_explicit = true; index++ }
+    else if (word.startsWith('--profile=')) { args.profile = word.slice('--profile='.length); args.profile_explicit = true }
+    else if (word === '--home') { args.home = value(index, '--home'); args.home_explicit = true; index++ }
+    else if (word.startsWith('--home=')) { args.home = word.slice('--home='.length); args.home_explicit = true }
+    else if (word === '--url') { args.url = value(index, '--url'); args.url_explicit = true; index++ }
+    else if (word.startsWith('--url=')) { args.url = word.slice('--url='.length); args.url_explicit = true }
     else if (word === '--timeout') { args.timeout = Number(value(index, '--timeout')); index++ }
     else if (word === '--stop-timeout') { args.stop_timeout = Number(value(index, '--stop-timeout')); index++ }
     else if (word === '--survival-seconds') { args.survival_seconds = Number(value(index, '--survival-seconds')); index++ }
@@ -1245,6 +1450,10 @@ command cannot kill it; \`status\` reports the process's Job membership and how 
 owns the listening socket of \`--url\` is authoritative; a process that merely matches \`--profile\` elsewhere is reported
 as \`unlistening\` and is never stopped by mistake. A service that spawns a child joins its own kill-on-close Job, which
 it holds, so \`status\` separates that from a Job it inherited. Logs and control files live under \`<home>/service/\`.
+On Windows, \`stop\` without \`--url\` discovers the running superagent servers from their management state and stops the
+only one, or the one matching \`--profile\`; it does not require a matching home or URL. An explicit \`--url\` is exact,
+a foreign listener is never stopped, and POSIX keeps its profile scan. \`start\` without an explicit URL reports an
+already running server instead of starting a second one on Windows.
 \`verify\` proves the service survived a deployment executor's exit: one process, the management API usable, no Windows
 Job it did not create, and the same process after --survival-seconds.
 \`watchdog\` prints a read-only JSON snapshot of the service, its open Tickets and the last recorded observation;

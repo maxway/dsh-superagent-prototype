@@ -212,9 +212,10 @@ On Windows that is `node scripts\dsh-superagent start` and the same actions; `no
 
 The process that owns the listening socket of `--url` is authoritative. `status` reports `identity: "listener"`, the
 `listener` PIDs, `unlistening` (processes that match the profile but do not own this URL) and `foreign` (another process
-owns the URL). `start` refuses a foreign listener or a process this home recorded but that no longer listens; `stop`
-refuses the same, and never force-kills. Two instances with the same profile in different homes, or another DSH process,
-are therefore not mistaken for the target. When listener lookup is unavailable, `identity: "scan"` says the older
+owns the URL). `start` refuses a foreign listener or a process this home recorded but that no longer listens. On
+Windows, `stop` without `--url` discovers running superagent servers from their management state and stops the only
+one, or the one matching `--profile`, so a matching home or URL is not required; an explicit `--url` is exact. A foreign listener is
+never stopped, and neither action force-kills. When listener lookup is unavailable, `identity: "scan"` says the older
 command-line fallback was used.
 
 `start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits
@@ -577,9 +578,9 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `pwsh` is not found, or the prepare command fails with a PowerShell error | Install PowerShell 7 and put `pwsh` on `PATH`; Windows PowerShell 5.1 is not used for the prepare command |
 | `dsh must be on PATH.` when starting on Windows | Install DSH globally and open a new shell; `start` resolves the npm `dsh.cmd` |
 | PowerShell or `cmd.exe` cannot run `scripts\dsh-superagent` | The script has no `.cmd` shim on Windows; run `pwsh scripts\dsh-superagent.ps1 <action>`, or `node scripts\dsh-superagent <command>` when the environment is already set |
-| `The service configuration does not exist` or a target mismatch | Create `%USERPROFILE%\.dsh-superagent\service.json` from `examples/service.windows.json`, or pass `-Checkout`, `-DshHome`, `-DshProfile` and `-Url`; the entry refuses a checkout, profile directory or non-loopback URL that does not match |
-| `The management URL … is owned by PID …` | Another process owns the port; stop it or choose the service's real `url`. The entry never kills or probes a foreign listener |
-| `This home's dsh-superagent process … does not listen` | The recorded process is running but not serving the target URL. Inspect it, fix its listener, or restart it from an independent task; `start`/`stop` refuse to act on it |
+| `The service configuration does not exist` or a target mismatch | Create `%USERPROFILE%\.dsh-superagent\service.json` from `examples/service.windows.json`, or pass `-Checkout`, `-DshHome`, `-DshProfile` and `-Url`; the entry refuses a checkout or non-loopback URL, and a start also needs the profile directory |
+| `The management URL … is owned by PID …` | Another process owns the port; stop it or choose the service's real `url`. The entry never kills a foreign listener |
+| `This home's dsh-superagent process … does not listen` | The recorded process is running but not serving the target URL. Inspect it, fix its listener, or restart it from an independent task; `start` and an explicit-URL `stop` refuse, while a zero-parameter `stop` discovers another running server |
 | A `.cmd` wrapper for `gh` or `glab` drops or corrupts an argument | Use the native `gh.exe` or `glab.exe` with its configuration directory (see Windows credentials); never pass JSON or message text through `cmd.exe` |
 | The Feishu Source is refused on a Windows host | Point the Source's **Bot lark-cli** field at `lark-cli` (the npm `.cmd` shim) or at the package's Node entry; a custom `.cmd` wrapper without a Node entry is refused |
 | `git does not read the credential configuration dsh-superagent writes` | Install git 2.32 or later |

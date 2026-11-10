@@ -204,7 +204,7 @@ scripts/dsh-superagent status
 
 Windows 上写作 `node scripts\dsh-superagent start` 等；该文件没有 `.cmd` shim，因此需要 Node。
 
-`--url` 监听套接字的所有者才是权威目标。`status` 报告 `identity: "listener"`、`listener` PID、`unlistening`（匹配 profile 但不拥有该 URL 的进程）和 `foreign`（另有进程拥有该 URL）。`start` 会拒绝外部监听者，或本 home 记录过但已不再监听的进程；`stop` 同样拒绝，并且绝不强杀。因此不同 home 中同名 profile 的两个实例，或其他 DSH 进程，都不会被误认成目标。监听查询不可用时，`identity: "scan"` 表示退回了旧的命令行扫描。
+`--url` 监听套接字的所有者才是权威目标。`status` 报告 `identity: "listener"`、`listener` PID、`unlistening`（匹配 profile 但不拥有该 URL 的进程）和 `foreign`（另有进程拥有该 URL）。`start` 会拒绝外部监听者，或本 home 记录过但已不再监听的进程。Windows 上 `stop` 不传 `--url` 时会从各 DSH 进程的监听端口和管理状态中自动发现正在运行的 superagent，并停止唯一实例或与 `--profile` 匹配的实例，因此不需要匹配的 home 或 URL；显式 `--url` 则按精确目标处理。外部监听者绝不会被停止，两者也都绝不强杀。监听查询不可用时，`identity: "scan"` 表示退回了旧的命令行扫描。
 
 `start` 在 tmux 会话 `dsh-superagent` 中运行 `dsh --profile superagent`；其他 profile 则使用 `dsh-<profile>`。它最多等待一分钟，让运行时变为就绪或报告安装配置要求。首次运行时，它会打印缺失的安装配置信息。它会拒绝重复的实例，包括从这个脚本之外启动的实例。每个 profile 使用独立命名的 tmux socket。pane 使用调用者的 `DSH_HOME`、`HOME` 和 `PATH`（包括未设置的情况），并在启动 DSH 前清除 `TMUX` 与 `TMUX_PANE`，避免 worker 继承服务 socket。仅设置 `TMUX_TMPDIR` 不能覆盖继承的 `TMUX`；这些措施只是护栏，不是操作系统安全边界。
 
@@ -232,7 +232,7 @@ Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以
 - 启动日志：`<DSH home>\service\logs\dsh-superagent-<profile>-<date>-<time>-<pid>.log`，其中 pid 属于脚本。保留最新的 20 个。
 - 控制文件：`<DSH home>\service\control\profiles\<profile>\`，包含停止标记、锁、进程 id 和最近一次启动事实。
 
-本版本仍会读取旧的 `<checkout>\.artifacts\control\profiles\<profile>\` 停止标记、记录 PID 和启动事实，使有意的停止和当前启动在升级后继续有效；但它不再向那里写入。新入口部署完成、且没有旧的调用方式后，可以归档该目录。
+本版本仍会读取旧的 `<checkout>\.artifacts\control\profiles\<profile>\` 停止标记、记录 PID 和启动事实，使有意的停止和当前启动在升级后继续有效。正常启动不再向那里写入；停止一个仍由旧位置记录的服务时，会把停止标记写回该目录，让恢复检查继续生效。新入口部署完成、且没有旧的调用方式后，可以归档该目录。
 
 打开日志中打印的 URL，然后在侧边栏中选择 **Superagent**。
 
@@ -542,9 +542,9 @@ Windows 上用 PowerShell 执行同样的步骤；PowerShell 7 支持 `&&`，服
 | 找不到 `pwsh`，或准备命令报 PowerShell 错误 | 安装 PowerShell 7 并把 `pwsh` 放到 `PATH` 上；准备命令不使用 Windows PowerShell 5.1 |
 | Windows 上启动时报 `dsh must be on PATH.` | 全局安装 DSH 并打开新的 shell；`start` 会解析 npm 的 `dsh.cmd` |
 | PowerShell 或 `cmd.exe` 无法运行 `scripts\dsh-superagent` | 该脚本在 Windows 上没有 `.cmd` shim；请运行 `pwsh scripts\dsh-superagent.ps1 <action>`，环境已设置好时也可 `node scripts\dsh-superagent <command>` |
-| `The service configuration does not exist` 或目标不匹配 | 按 `examples/service.windows.json` 创建 `%USERPROFILE%\.dsh-superagent\service.json`，或传入 `-Checkout`、`-DshHome`、`-DshProfile` 和 `-Url`；入口拒绝不匹配的 checkout、profile 目录或非回环 URL |
-| `The management URL … is owned by PID …` | 端口被其他进程占用；停止它或改用服务真实的 `url`。入口绝不会杀进程或探测外部监听者 |
-| `This home's dsh-superagent process … does not listen` | 记录过的进程仍在运行，但没有监听目标 URL。检查并修复其监听，或从独立任务重启；`start`/`stop` 拒绝操作它 |
+| `The service configuration does not exist` 或目标不匹配 | 按 `examples/service.windows.json` 创建 `%USERPROFILE%\.dsh-superagent\service.json`，或传入 `-Checkout`、`-DshHome`、`-DshProfile` 和 `-Url`；入口拒绝不匹配的 checkout 或非回环 URL，启动还要求 profile 目录存在 |
+| `The management URL … is owned by PID …` | 端口被其他进程占用；停止它或改用服务真实的 `url`。入口绝不会杀外部监听者 |
+| `This home's dsh-superagent process … does not listen` | 记录过的进程仍在运行，但没有监听目标 URL。检查并修复其监听，或从独立任务重启；`start` 和显式 `--url` 的 `stop` 会拒绝，零参数 `stop` 会继续发现其他正在运行的实例 |
 | `gh` 或 `glab` 的 `.cmd` 包装脚本丢失或破坏参数 | 使用原生 `gh.exe` 或 `glab.exe` 及其配置目录（见 Windows 凭据）；绝不要让 JSON 或消息文本经过 `cmd.exe` |
 | Windows 主机上飞书来源被拒绝 | 把来源的 **机器人的 lark-cli** 字段指向 `lark-cli`（npm 的 `.cmd` shim）或包的 Node 入口；没有 Node 入口的自定义 `.cmd` 包装会被拒绝 |
 | `git does not read the credential configuration dsh-superagent writes` | 安装 git 2.32 或更高版本 |
