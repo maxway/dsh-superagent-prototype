@@ -1,0 +1,63 @@
+# 012 Worker handoff within a conversation
+
+Status: **proposal, not implemented**. This document proposes handing a Feishu Thread from one Ticket's worker to another. It does not change current behavior or authorize deployment. The goal is to preserve the complete available conversation context, end the old work after handoff, and prevent the same new message from reaching two workers.
+
+## Current behavior and problem
+
+- The [domain model](001-domain.md) defines Subscription as a many-to-many relation between Threads and Tickets. Several independent pieces of work can subscribe to one Thread. New Triggers fan out to every eligible subscriber; a person's message can also resume an ended Ticket not stopped by a person. A worker's handback releases that message but does not remove the Subscription.
+- In [execution](003-execution.md), each Ticket has its own Session, directory, Assignments, reports and Inputs. Retrying an Assignment does not replace the Ticket. Its category is fixed at acceptance; copying context cannot expand its authorization.
+- Feishu intake only has events actually received. It cannot later read chat history or download images. Thread records are not a complete group chat, and model-facing summaries are not full original messages. Handoff cannot recover missing messages.
+- Ending the old Ticket or merely removing a Subscription therefore does not constitute a handoff: message ownership, pending replies, running work and context for the new Ticket can remain on the old side. Multiple subscriptions serve genuinely independent work on a Thread, but do not satisfy the single-recipient requirement here.
+
+## Boundaries and invariants
+
+Here “conversation” means a Source-defined **Feishu Thread key**, not a whole group chat, all its topics, or correlated Threads on other Sources. The first version enables a single recipient only on Threads explicitly switched. Other Threads, Git review threads and ordinary context-only subscriptions retain their existing many-to-many semantics. Whether different topics also need a group-wide recipient is a separate product decision.
+
+1. A Thread with handoff enabled has at most one effective recipient Ticket at any committed instant. It may temporarily have none during a switch, but Triggers must be durably queued. The old Ticket receives no new Input from any Source and cannot wake; remove all its subscriptions, not just the current Thread. Preserve its history, Mandate, reports and published artifacts for audit; do not disguise handoff as a human stop.
+2. A new accept Decision and Mandate authorize the new Ticket. The old conversation, Mandate and handoff summary are context, not authority. Apply current admission to the new category, strength, policy and requester; do not create or launch a new worker without authorization. Handoff cannot bypass an explicit stop or a human hold awaiting confirmation.
+3. The guarantee is **unique ownership and idempotent delivery** of each received Trigger, not exactly-once external side effects. A database transaction cannot undo a Feishu or Git write or a running command. Check uncertain outcomes rather than repeating them blindly.
+4. “Complete context” means original conversation records the system persisted before the cutover watermark and permits the new Ticket to read, including received messages and available outbound results. It does not claim to include messages never received, deleted, inaccessible, or otherwise unavailable. A summary is an index, not a substitute for originals; access and retention policies apply.
+
+## Initiation and preparation
+
+A handoff may follow an old worker's handback of a request outside its Ticket's category or scope, followed by router assessment, or an explicit human request. An ordinary follow-up, bot/CI event or task ending alone does not automatically switch workers. The handoff request identifies the Thread, old Ticket, initiating Trigger and idempotency key. If several old Tickets are candidates, or another independent Ticket still needs the Thread, refuse automatic handoff and expose the conflict; never silently end unrelated work.
+
+The new request must first pass the normal gate/Eval to determine the new Ticket's category, Mandate and receiving scope. Preparation records the old Ticket's state, related Threads, unfinished MRs or external work, pending Inputs and outbound messages, open questions and human holds. Do not describe unfinished old work as successful: continue only when the original request permits ending that work and no unresolved risk needs a person's decision; otherwise retain the old state and explain why. The new worker does not automatically acquire permission to take over the old MR or worktree.
+
+## Atomic switch protocol
+
+Serialize by Thread and persist `handoffId`, old and new Tickets, state, recipient generation and monotonically increasing intake sequence. Timestamps are not a concurrency order. Intake, switch and duplicate requests must compete for the same generation through a database transaction or conditional update. This is a proposed protocol, not an existing API:
+
+1. **Freeze.** Check that the current owner and generation still match and no other handoff is active. In a transaction establish a barrier: persist subsequent received Triggers in the Thread queue without delivery or resuming the old Ticket. Record watermark `N` in system intake order, not Feishu server order. Continue deduplicating by Source event ID.
+2. **Stop the old side and inventory.** Prevent new delivery and automatic launches; end the Assignment and wait for its turn, background jobs and subagents to stop according to actual Executor capabilities. Check the outcomes of external operations already issued. Record claimed, read, unread, undelivered and handed-back Inputs, distinguishing answered from outstanding. Do not let the unread-release rule send these to Eval again or repeat execution; the switching Trigger is handled once by the new Ticket.
+3. **Seal context.** After stop is confirmed, create an immutable manifest: persisted original Thread Triggers with IDs, order, actors, times, reply relationships and available content; sent or pending replies on that Thread and their status; Decisions; relevant old Ticket reports and outstanding matters; paginated references to originals and completeness/missing-data markers. Preserve readable references to relevant available old Session conversation and tool results, labeled as distinct from the Feishu conversation. Do not indiscriminately inject an entire cross-thread Session or credentials into the new Ticket. Read large histories on demand through bounded pages, with watermark, counts and integrity information; a truncated summary is not complete history.
+4. **Commit.** In one transaction recheck the generation, confirmed old Assignment stop and still-valid authorization; record the manifest and new Decision/Mandate, mark the old Ticket with a non-resumable `handed-off` terminal state, remove all its subscriptions and pending launch/delivery effects, establish the new Ticket as the Thread's sole owner, increment the generation and assign events persisted behind the barrier to the new Ticket in intake order. Historical context is not replayed as new instructions. Explicitly transfer outstanding requests by ID to prevent loss or duplicate replies. Persist the new Ticket's launch effect with the commit and execute it asynchronously afterwards.
+5. **Resume processing.** The new worker reads the manifest, authorization and outstanding matters before consuming the queue; subsequent new Triggers reach only the new owner. Deduplicate source redelivery by ID. Even when its source time precedes `N`, a late event is recorded in actual intake order and marked late. Preserve the original topic's reply Channel, using the new Ticket's permissions and deduplication keys.
+
+Two calls to unsubscribe and then subscribe are insufficient: their gap can lose routing or cause concurrent double delivery. Already queued delivery effects must also check the owner generation before execution; removing a Subscription alone cannot retract queued Inputs. After handoff, human, bot and CI messages from any Source must not resume or reach the old Ticket. New events on its other Threads still follow those Threads' normal admission rules and do not automatically authorize the new Ticket.
+
+## Replies, failures and recovery
+
+- Preserve receipts for replies confirmed sent before the switch; do not send them again. Freeze dispatch of unsent old-side replies: explicitly withdraw or transfer each to the new Ticket while preserving its deduplication key and order. If sending is in progress or its outcome is unknown, verify using available receipts before any retry. If verification is impossible, remain frozen for human handling rather than risk duplication or a false claim.
+- A failure before freeze leaves the owner unchanged. After freeze but before commit, a crash recovers the frozen durable state, continues queuing and retries stop/seal without automatically restarting the old worker. After commit, a crash only recovers the new owner's launch and delivery. Every step is repeatable and checks the generation; old effects cannot cross the fence.
+- If old-process stop cannot be confirmed, context cannot be read, policy is invalidated, owners conflict or an external side effect is uncertain, do not commit the switch; retain the queue and diagnostics. Cancel only when the old side is provably safe and the new owner has not committed; otherwise human coordination is needed, not simultaneous restarts. Queue backlog must be observable, with an explicit capacity and alert policy; never silently discard messages.
+- Mark missing history with its extent and reason; do not claim a complete handoff when existing data is inaccessible. Block automatic handoff or ask an authorized person for necessary information when access is insufficient; never bypass it using another identity.
+
+## Existing installations and implementation impact
+
+This design intentionally changes the rule that a human message can resume an ended Ticket only for a Ticket handed off. Ordinary ended Tickets retain their existing resume semantics. It adds a durable handoff terminal state, Thread owner/generation, intake sequence and manifest, and changes intake, follow-up ownership, Eval, Assignment shutdown, effects/outbox and recovery. Panel and resource reads need to show owner, state, queue, conflicts and paginated history. Retain old Decisions, dispositions and Input ownership for audit; existing human stop and Subscription removal are not equivalent implementations.
+
+Migration must not arbitrarily select an owner for a historical multi-subscription Thread. Identify and show conflicts, retaining old behavior until an explicit choice and safe handoff. Validate the new mechanism first in an isolated environment with dedicated test Sources; ship it disabled by default and enable gradually. Before rolling back the application, confirm the old version understands the new terminal state and queue, or safely migrate state first so old Tickets cannot revive.
+
+## Acceptance scenarios
+
+- A request that changes category obtains independent authorization. The new worker can page through all available pre-handoff originals and sent replies; missing messages and images are marked, and no authority beyond the new Mandate is granted.
+- Exercise concurrent intake before freeze, during freeze, at commit and afterwards, as well as duplicate/late events and crash retries. Check unique ownership, no loss, order and idempotence for each event; no Thread's messages resume the old worker.
+- Cover running commands, unread Inputs, handback, pending/uncertain replies, open MRs, human holds, policy changes and new-worker launch failure without duplicate operations or false completion.
+- Multiple old subscribers and historical conflicts do not automatically end unrelated work. Threads without the mechanism and other Git threads retain existing routing. Verify context access boundaries, pagination completeness and that retention/cleanup cannot leave dangling manifests.
+
+## Open questions
+
+1. Should exclusivity apply only to Feishu Threads, or to the whole group chat across topics? The latter changes Source routing boundaries and must not be implemented implicitly.
+2. When the old Ticket has an unfinished MR, external job or outstanding human answer, which cases permit ending it and which require a person first?
+3. What retention period, cross-Ticket visibility, acceptable Session/attachment gaps, queue capacity and alert thresholds should apply to the manifest?
