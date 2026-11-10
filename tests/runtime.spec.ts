@@ -202,7 +202,9 @@ beforeEach(async () => {
         deliveries({ sessionId, mode, id: message.id, text: message.content.map(block => block.type === 'text' ? block.text : '').join('') })
         agents.get(sessionId)!.status = 'running'
       })
-      agents.set(sessionId, { id: sessionId, ctx: agentCtx, inbox, followup: deliver('queue'), steer: deliver('steer'), status: 'idle', inject: vi.fn(), session: { id: sessionId, header: { agentPreset }, snapshotEvents: () => modelEvents, requestHeader: () => undefined, append: vi.fn((type: string, data: unknown) => { modelEvents.push({ type, data }) }) }, cancel: vi.fn(), whenIdle: async () => {} } as never)
+      const model = { current: () => modelEvents.filter(event => event.type === 'model/selection').at(-1)?.data as { model: string } | undefined,
+        select: (selection: unknown) => { modelEvents.push({ type: 'model/selection', data: selection }) } }
+      agents.set(sessionId, { id: sessionId, ctx: agentCtx, model, inbox, followup: deliver('queue'), steer: deliver('steer'), status: 'idle', inject: vi.fn(), session: { id: sessionId, header: { agentPreset }, snapshotEvents: () => modelEvents, requestHeader: () => undefined, append: vi.fn((type: string, data: unknown) => { modelEvents.push({ type, data }) }) }, cancel: vi.fn(), whenIdle: async () => {} } as never)
       bindScopeParent(agents.get(sessionId)!, preset)
     }),
     selectModel: vi.fn(async () => {}), resolveAgent: vi.fn(async id => agents.has(id) ? { agent: agents.get(id) } : { error: { code: 'session/not-found' } }), rename: vi.fn(async () => {}),
@@ -227,6 +229,24 @@ afterEach(async () => {
     if (value === undefined) delete process.env[name]
     else process.env[name] = value
   }
+})
+
+it('uses the model captured for each worker step when assembling its prompt', async () => {
+  const { sessionId } = await acceptedTicket()
+  const agent = agents.get(sessionId)! as unknown as { ctx: Context; model: { select: (value: { provider: string; model: string }) => void } }
+  const section = sections.get(sessionId)!
+  const signal = new AbortController().signal
+  const step = async (model: string) => agent.ctx.waterfall('agent/pre-step', { agent: agent as never, messages: [], turn: 1, step: 1, signal,
+    modelSelection: { provider: 'provider', model } }, async () => ({ kind: 'enter' as const, messages: [] }))
+  await step('gpt-6.1-terra')
+  agent.model.select({ provider: 'provider', model: 'deepseek-v4.1-flash' })
+  expect(section.text({ signal })).toContain('Own the outcome:')
+  await step('deepseek-v4.1-flash')
+  expect(section.text({ signal })).not.toContain('Own the outcome:')
+  await step('gpt-6.1-sol')
+  expect(section.text({ signal })).toContain('Own the outcome:')
+  await step('gpt-6-luna')
+  expect(section.text({ signal })).toContain('Own the outcome:')
 })
 
 it('relays an explicit member mention as a candidate and creates the ticket, acknowledgement, subscription and worker on accept', async () => {

@@ -30,6 +30,20 @@ it('lists the team sections, then the built-in parts, edits and saves them separ
   expect(server.requests.some(request => request.path.startsWith('settings/'))).toBe(false)
 })
 
+it('previews the GPT-specific worker override separately from other models', async () => {
+  server.prompts.current = promptVersion(1, { ...defaultPrompts(), overrides: { 'runtime/work/gpt': { text: 'GPT-specific team guidance.' } } })
+  server.prompts.revision = 1
+  at({ page: 'settings', query: { group: 'prompts' } })
+  await mount()
+  await click(tab(zh.promptViewFull))
+  const select = field<HTMLSelectElement>(zh.promptPreviewTarget)
+  await act(async () => { select.value = 'worker'; select.dispatchEvent(new Event('change', { bubbles: true })) }); await settle()
+  expect(text()).not.toContain('GPT-specific team guidance.')
+  await act(async () => { select.value = 'workerGpt'; select.dispatchEvent(new Event('change', { bubbles: true })) }); await settle()
+  expect(text()).toContain('GPT-specific team guidance.')
+  expect(all('.dt-preview-part[data-editable] b').map(item => item.textContent)).toContain(zh['promptPart.runtime/work/gpt'])
+})
+
 it('keeps a conflicting prompt draft, rebases it onto the newer version and saves on retry', async () => {
   at({ page: 'settings', query: { group: 'prompts' } })
   await mount()

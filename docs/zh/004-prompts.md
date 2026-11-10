@@ -24,7 +24,7 @@
 | 段落 | 键 |
 | --- | --- |
 | 共享指令和角色 | `runtime/shared`、`runtime/orchestrator`、`runtime/worker` |
-| 工作指令 | `runtime/subscriptions`、`runtime/replies`、`runtime/dispatch`、`runtime/work`、`runtime/admission` |
+| 工作指令 | `runtime/subscriptions`、`runtime/replies`、`runtime/dispatch`、`runtime/work`、`runtime/work/gpt`、`runtime/admission` |
 | 交接指令 | `runtime/handoff/orchestrator`、`runtime/handoff/worker` |
 | 来源技能 | `skill/feishu`、`skill/github`、`skill/gitlab` |
 | 生成的段落 | `runtime/environment`、`runtime/policy`、`runtime/policy/none` |
@@ -55,6 +55,8 @@
 6. 交接指令。
 7. `runtime/environment`。
 8. `runtime/policy`，仅用于主 Session。
+
+模型 ID 以 `gpt-` 开头（不区分大小写）的执行器会在 `runtime/work` 后收到 `runtime/work/gpt`；其他模型和主 Session 保留原有提示词。不以 `gpt-` 开头的自定义别名无法自动识别。每一步根据该步骤确定的模型选择，包括模型切换之后；模型专属段落可以单独覆盖。设置预览分别提供 GPT 和非 GPT 执行器视图。
 
 准入指令来自 `prompts/admission.md`。它们描述主动研判，以及何时可以从卡片上忽略一个不相关的候选。`orchestrator_eval` 返回上下文，而不是重复这些指令。
 

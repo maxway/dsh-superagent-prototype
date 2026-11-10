@@ -10,6 +10,7 @@ export const workerPrompt = promptFile('worker')
 /** Built-in policy sections referenced by role prompts; a team may override them. */
 export const guides: Readonly<Record<string, string>> = Object.fromEntries(['subscriptions', 'replies', 'dispatch', 'work']
   .map(name => [name, promptFile(name)]))
+export const gptWorkGuidance = promptFile('work-gpt')
 /** Bundled Source skills registered by dsh-superagent; a team may override their text. */
 export const sourceSkills: Readonly<Record<'feishu' | 'github' | 'gitlab', string>> = { feishu: bundledSkills.feishu.content, github: bundledSkills.github.content,
   gitlab: bundledSkills.gitlab.content }

@@ -444,7 +444,8 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
       composeSkill(body, name)])
     // The generated parts from their templates, without variables or rules.
     const environment = environmentSection(body, []), policy = policySection(SettingsSchema.parse({ policy: { rules: [] } }), body)
-    return { parts: { orchestrator: promptParts(body, 'orchestrator', environment, policy), worker: promptParts(body, 'worker', environment) },
+    return { parts: { orchestrator: promptParts(body, 'orchestrator', environment, policy), worker: promptParts(body, 'worker', environment),
+      workerGpt: promptParts(body, 'worker', environment, undefined, 'gpt-6.1-terra') },
       skills: Object.fromEntries(skills),
       orchestrator: composePrompt(body, 'orchestrator'), worker: composePrompt(body, 'worker'), scope: '' }
   } },

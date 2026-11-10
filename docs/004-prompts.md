@@ -22,7 +22,7 @@ Overrides use these keys:
 | Parts | Keys |
 | --- | --- |
 | Shared instructions and roles | `runtime/shared`, `runtime/orchestrator`, `runtime/worker` |
-| Working instructions | `runtime/subscriptions`, `runtime/replies`, `runtime/dispatch`, `runtime/work`, `runtime/admission` |
+| Working instructions | `runtime/subscriptions`, `runtime/replies`, `runtime/dispatch`, `runtime/work`, `runtime/work/gpt`, `runtime/admission` |
 | Handoff instructions | `runtime/handoff/orchestrator`, `runtime/handoff/worker` |
 | Source skills | `skill/feishu`, `skill/github`, `skill/gitlab` |
 | Generated sections | `runtime/environment`, `runtime/policy`, `runtime/policy/none` |
@@ -53,6 +53,8 @@ The system prompt is assembled in this order:
 6. Handoff instructions.
 7. `runtime/environment`.
 8. `runtime/policy`, for the main Session only.
+
+A worker whose model ID starts with `gpt-` (case-insensitive) receives `runtime/work/gpt` after `runtime/work`; other models and the orchestrator retain their existing prompt. Custom aliases that do not start with `gpt-` are not detected. Selection uses the model captured for each step, including after a model switch. The model-specific part can be overridden independently. The settings preview offers separate GPT and non-GPT worker views.
 
 Admission instructions come from `prompts/admission.md`. They describe proactive assessment and when an irrelevant candidate can be ignored from its card. `orchestrator_eval` returns context rather than repeating these instructions.
 

@@ -175,7 +175,7 @@ function BuiltInEditor({ config, view, part, onEdit }: {
 }
 
 type Preview = ApiResponse<'POST prompts/preview'>
-type Target = 'orchestrator' | 'worker' | `skill/${string}`
+type Target = 'orchestrator' | 'worker' | 'workerGpt' | `skill/${string}`
 const KIND_LABEL = { team: 'promptPartTeam', fixed: 'promptPartFixed', generated: 'promptPartGenerated' } as const
 function FullPrompt({ config, view, dirty, revision, onEdit }: {
   config: PromptConfig; view: PromptsView; dirty: boolean; revision: number; onEdit: (name: string) => void
@@ -205,7 +205,8 @@ function FullPrompt({ config, view, dirty, revision, onEdit }: {
       <select className="dt-select dt-inline-select" aria-label={t('promptPreviewTarget')} value={target}
         onChange={event => setTarget(event.target.value as Target)}>
         <option value="orchestrator">{valueLabel(t, 'promptRole', 'orchestrator')}</option>
-        <option value="worker">{valueLabel(t, 'promptRole', 'worker')}</option>
+        <option value="worker">{t('promptPreviewWorkerOther')}</option>
+        <option value="workerGpt">{t('promptPreviewWorkerGpt')}</option>
         {Object.keys(preview.value.skills).map(name => <option key={name} value={`skill/${name}`}>{sectionLabel(t, view,
           `skill/${name}`)}</option>)}
       </select>

@@ -251,11 +251,17 @@ export class Sessions {
     this.retryHealth.restore(agent.id, agent.session.snapshotEvents())
     if (agent.status === 'idle') this.retryHealth.clear(agent.id)
     this.updateModelHealth()
+    let stepModel: string | undefined
+    if (!master) binding.disposers.push(agent.ctx.on('agent/pre-step', async ({ modelSelection }, next) => {
+      stepModel = modelSelection.model
+      return next()
+    }))
     // Disable variable interpolation so literal ${{ ... }} expressions in team prompts are preserved.
     binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagent-policy', order: 9999, interpolate: false, text: context => {
       const version = this.promptFor(agent, context.signal !== undefined)
       const current = ticket && host.store.tickets.get(ticket.id)
-      const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
+      const model = context.signal ? stepModel : agent.model.current()?.model
+      const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined, model)
       return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions({ strength: current.mandate.strength, category: current.category, tier: current.tier, handoffFrom: current.handoffFrom }) : ''}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.

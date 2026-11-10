@@ -57,6 +57,20 @@ it('assembles every role from fixed sections around the team sections, whatever 
   expect(composePrompt(config, 'worker')).not.toContain(mainAdmissionPolicy)
 })
 
+it('adds GPT guidance only to GPT workers, preserving other prompts and overrides', () => {
+  const config = defaultPrompts()
+  const worker = (model?: string) => composePrompt(config, 'worker', undefined, undefined, model)
+  const baseline = worker()
+  for (const model of ['deepseek-v4.1-flash', 'claude-opus', 'my-gpt-model']) expect(worker(model)).toBe(baseline)
+  for (const model of ['GPT-6.1-TERRA', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.5']) {
+    expect(worker(model)).toContain('Assess risk by likelihood, impact and reversibility')
+  }
+  expect(composePrompt(config, 'orchestrator', undefined, undefined, 'gpt-6.1-terra')).not.toContain('Own the outcome:')
+  const overridden = { ...config, overrides: { 'runtime/work/gpt': { text: 'GPT team guidance.' } } }
+  expect(composePrompt(overridden, 'worker', undefined, undefined, 'gpt-6.1-sol')).toContain('GPT team guidance.')
+  expect(composePrompt(overridden, 'worker', undefined, undefined, 'deepseek-v4.1-flash')).toBe(baseline)
+})
+
 it('reads a prompt file whatever its line ends and blank lines, and names a missing or empty one', () => {
   // promptFile resolves names relative to prompts/, so the temp directory must be on the same drive: inside it.
   const dir = mkdtempSync(join(packagePath('prompts'), 'prompt-file-'))
@@ -82,6 +96,7 @@ it.each(['orchestrator', 'worker'] as const)('ends the %s prompt with the fixed 
     expect(promptParts(defaultPrompts(), role).at(-1)).toEqual({ name: 'runtime/handoff', kind: 'fixed', key: `runtime/handoff/${role}`,
       text: handoffPolicy(role) })
     expect(preview[role]).toBe(prompts.compose(defaultPrompts(), role))
+    if (role === 'worker') expect(preview.parts.workerGpt.map(part => part.text).join('\n\n')).toBe(prompts.compose(defaultPrompts(), role, undefined, 'gpt-6.1-terra'))
     expect(preview[role]).toContain(`${handoffPolicy(role)}\n\nExecution environment`)
     if (role === 'worker') expect(preview[role].endsWith(ENVIRONMENT_LINE)).toBe(true)
     // Nothing follows the main Session's Policy section, so a Policy change leaves the rest of its prompt as it was.
