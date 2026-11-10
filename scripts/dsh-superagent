@@ -578,7 +578,7 @@ export async function discoverServers(records, portsOf = portsForPid, probe = ur
 }
 
 /** Pick one discovered server; one candidate, an explicit URL, or the profile name resolves it. */
-export function chooseServer(candidates, { url, profile, urlExplicit = false } = {}) {
+export function chooseServer(candidates, { url, profile, urlExplicit = false, profileExplicit = false } = {}) {
   if (!candidates.length) return undefined
   if (urlExplicit) {
     const port = urlPort(url)
@@ -589,7 +589,7 @@ export function chooseServer(candidates, { url, profile, urlExplicit = false } =
   if (profile) {
     const matches = candidates.filter(candidate => candidate.profile === profile)
     if (matches.length === 1) return matches[0]
-    if (matches.length > 1) return undefined
+    if (matches.length > 1 || profileExplicit) return undefined
   }
   return candidates.length === 1 ? candidates[0] : undefined
 }
@@ -1068,7 +1068,7 @@ async function stop(args, intentional = true) {
     // No URL was named: find the server instead of making a person discover its port and home.
     const records = windowsProcesses()
     const candidates = await discoverServers(records)
-    server = chooseServer(candidates, { profile: args.profile, url: args.url, urlExplicit: false })
+    server = chooseServer(candidates, { profile: args.profile, url: args.url, urlExplicit: false, profileExplicit: args.profile_explicit })
     if (!server) {
       if (candidates.length) {
         throw new Error(`Multiple dsh-superagent servers are running: ${serverList(candidates)}. Pass --url or --profile to choose one.`)
@@ -1177,7 +1177,7 @@ async function start(args) {
   if (!pids.length && !args.url_explicit && WINDOWS) {
     // Without a named URL, find an already running server instead of starting a second one on a guessed port.
     const candidates = await discoverServers(windowsProcesses())
-    const running = chooseServer(candidates, { profile: args.profile, url: args.url, urlExplicit: false })
+    const running = chooseServer(candidates, { profile: args.profile, url: args.url, urlExplicit: false, profileExplicit: args.profile_explicit })
     if (running) {
       process.stdout.write(`dsh-superagent is already running (PID ${running.pid}, ${running.url}, profile ${running.profile}); no duplicate started.\n`)
       return 0

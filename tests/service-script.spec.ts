@@ -367,6 +367,8 @@ it('discovers a superagent server from its management state and resolves one sto
     console.log(JSON.stringify({
       servers,
       sole: m.chooseServer(servers, { profile: 'superagent' }),
+      fallback: m.chooseServer([other], { profile: 'superagent' }),
+      explicitMiss: m.chooseServer([other], { profile: 'superagent', profileExplicit: true }) ?? null,
       ambiguous: m.chooseServer([...servers, same], { profile: 'superagent' }) ?? null,
       byUrl: m.chooseServer([...servers, other], { url: 'http://127.0.0.1:4000', profile: 'superagent', urlExplicit: true }),
       states: [m.isSuperagentState({ health: { assessment: 'ready' } }), m.isSuperagentState({ health: { runtime: 'ready' } })],
@@ -378,12 +380,14 @@ it('discovers a superagent server from its management state and resolves one sto
     (error, stdout) => error ? reject(error) : resolve(stdout)))
   const value = JSON.parse(out) as {
     servers: { pid: number; profile: string; port: number; url: string }[]
-    sole: { pid: number } | null; ambiguous: unknown; byUrl: { pid: number } | null
+    sole: { pid: number } | null; fallback: { pid: number } | null; explicitMiss: unknown; ambiguous: unknown; byUrl: { pid: number } | null
     states: boolean[]; profiles: (string | undefined)[]; ports: number[][]
   }
   expect(value.servers).toEqual([{ pid: 10, profile: 'superagent', port: 3999, url: 'http://127.0.0.1:3999',
     health: { runtime: 'ready', assessment: 'ready' } }])
   expect(value.sole).toMatchObject({ pid: 10 })
+  expect(value.fallback).toMatchObject({ pid: 13 })
+  expect(value.explicitMiss).toBeNull()
   expect(value.ambiguous).toBeNull()
   expect(value.byUrl).toMatchObject({ pid: 13 })
   expect(value.states).toEqual([true, false])
