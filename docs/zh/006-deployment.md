@@ -386,7 +386,7 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 ### 版本化 Watchdog 制品与更新任务
 
-Watchdog 不再通过拉取 superagent 检出更新：仓库构建不可变制品，观察器、agent 包装与 gate 只从同一版本导入。`node scripts/watchdog-control.mjs deploy --build` 从干净的当前检出构建制品、跑 smoke、安装、切换指针、重启 observer 并核对新版本心跳；也可以把已构建的目录交给 `deploy --artifact <dir>`。制品仍包含 `scripts/watchdog`、`scripts/watchdog-agent/*` 和常驻 observer 的两套启动器，并写入包含文件哈希、总摘要、`apiVersion` 与 `minServiceVersion` 的 `manifest.json`；`node scripts/watchdog-smoke.mjs <dir>` 可单独验证制品，不接触生产服务或飞书。
+Watchdog 不再通过拉取 superagent 检出更新：仓库构建不可变制品，观察器、agent 包装与 gate 只从同一版本导入。`node scripts/watchdog-control.mjs deploy --build` 从干净的当前检出构建制品、跑 smoke、安装、切换指针、重启 observer 并核对新版本心跳；也可以把已构建的目录交给 `deploy --artifact <dir>`。制品仍包含 `scripts/watchdog`、`scripts/watchdog-agent/*` 和常驻 observer 的两个启动器文件（`launch-observer.ps1` 与 `launch-observer.vbs`），并写入包含文件哈希、总摘要、`apiVersion` 与 `minServiceVersion` 的 `manifest.json`；`node scripts/watchdog-smoke.mjs <dir>` 可单独验证制品，不接触生产服务或飞书。
 
 把制品安装到 `<watchdogHome>\versions\<version>`，用 `<watchdogHome>\current.txt` 表示当前版本；`previous.txt` 是回滚点。常驻 observer 由计划任务通过 `wscript.exe` 运行 `<watchdogHome>\launch-observer.vbs -Config <observer.json>`；VBS 以隐藏窗口启动 `launch-observer.ps1`，后者读取 `current.txt`、运行该版本的 `watchdog --config`，非零退出时等待 10 秒重启。切换版本不需要改写任务动作，也从不重启 superagent 服务。observer 配置（服务 URL、chat id、state/log、agentConfig）与 agent 配置（checkout、workspace、DSH home、模型 patch）留在仓库外；`scripts/watchdog-agent/config.example.json` 与 `model.patch.example.yml` 是 agent 模板。一次性 agent 不再有独立启动器；需要诊断时直接调用制品的 `agent\run.ps1`。
 

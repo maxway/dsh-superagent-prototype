@@ -226,6 +226,8 @@ export async function stopObserver(options) {
     if (pid && pidAlive(pid)) run(`taskkill /pid ${pid} /t /f`, { allowFailure: true })
     if (!await waitFor(() => !pidAlive(pid), 10_000)) throw new Error(`The observer pid ${pid} is still alive`)
   }
+  // The launcher loop could still be alive if the task's top process ignored the first end; end it again.
+  run(taskCommand('end', options.task), { allowFailure: true })
   rmSync(join(config.watchdogHome, 'observer-state', 'watchdog.pid'), { force: true })
   return { stopped: true, pid: pid ?? null, task: options.task }
 }
