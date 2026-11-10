@@ -227,6 +227,8 @@ export class Engine {
   handback(ticketId: string, triggerId: string, reason: string): boolean {
     return this.repo.atomic(() => this.evals.handback(ticketId, triggerId, reason))
   }
+  /** Transfer a low-tier ticket to a new high-tier ticket under the same mandate. */
+  handoff(ticketId: string, summary: string): Ticket { return this.repo.atomic(() => this.tickets.handoff(ticketId, summary)) }
   /**
    * Record a report on an open ticket's current Assignment. Its question for a person (`attention`) is asked, kept, or
    * cleared (`null` or a `ready` report), and a replaced attention question whose reply has not been sent yet is withdrawn
@@ -267,4 +269,4 @@ export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reeva
 export type EngineForSettings = Pick<Engine, 'policyChanged'>
 /** What the Executor tells the Engine, and what its workers ask of it. */
 export type EngineForExecutor = Pick<Engine, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed'
-  | 'assignmentInterrupted' | 'report' | 'markUnrelated' | 'handback' | 'followForContext' | 'reply'>
+  | 'assignmentInterrupted' | 'report' | 'markUnrelated' | 'handback' | 'handoff' | 'followForContext' | 'reply'>

@@ -1,7 +1,7 @@
 /** Tickets: their lifecycle from an accept to their end, their Subscriptions and their Inputs. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
-import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, waitsForPerson } from './model.ts'
+import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, ticketCategory, waitsForPerson } from './model.ts'
 import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
   Trigger, TriggerDisposition } from './model.ts'
 import type { AssessmentOutcome } from './ports.ts'
@@ -114,6 +114,7 @@ export class Tickets extends EnginePart {
     // A follow-up that reached a ticket goes elsewhere only once the workers that decide it hand it back.
     this.leftToWorkers(trigger)
     const current = this.require(ticketId)
+    if (current.handoffTo) throw new UserError('ticketEnded')
     if (current.ended?.by === 'human') throw new UserError('ticketStopped')
     if (!liveTicket(current) && !this.policy().revalidate(current.mandate)) throw new UserError('mandateRevoked')
     return trigger
@@ -165,6 +166,77 @@ export class Tickets extends EnginePart {
   stop(ticketId: string, reason?: string): Ticket {
     this.end(ticketId, 'human', 'stopped', this.now(), reason)
     return this.require(ticketId)
+  }
+  handoff(ticketId: string, summary: string): Ticket {
+    const old = this.require(ticketId)
+    if (old.handoffTo) return this.require(old.handoffTo)
+    if (typeof summary !== 'string' || !summary.trim() || summary.length > 8000) throw new Error('A handoff requires a non-empty summary of at most 8000 characters')
+    const source = this.source(old), origin = source?.threads[0]
+    const subscribed = origin && this.repo.threads.get(threadKey(origin))
+    if (!liveTicket(old) || old.tier !== 'low' || old.attention || waitsForPerson(old)
+      || old.follows?.some(follow => !follow.closed) || source?.source !== 'feishu' || origin?.source !== 'feishu'
+      || !subscribed?.subscriptions.includes(old.id) || subscribed.context?.includes(old.id)
+      || !old.channels.some(channel => channel.source === 'feishu')) throw new Error('This ticket cannot be handed off in its current state')
+    if (!this.policy().revalidate(old.mandate)) throw new UserError('mandateRevoked')
+    const at = this.now(), id = key('handoff', old.id), category = ticketCategory(old)
+    if (this.repo.tickets.get(id)) throw new Error('This ticket cannot be handed off in its current state')
+    const text = `Before doing any work, read the complete handoff summary in the full assignment using assignment_read if truncated.\nHandoff from ticket ${old.id}.${old.execution?.directory
+      ? ` Previous workspace (may no longer exist): ${old.execution.directory}` : ''}\n${summary.trim()}`
+    const outcome: Extract<AssessmentOutcome, { kind: 'accept' }> = { kind: 'accept', title: old.title, scope: old.mandate.scope,
+      reason: 'handoff', category, tier: 'high', note: text, ...(old.offPeak ? { offPeak: true } : {}) }
+    const marker: TicketInput = { id: key('input', id, 'handoff'), kind: 'text', text, at }
+    let ticket: Ticket = { id, title: old.title, decisionId: old.decisionId, category, tier: 'high', mandate: old.mandate,
+      channels: old.channels, origin: old.origin, handoffFrom: old.id, assignments: [], inputs: [marker], undelivered: [marker.id],
+      createdAt: at, updatedAt: at, ...(old.offPeak ? { offPeak: true } : {}), ...(old.git ? { git: old.git } : {}),
+      ...(old.follows?.length ? { follows: old.follows } : {}) }
+    const prepared = this.options.prepareTicket?.(ticket, outcome)
+    if (!prepared?.execution?.directory || old.execution?.directory === prepared.execution.directory) {
+      throw new Error('Handoff requires a separately prepared ticket workspace')
+    }
+    ticket = { ...ticket, execution: prepared.execution }
+    const until = readUntil(old)
+    for (const input of old.inputs) {
+      const trigger = input.kind === 'trigger' ? this.repo.triggers.get(input.triggerId) : undefined
+      const unresolved = trigger && this.owners(trigger).includes(old.id) && !this.takenUp(old, trigger)
+      const pending = old.undelivered.includes(input.id) || input.kind === 'trigger'
+        && (input.readAt === null || !readBefore(input, until) || unresolved)
+      if (!pending) continue
+      if (input.kind === 'trigger') {
+        const disposition = this.repo.triggers.disposition(input.triggerId)
+        if (disposition?.requeued || disposition?.handbacks?.some(item => item.ticketId === old.id)) continue
+        const { deliveredTo, deliveredAt, readAt, ...waiting } = input
+        const transferred = { ...waiting, id: key('input', id, 'handoff', input.id) }
+        ticket.inputs.push(transferred); ticket.undelivered.push(transferred.id)
+        if (disposition?.fanout.includes(old.id)) {
+          this.repo.triggers.saveDisposition(input.triggerId, { ...disposition, fanout: [...new Set([...disposition.fanout, id])],
+            ...(disposition.context?.includes(old.id) ? { context: [...new Set([...disposition.context, id])] } : {}) })
+        }
+      } else {
+        const transferred = { ...input, id: key('input', id, 'handoff', input.id) }
+        ticket.inputs.push(transferred); ticket.undelivered.push(transferred.id)
+      }
+    }
+    const assignment = this.newAssignment(ticket)
+    old.handoffTo = id
+    const stopping = old.assignments.filter(item => item.state !== 'ended')
+    old.ended = { at, by: 'executor', outcome: 'stopped', reason: 'handoff' }
+    old.updatedAt = at; old.undelivered = []
+    delete old.delivery
+    for (const item of stopping) { item.state = 'ended'; item.endedAt = at; item.endedReason = 'handoff' }
+    this.repo.tickets.save(old); this.repo.tickets.save(ticket)
+    for (const thread of this.repo.threads.list()) {
+      if (!thread.subscriptions.includes(old.id)) continue
+      thread.subscriptions = thread.subscriptions.map(item => item === old.id ? id : item)
+      if (thread.context?.includes(old.id)) thread.context = thread.context.map(item => item === old.id ? id : item)
+      this.repo.threads.save(thread)
+      this.emit('thread.unsubscribed', { threadKey: thread.key, ticketId: old.id, by: 'executor', reason: 'handoff' })
+      this.emit('thread.subscribed', { threadKey: thread.key, ticketId: id })
+    }
+    this.emit('ticket.ended', { ticketId: old.id, by: 'executor', outcome: 'stopped', reason: 'handoff' })
+    this.emit('ticket.created', { ticketId: id, decisionId: old.decisionId, strength: old.mandate.strength, category, tier: 'high' })
+    for (const item of stopping) this.options.executor.stop(old, item, 'handoff')
+    this.options.executor.start(ticket, assignment)
+    return ticket
   }
   /**
    * Ends the stalled assignment of a retryable open ticket (`failed`, `blocked`, or failed input delivery) and starts a new one.
@@ -263,7 +335,7 @@ export class Tickets extends EnginePart {
    */
   wake(ticketId: string): void {
     const ticket = this.repo.tickets.get(ticketId)
-    if (!ticket || liveTicket(ticket) || ticket.ended?.by === 'human' || !ticket.undelivered.length) return
+    if (!ticket || liveTicket(ticket) || ticket.handoffTo || ticket.ended?.by === 'human' || !ticket.undelivered.length) return
     const policy = this.policy()
     if (policy.paused) return
     if (!policy.revalidate(ticket.mandate)) { this.refuse(ticket); return }

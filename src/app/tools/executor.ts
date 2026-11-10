@@ -11,7 +11,7 @@ import type { Sessions } from '../sessions.ts'
 import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
 
 export interface ExecutorToolsHost {
-  readonly engine: Pick<EngineForExecutor, 'report' | 'reply' | 'markUnrelated' | 'handback' | 'followForContext'>
+  readonly engine: Pick<EngineForExecutor, 'report' | 'reply' | 'markUnrelated' | 'handback' | 'followForContext' | 'handoff'>
   readonly store: Pick<Store, 'tickets' | 'replyStatus' | 'atomic'>
   readonly sessions: Pick<Sessions, 'relay' | 'notify'>
   readonly resources: ResourceHost
@@ -71,6 +71,17 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
       }).strict(),
       execute: async args => ({ trigger_id: args.trigger_id, queued: host.engine.handback(ticketId, args.trigger_id, args.reason) }),
     }),
+    ...(ticket.tier === 'low' ? [tool({
+      name: 'orchestrator_ticket_handoff',
+      description: 'Hand this low-tier ticket to a high-tier worker when the original task needs more capability. The successor inherits only the original task authorization; this cannot expand scope. After success stop all work immediately; your session may be cancelled before the result arrives.',
+      schema: z.object({
+        summary: z.string().trim().min(1).max(8000).describe('At most 8000 characters. Describe what has been done, what remains unfinished, and risks or important constraints, within the original authorization.'),
+      }).strict(),
+      execute: async args => {
+        const successor = host.engine.handoff(ticketId, args.summary)
+        return { handed_off: true, ticket_id: successor.id, next_action: 'Stop working immediately; the high-tier worker will continue the original task.' }
+      },
+    })] : []),
     tool({
       name: 'orchestrator_report',
       description: 'Report progress, ready, blocked, failed or dropped, as the work and handoff sections say.',

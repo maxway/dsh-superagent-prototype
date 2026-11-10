@@ -71,6 +71,89 @@ function accepted(h: ReturnType<typeof harness>, id = '1', thread = 't1') {
   return decision
 }
 
+describe('low to high handoff', () => {
+  const prepare = (ticket: Ticket) => ({ ...ticket, execution: { name: ticket.id, directory: `work/${ticket.id}`, assignment: '' } })
+  function low(h: ReturnType<typeof harness>) {
+    const first = trigger('1', { source: 'feishu', threads: [{ source: 'feishu', id: 'oc:om' }],
+      channel: { source: 'feishu', thread: 'feishu:oc:om', address: { chatId: 'oc', messageId: 'om' } } })
+    h.engine.receive(first); h.pump()
+    const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Question', scope: 'answer', reason: 'asked', category: 'query', tier: 'low' })
+    h.settle()
+    return decision.ticketId!
+  }
+  it('transfers authorization, subscriptions and pending inputs exactly once', () => {
+    const prepareTicket = vi.fn((ticket: Ticket, outcome: Extract<Outcome, { kind: 'accept' }>) => ({ ...ticket,
+      execution: { name: ticket.id, directory: `work/${ticket.id}`, assignment: outcome.note ?? '' } }))
+    const h = harness({}, { prepareTicket })
+    const oldId = low(h), old = h.repo.tickets.get(oldId)!
+    const other = accepted(h, '9', 'other').ticketId!
+    h.engine.followForContext(oldId, { source: 'chat', id: 'context' })
+    h.engine.receive(trigger('2', { threads: [{ source: 'feishu', id: 'oc:om' }] })); h.settle()
+    h.engine.receive(trigger('3', { threads: [{ source: 'chat', id: 'context' }] }))
+    const result = h.engine.handoff(oldId, 'needs deeper analysis')
+    expect(result).toMatchObject({ tier: 'high', category: 'query', handoffFrom: oldId, mandate: old.mandate, origin: old.origin,
+      channels: old.channels, decisionId: old.decisionId, execution: { assignment: expect.stringContaining('needs deeper analysis') } })
+    expect(result.execution?.assignment).toContain(`work/${oldId}`)
+    expect(result.execution?.directory).not.toBe(old.execution?.directory)
+    expect(result.inputs).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'trigger', triggerId: '2' }),
+      expect.objectContaining({ kind: 'trigger', triggerId: '3', context: true })]))
+    expect(h.repo.threads.get('feishu:oc:om')?.subscriptions).toEqual([result.id])
+    expect(h.repo.threads.get('chat:context')).toMatchObject({ subscriptions: [result.id], context: [result.id] })
+    expect(followupOwners(h.repo.triggers.get('2')!, h.repo)).toEqual([result.id])
+    expect(h.repo.tickets.get(oldId)).toMatchObject({ handoffTo: result.id, ended: { by: 'executor', outcome: 'stopped' }, undelivered: [] })
+    expect(h.repo.tickets.get(other)?.ended).toBeUndefined()
+    expect(h.engine.handoff(oldId, 'another summary').id).toBe(result.id)
+    expect(prepareTicket).toHaveBeenCalledTimes(3)
+    expect(h.executor.stop).toHaveBeenCalledTimes(1)
+    expect(() => h.engine.attach(oldId, '2')).toThrow()
+    expect(() => h.engine.handback(oldId, '2', 'late')).toThrow()
+    h.engine.receive(trigger('4', { threads: [{ source: 'feishu', id: 'oc:om' }] })); h.pump()
+    expect(h.repo.triggers.disposition('4')?.fanout).toEqual([result.id])
+    expect(h.repo.threads.get('feishu:oc:om')?.pending).not.toContain('2')
+  })
+  it('rolls back when preparation fails and rejects revoked or unsafe handoffs', () => {
+    let fail = false
+    const h = harness({}, { prepareTicket: ticket => { if (fail) throw new Error('prepare failed'); return prepare(ticket) } })
+    const id = low(h)
+    expect(() => h.engine.handoff(id, ' ')).toThrow()
+    expect(() => h.engine.handoff(id, 'x'.repeat(8001))).toThrow()
+    h.setVersion('revoked')
+    expect(() => h.engine.handoff(id, 'summary')).toThrow(/policy/)
+    h.setVersion('v1'); fail = true
+    expect(() => h.engine.handoff(id, 'summary')).toThrow('prepare failed')
+    expect(h.repo.tickets.list()).toHaveLength(1)
+    expect(h.repo.tickets.get(id)?.ended).toBeUndefined()
+    expect(h.repo.threads.get('feishu:oc:om')?.subscriptions).toEqual([id])
+    expect(h.executor.stop).not.toHaveBeenCalled()
+    fail = false
+    h.engine.report(id, { state: 'blocked', summary: 'waiting' })
+    expect(() => h.engine.handoff(id, 'summary')).toThrow()
+  })
+  it('transfers read but unacknowledged messages without reclaiming handed-back work', () => {
+    const h = harness({}, { prepareTicket: prepare }), id = low(h)
+    h.engine.receive(trigger('2', { threads: [{ source: 'feishu', id: 'oc:om' }] })); h.settle(); h.read(id)
+    h.tick(1); h.engine.report(id, { state: 'progress', summary: 'working' })
+    h.engine.receive(trigger('3', { threads: [{ source: 'feishu', id: 'oc:om' }] })); h.settle()
+    expect(h.engine.handback(id, '3', 'unrelated')).toBe(true)
+    const result = h.engine.handoff(id, 'needs another model')
+    expect(result.inputs).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'trigger', triggerId: '2' })]))
+    expect(result.inputs).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'trigger', triggerId: '3' })]))
+    expect(followupOwners(h.repo.triggers.get('2')!, h.repo)).toEqual([result.id])
+    expect(h.repo.threads.get('feishu:oc:om')?.pending).toEqual(['3'])
+    h.engine.evaluateDue()
+    expect(h.requests.at(-1)?.triggers.map(item => item.id)).toEqual(['3'])
+  })
+  it('refuses other tiers, unsubscribed origins and open followed work', () => {
+    const h = harness({}, { prepareTicket: prepare }), id = low(h)
+    h.engine.bindThread(id, { source: 'git', id: 'mr' }, true)
+    expect(() => h.engine.handoff(id, 'summary')).toThrow()
+    h.engine.threadClosed({ source: 'git', id: 'mr' }, 'closed', '2026-09-22T00:00:00.000Z')
+    h.engine.unsubscribe('feishu:oc:om')
+    expect(() => h.engine.handoff(id, 'summary')).toThrow()
+    const high = accepted(h, '7', 'other').ticketId!
+    expect(() => h.engine.handoff(high, 'summary')).toThrow()
+  })
+})
 describe('intake', () => {
   it('stores a trigger once and records source filtering', () => {
     const h = harness()

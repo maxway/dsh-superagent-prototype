@@ -1,6 +1,6 @@
 # 012 Worker handoff within a conversation
 
-Status: **proposal, not implemented**. This document proposes handing a Feishu Thread from one Ticket's worker to another. It does not change current behavior or authorize deployment. The goal is to preserve the complete available conversation context, end the old work after handoff, and prevent the same new message from reaching two workers.
+Status: **broader proposal, not implemented**. This document proposes a general Feishu Thread handoff with complete available context and a single effective recipient. The narrower low-to-high capability handoff in [execution](003-execution.md#ticket-categories-and-models) inherits the existing Mandate for the same task, uses a worker summary, and allows occasional duplicates during the switch; it does not implement the protocol or guarantees proposed here. Neither this proposal nor the narrower implementation authorizes deployment.
 
 ## Current behavior and problem
 

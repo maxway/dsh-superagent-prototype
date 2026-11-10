@@ -82,7 +82,7 @@ export function followupOwners(trigger: Pick<Trigger, 'id' | 'human' | 'threads'
   if (!reached.length || records.threads.get(threadKey(trigger.threads[0]!))?.evaluating?.triggerIds.includes(trigger.id)) return []
   return reached.filter(id => {
     const ticket = records.tickets.get(id)
-    return !!ticket && (liveTicket(ticket) || (ticket.ended?.by !== 'human'
+    return !!ticket && (liveTicket(ticket) || (!ticket.handoffTo && ticket.ended?.by !== 'human'
       && ticket.inputs.some(input => input.kind === 'trigger' && input.triggerId === trigger.id && ticket.undelivered.includes(input.id))))
   })
 }
@@ -297,6 +297,8 @@ export interface Ticket {
   /** The one deliverable this Ticket carries; absent on Tickets accepted before categories existed. */
   category?: Category
   tier?: Tier
+  handoffFrom?: string
+  handoffTo?: string
   mandate: Mandate
   /** The Channels of the messages it was accepted from, which its replies go to. */
   channels: ChannelRef[]

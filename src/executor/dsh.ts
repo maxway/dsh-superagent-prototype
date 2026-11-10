@@ -5,7 +5,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, ticketCategory, waitsForPerson } from '../core/index.ts'
-import type { AssessmentOutcome, Assignment, Category, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
+import type { AssessmentOutcome, Assignment, Category, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Tier, Trigger }
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
@@ -111,17 +111,19 @@ const HANDOFF = 'If the requested deliverable changes, stop before doing other w
   + 'do not use a subagent for it.'
 const DROPPED = 'If the requested deliverable changes, stop and report dropped with the findings; do not use a subagent for it.'
 /** Returns additional system-prompt instructions for a worker beyond the request: its category contract, reply/inferred limits, and the handoff rule. */
-export function mandateInstructions(ticket: Pick<Mandate, 'strength'> & { category?: Category }): string {
+export function mandateInstructions(ticket: Pick<Mandate, 'strength'> & { category?: Category; tier?: Tier; handoffFrom?: string }): string {
+  const escalation = ticket.tier === 'low' ? ' If this task needs greater capability, use orchestrator_ticket_handoff. Summarize what you have done, what remains unfinished, and risks or important constraints. The high-tier successor inherits the original authorization only; do not expand its scope. After a successful handoff, stop work immediately; your session may be cancelled before the tool result arrives.'
+    : ticket.handoffFrom ? ' Before executing the original request, read the complete assignment and its handoff summary; if truncated, follow assignment_read and pagination to read it in full.' : ''
   if (ticket.strength === 'reply') return 'This is a read-only reply ticket: investigate the question with read-only means and answer it. '
     + 'Do not modify, create or delete files, commit, push, open, merge or close a change request, or change settings or accounts, and keep any subagents read-only. '
     + 'Answer with orchestrator_report: set reply_to_trigger_id to the question\'s trigger_id and put the concise answer in summary. '
     + 'Report ready when the answer is complete; report dropped when the question needs no investigation or cannot be answered read-only, '
-    + 'and hand back or state plainly anything that would need an execution request from a sender allowed to make one. ' + HANDOFF
+    + 'and hand back or state plainly anything that would need an execution request from a sender allowed to make one. ' + HANDOFF + escalation
   const category = ticket.category ?? 'development'
   const limited = ticket.strength === 'inferred' && category === 'development' ? 'This ticket has limited proactive authorization. Independently verify that it is a small change '
     + 'internal to one module within the accepted rule scope. If it requires public-interface or behavior changes, new interaction, product '
     + 'decisions or clarification, stop and report dropped; do not expand scope. ' : ''
-  return `${CATEGORY_RULES[category]} ${limited}${ticket.strength === 'inferred' ? DROPPED : HANDOFF}`
+  return `${CATEGORY_RULES[category]} ${limited}${ticket.strength === 'inferred' ? DROPPED : HANDOFF}${escalation}`
 }
 /** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
