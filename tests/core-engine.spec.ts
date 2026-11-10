@@ -313,6 +313,7 @@ describe('subscription fan-out', () => {
     const events: { type: string; data: Record<string, unknown> }[] = []
     const h = harness({}, { emit: event => events.push(event) })
     const first = accepted(h).ticketId!
+    expect(events.find(event => event.type === 'ticket.created')?.data).toMatchObject({ ticketId: first, category: 'development', tier: 'high' })
     const second = accepted(h, '2', 't2').ticketId!
     h.engine.receive(trigger('3', { threads: [{ source: 'chat', id: 't2' }] }))
     // A follow-up of the second ticket goes to the first only once the second's worker hands it back.

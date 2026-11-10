@@ -44,7 +44,7 @@ export class Tickets extends EnginePart {
     const category = mandate.strength === 'reply'
       ? outcome.category === 'research' ? 'research' : 'query'
       : outcome.category ?? 'development'
-    const tier = category === 'query' ? 'low' : outcome.tier ?? 'high'
+    const tier = outcome.tier ?? (category === 'query' ? 'low' : 'high')
     let ticket: Ticket = { id, title: outcome.title, decisionId, category, tier, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
       createdAt: at, updatedAt: at, origin, ...(outcome.offPeak ? { offPeak: true } : {}) }
     for (const triggerId of triggerIds) {
@@ -57,7 +57,7 @@ export class Tickets extends EnginePart {
     for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
     if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, outcome.acknowledgement)
     this.options.executor.start(this.require(id), assignment)
-    this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength })
+    this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength, category, tier })
   }
   /**
    * Subscribes an open ticket to `thread` and records it in `ticket.follows` (`own` when opened by the ticket).
