@@ -103,6 +103,26 @@ describe('low to high handoff', () => {
     h.settle()
     return decision.ticketId!
   }
+  it('hands off a high-tier worker to expert only on a human instruction on its ticket', () => {
+    const h = harness({}, { prepareTicket: prepare }), lowId = low(h)
+    const high = h.engine.handoff(lowId, 'needs more capability')
+    h.settle()
+    h.engine.receive(trigger('2', { source: 'feishu', threads: [{ source: 'feishu', id: 'oc:om' }], text: 'Please use expert' })); h.settle()
+    expect(() => h.engine.handoff(high.id, 'summary', '2')).toThrow(/human tier/)
+    h.engine.receive(trigger('3', { source: 'feishu', threads: [{ source: 'feishu', id: 'oc:om' }], text: 'Please use expert\n档位: expert' })); h.settle()
+    const expert = h.engine.handoff(high.id, 'needs expert', '3')
+    expect(expert).toMatchObject({ tier: 'expert', handoffFrom: high.id, mandate: high.mandate })
+    expect(h.outbox.at(-1)).toMatchObject({ text: 'Worker: expert.', ticketId: expert.id, kind: 'notice' })
+    expect(h.repo.threads.get('feishu:oc:om')?.subscriptions).toEqual([expert.id])
+  })
+  it('refuses an instruction from a bot or an unrelated thread', () => {
+    const h = harness({}, { prepareTicket: prepare }), id = low(h)
+    h.engine.receive(trigger('2', { source: 'feishu', human: false, threads: [{ source: 'feishu', id: 'oc:om' }], text: 'tier: expert' }))
+    h.engine.receive(trigger('3', { source: 'feishu', threads: [{ source: 'feishu', id: 'elsewhere' }], text: 'tier: expert' }))
+    expect(() => h.engine.handoff(id, 'summary', '2')).toThrow(/human tier/)
+    expect(() => h.engine.handoff(id, 'summary', '3')).toThrow(/human tier/)
+    expect(h.repo.tickets.get(id)?.ended).toBeUndefined()
+  })
   it('transfers authorization, subscriptions and pending inputs exactly once', () => {
     const prepareTicket = vi.fn((ticket: Ticket, outcome: Extract<Outcome, { kind: 'accept' }>) => ({ ...ticket,
       execution: { name: ticket.id, directory: `work/${ticket.id}`, assignment: outcome.note ?? '' } }))

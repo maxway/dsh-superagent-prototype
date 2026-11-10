@@ -71,15 +71,16 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
       }).strict(),
       execute: async args => ({ trigger_id: args.trigger_id, queued: host.engine.handback(ticketId, args.trigger_id, args.reason) }),
     }),
-    ...(ticket.tier === 'low' ? [tool({
+    ...(['low', 'high'].includes(ticket.tier ?? '') ? [tool({
       name: 'orchestrator_ticket_handoff',
-      description: 'Hand this low-tier ticket to a high-tier worker when the original task needs more capability. The successor inherits only the original task authorization; this cannot expand scope. After success stop all work immediately; your session may be cancelled before the result arrives.',
+      description: 'Hand a low-tier ticket to a high-tier worker when it needs more capability, or hand a low/high ticket to expert only on an explicit human instruction. The successor inherits only the original task authorization; this cannot expand scope. After success stop all work immediately; your session may be cancelled before the result arrives.',
       schema: z.object({
         summary: z.string().trim().min(1).max(8000).describe('At most 8000 characters. Describe what has been done, what remains unfinished, and risks or important constraints, within the original authorization.'),
+        expert_trigger_id: z.string().min(1).optional().describe('For expert only: the human message on this ticket containing a standalone `tier: expert` or `档位: expert` line. Omit for low to high.'),
       }).strict(),
       execute: async args => {
-        const successor = host.engine.handoff(ticketId, args.summary)
-        return { handed_off: true, ticket_id: successor.id, next_action: 'Stop working immediately; the high-tier worker will continue the original task.' }
+        const successor = host.engine.handoff(ticketId, args.summary, args.expert_trigger_id)
+        return { handed_off: true, ticket_id: successor.id, next_action: `Stop working immediately; the ${args.expert_trigger_id ? 'expert' : 'high'}-tier worker will continue the original task.` }
       },
     })] : []),
     tool({

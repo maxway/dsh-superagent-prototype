@@ -179,13 +179,21 @@ export class Tickets extends EnginePart {
     this.end(ticketId, 'human', 'stopped', this.now(), reason)
     return this.require(ticketId)
   }
-  handoff(ticketId: string, summary: string): Ticket {
+  handoff(ticketId: string, summary: string, expertTriggerId?: string): Ticket {
     const old = this.require(ticketId)
     if (old.handoffTo) return this.require(old.handoffTo)
     if (typeof summary !== 'string' || !summary.trim() || summary.length > 8000) throw new Error('A handoff requires a non-empty summary of at most 8000 characters')
     const source = this.source(old), origin = source?.threads[0]
     const subscribed = origin && this.repo.threads.get(threadKey(origin))
-    if (!liveTicket(old) || old.tier !== 'low' || old.attention || waitsForPerson(old)
+    const approval = expertTriggerId ? this.repo.triggers.get(expertTriggerId) : undefined
+    const disposition = approval && this.repo.triggers.disposition(approval.id)
+    if (expertTriggerId && (!approval?.human || !this.reaches(old, approval, false) || !expertRequested(approval.text)
+      || !disposition?.fanout.includes(old.id) || disposition.context?.includes(old.id) || disposition.requeued
+      || disposition.handbacks?.some(item => item.ticketId === old.id))) {
+      throw new Error('Expert handoff requires a human tier: expert instruction on this ticket')
+    }
+    const tier = expertTriggerId ? 'expert' : 'high'
+    if (!liveTicket(old) || (tier === 'expert' ? old.tier !== 'low' && old.tier !== 'high' : old.tier !== 'low') || old.attention || waitsForPerson(old)
       || old.follows?.some(follow => !follow.closed) || source?.source !== 'feishu' || origin?.source !== 'feishu'
       || !subscribed?.subscriptions.includes(old.id) || subscribed.context?.includes(old.id)
       || !old.channels.some(channel => channel.source === 'feishu')) throw new Error('This ticket cannot be handed off in its current state')
@@ -195,9 +203,9 @@ export class Tickets extends EnginePart {
     const text = `Before doing any work, read the complete handoff summary in the full assignment using assignment_read if truncated.\nHandoff from ticket ${old.id}.${old.execution?.directory
       ? ` Previous workspace (may no longer exist): ${old.execution.directory}` : ''}\n${summary.trim()}`
     const outcome: Extract<AssessmentOutcome, { kind: 'accept' }> = { kind: 'accept', title: old.title, scope: old.mandate.scope,
-      reason: 'handoff', category, tier: 'high', note: text, ...(old.offPeak ? { offPeak: true } : {}) }
+      reason: 'handoff', category, tier, note: text, ...(old.offPeak ? { offPeak: true } : {}) }
     const marker: TicketInput = { id: key('input', id, 'handoff'), kind: 'text', text, at }
-    let ticket: Ticket = { id, title: old.title, decisionId: old.decisionId, category, tier: 'high', mandate: old.mandate,
+    let ticket: Ticket = { id, title: old.title, decisionId: old.decisionId, category, tier, mandate: old.mandate,
       channels: old.channels, origin: old.origin, handoffFrom: old.id, assignments: [], inputs: [marker], undelivered: [marker.id],
       createdAt: at, updatedAt: at, ...(old.offPeak ? { offPeak: true } : {}), ...(old.git ? { git: old.git } : {}),
       ...(old.follows?.length ? { follows: old.follows } : {}) }
@@ -247,8 +255,10 @@ export class Tickets extends EnginePart {
       this.emit('thread.subscribed', { threadKey: thread.key, ticketId: id })
     }
     this.emit('ticket.ended', { ticketId: old.id, by: 'executor', outcome: 'stopped', reason: 'handoff' })
-    this.emit('ticket.created', { ticketId: id, decisionId: old.decisionId, strength: old.mandate.strength, category, tier: 'high' })
+    this.emit('ticket.created', { ticketId: id, decisionId: old.decisionId, strength: old.mandate.strength, category, tier })
     for (const item of stopping) this.options.executor.stop(old, item, 'handoff')
+    const channel = approval?.channel ?? source?.channel ?? old.channels.find(item => item.source === 'feishu')
+    if (channel) this.options.outbox.send({ id: key('handoff-tier', id), channel, text: `Worker: ${tier}.`, kind: 'notice', ticketId: id })
     this.options.executor.start(ticket, assignment)
     return ticket
   }
