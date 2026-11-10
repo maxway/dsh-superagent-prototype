@@ -585,7 +585,9 @@ function verifyService(config, survivalSeconds) {
 function backupState(config, plan) {
   mkdirSync(join(plan.backupDirectory, 'state'), { recursive: true })
   const copies = []
-  for (const database of plan.databases) {
+  // A clean service stop lets SQLite checkpoint -wal and remove -shm, so list the remaining files after the stop.
+  const databases = listDatabases(config, { deployment: { stateDir: config.stateDir } })
+  for (const database of databases) {
     const destination = join(plan.backupDirectory, 'state', basename(database))
     const expected = sha256(database)
     copyFileSync(database, destination)
