@@ -188,8 +188,8 @@ It reads `%USERPROFILE%\.dsh-superagent\service.json` unless `-Config` or `DSH_S
 file; `examples/service.windows.json` is a template. The file pins `checkout`, `home`, `agentsHome`, `profile`, the
 loopback `url`, the `node` executable, optional `path` additions and the optional `deployRequest`/`deployCommand`, and it
 holds no secret. A start also needs the user-level `LUMOS_API_KEY`, which the wrapper copies from the user environment.
-`-Checkout`, `-DshHome`, `-DshProfile` and `-Url` override the file for one call. The entry refuses a target whose
-checkout, profile directory or URL does not match, and it accepts only a loopback URL.
+The entry exposes only the action (plus optional `-Config` and `-RespectStop`); target and timing facts stay in the
+file. It refuses a checkout that does not exist, a non-loopback URL, or (for a start) a missing profile directory.
 
 After cutover, replace the old hard-coded `C:\Users\dd\.dsh-superagent\service.ps1` with a compatibility shim so existing
 tools keep working:
@@ -550,9 +550,8 @@ The steps below apply only to deployments where an in-place upgrade has been exp
 4. Run `scripts/dsh-superagent restart` and inspect its status.
 
 On Windows, run the same steps in PowerShell; `&&` works in PowerShell 7, and the service command is
-`pwsh scripts\dsh-superagent.ps1 -Action restart`. If the checkout has no machine configuration yet, pass
-`-Checkout`, `-DshHome`, `-DshProfile` and `-Url` explicitly, or create `%USERPROFILE%\.dsh-superagent\service.json`
-from `examples/service.windows.json`.
+`pwsh scripts\dsh-superagent.ps1 restart`. The entry takes only the action (and an optional `-Config`/`-RespectStop`);
+target facts stay in `%USERPROFILE%\.dsh-superagent\service.json`, created from `examples/service.windows.json`.
 
 A restart ends running Assignments and starts replacements with recovery notes. Team text and overridden prompt parts are retained; parts without overrides follow the new defaults. Review parts marked **Default updated** after upgrading.
 
@@ -578,7 +577,7 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `pwsh` is not found, or the prepare command fails with a PowerShell error | Install PowerShell 7 and put `pwsh` on `PATH`; Windows PowerShell 5.1 is not used for the prepare command |
 | `dsh must be on PATH.` when starting on Windows | Install DSH globally and open a new shell; `start` resolves the npm `dsh.cmd` |
 | PowerShell or `cmd.exe` cannot run `scripts\dsh-superagent` | The script has no `.cmd` shim on Windows; run `pwsh scripts\dsh-superagent.ps1 <action>`, or `node scripts\dsh-superagent <command>` when the environment is already set |
-| `The service configuration does not exist` or a target mismatch | Create `%USERPROFILE%\.dsh-superagent\service.json` from `examples/service.windows.json`, or pass `-Checkout`, `-DshHome`, `-DshProfile` and `-Url`; the entry refuses a checkout or non-loopback URL, and a start also needs the profile directory |
+| `The service configuration does not exist` or a target mismatch | Create `%USERPROFILE%\.dsh-superagent\service.json` from `examples/service.windows.json`; the entry refuses a checkout or non-loopback URL, and a start also needs the profile directory |
 | `The management URL … is owned by PID …` | Another process owns the port; stop it or choose the service's real `url`. The entry never kills a foreign listener |
 | `This home's dsh-superagent process … does not listen` | The recorded process is running but not serving the target URL. Inspect it, fix its listener, or restart it from an independent task; `start` and an explicit-URL `stop` refuse, while a zero-parameter `stop` discovers another running server |
 | A `.cmd` wrapper for `gh` or `glab` drops or corrupts an argument | Use the native `gh.exe` or `glab.exe` with its configuration directory (see Windows credentials); never pass JSON or message text through `cmd.exe` |

@@ -621,31 +621,34 @@ it.skipIf(process.platform !== 'win32')('wraps the control script with a pinned 
   const checked = await call(['-Action', 'status', '-Config', config])
   expect(checked.code).toBe(1)
   expect(JSON.parse(checked.stdout)).toMatchObject({ pids: [], profile, url: 'http://127.0.0.1:9' })
-  const remote = await call(['-Action', 'status', '-Config', config, '-Url', 'http://10.0.0.1:3083'])
+  const remoteConfig = join(root, 'remote-service.json')
+  writeFileSync(remoteConfig, JSON.stringify({ checkout: root, home, profile, url: 'http://10.0.0.1:3083', node: process.execPath }))
+  const remote = await call(['-Action', 'status', '-Config', remoteConfig])
   expect(remote.code).toBe(1)
   expect(remote.stderr).toContain('loopback')
   const missing = await call(['-Action', 'status', '-Config', join(root, 'missing.json')])
   expect(missing.code).toBe(1)
   expect(missing.stderr).toContain('does not exist')
 
-  // A stop without a configured URL lets the control script discover the server; a named URL stays exact.
+  // A stop without a configured URL lets the control script discover the server; a configured URL stays exact.
   const entryCheckout = join(root, 'entry-checkout')
   mkdirSync(join(entryCheckout, 'scripts'), { recursive: true })
   writeFileSync(join(entryCheckout, 'scripts', 'dsh-superagent'), 'console.log(JSON.stringify(process.argv.slice(2)))\n')
-  const noConfig = { DSH_SUPERAGENT_SERVICE_CONFIG: join(root, 'no-service.json'), DSH_SUPERAGENT_URL: '' }
-  const stopDefault = await call(['-Action', 'stop', '-Checkout', entryCheckout, '-DshHome', home, '-DshProfile', profile], noConfig)
+  const discoveryConfig = join(root, 'discovery-service.json')
+  writeFileSync(discoveryConfig, JSON.stringify({ checkout: entryCheckout, home, profile }))
+  const stopDefault = await call(['-Action', 'stop', '-Config', discoveryConfig], { DSH_SUPERAGENT_URL: '' })
   expect(stopDefault.code).toBe(0)
   expect(JSON.parse(stopDefault.stdout)).toContain('stop')
   expect(JSON.parse(stopDefault.stdout)).not.toContain('--url')
-  const stopUrl = await call(['-Action', 'stop', '-Checkout', entryCheckout, '-DshHome', home, '-DshProfile', profile,
-    '-Url', 'http://127.0.0.1:3999'], noConfig)
-  expect(stopUrl.code).toBe(0)
-  expect(JSON.parse(stopUrl.stdout)).toEqual(expect.arrayContaining(['--url', 'http://127.0.0.1:3999']))
   const stopConfig = join(root, 'stop-service.json')
   writeFileSync(stopConfig, JSON.stringify({ checkout: entryCheckout, home, profile, url: 'http://127.0.0.1:4000' }))
   const stopConfigured = await call(['-Action', 'stop', '-Config', stopConfig])
   expect(stopConfigured.code).toBe(0)
   expect(JSON.parse(stopConfigured.stdout)).toEqual(expect.arrayContaining(['--url', 'http://127.0.0.1:4000']))
+  // The simplest form: one action word, with the machine configuration selected by environment.
+  const zeroArg = await call(['stop'], { DSH_SUPERAGENT_SERVICE_CONFIG: stopConfig })
+  expect(zeroArg.code).toBe(0)
+  expect(JSON.parse(zeroArg.stdout)).toEqual(expect.arrayContaining(['stop', '--url', 'http://127.0.0.1:4000']))
 }, 60_000)
 it('prints the Watchdog snapshot over GET and refuses an unreachable service', async () => {
   const requests: { method?: string; url?: string; header?: string }[] = []

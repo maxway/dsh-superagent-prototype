@@ -1,22 +1,17 @@
 # Versioned operator entry for one local dsh-superagent service.
 #
+# Normal use is one action word: pwsh scripts\dsh-superagent.ps1 start|stop|restart|status.
 # The machine-specific facts stay in a JSON file outside the checkout (default:
 # %USERPROFILE%\.dsh-superagent\service.json); the file pins the checkout, DSH home, profile and URL so a typo cannot
-# start or stop another instance. The Node control script under <checkout>\scripts\dsh-superagent does the actual work;
-# this wrapper only validates the target and supplies the environment that home needs.
+# start or stop another instance. No target or timing parameter is exposed on the command line. The Node control script
+# under <checkout>\scripts\dsh-superagent does the actual work; this wrapper validates the configuration and supplies
+# the environment that home needs.
 #
 # It never force-kills, never targets a remote URL, and never edits the profile. See docs/006-deployment.md.
 param(
   [ValidateSet('start', 'stop', 'restart', 'status', 'verify')]
   [string]$Action = 'status',
   [string]$Config = '',
-  [string]$Checkout = '',
-  [string]$DshHome = '',
-  [string]$DshProfile = '',
-  [string]$Url = '',
-  [int]$Timeout = 60,
-  [int]$StopTimeout = 300,
-  [int]$SurvivalSeconds = 20,
   [switch]$RespectStop
 )
 
@@ -52,22 +47,18 @@ function Value([string]$name, $fallback) {
   return $fallback
 }
 
-if (-not $Checkout) { $Checkout = [string](Value 'checkout' (Split-Path -Parent $PSScriptRoot)) }
-$urlGiven = $PSBoundParameters.ContainsKey('Url') -and -not [string]::IsNullOrWhiteSpace($Url)
-if (-not $urlGiven -and $env:DSH_SUPERAGENT_URL) { $urlGiven = $true }
-if (-not $urlGiven -and $null -ne $value) {
-  $urlProperty = $value.PSObject.Properties['url']
-  $urlGiven = $null -ne $urlProperty -and -not [string]::IsNullOrWhiteSpace([string]$urlProperty.Value)
-}
-if (-not $DshHome) { $DshHome = [string](Value 'home' $env:DSH_HOME) }
+# The wrapper exposes one action; target facts and tuning live in the machine configuration, not in the command line.
+$Checkout = [string](Value 'checkout' (Split-Path -Parent $PSScriptRoot))
+$DshHome = [string](Value 'home' $env:DSH_HOME)
 if (-not $DshHome) { $DshHome = [System.IO.Path]::Combine($userHome, '.dsh') }
-if (-not $DshProfile) { $DshProfile = [string](Value 'profile' $env:DSH_SUPERAGENT_PROFILE) }
+$DshProfile = [string](Value 'profile' $env:DSH_SUPERAGENT_PROFILE)
 if (-not $DshProfile) { $DshProfile = 'superagent' }
-if (-not $Url) { $Url = [string](Value 'url' $env:DSH_SUPERAGENT_URL) }
+$Url = [string](Value 'url' $env:DSH_SUPERAGENT_URL)
+$urlConfigured = [bool]$Url
 if (-not $Url) { $Url = 'http://127.0.0.1:3082' }
-if (-not $PSBoundParameters.ContainsKey('Timeout')) { $Timeout = [int](Value 'timeout' $Timeout) }
-if (-not $PSBoundParameters.ContainsKey('StopTimeout')) { $StopTimeout = [int](Value 'stopTimeout' $StopTimeout) }
-if (-not $PSBoundParameters.ContainsKey('SurvivalSeconds')) { $SurvivalSeconds = [int](Value 'survivalSeconds' $SurvivalSeconds) }
+$Timeout = [int](Value 'timeout' 60)
+$StopTimeout = [int](Value 'stopTimeout' 300)
+$SurvivalSeconds = [int](Value 'survivalSeconds' 20)
 
 $Checkout = [System.IO.Path]::GetFullPath($Checkout)
 $DshHome = [System.IO.Path]::GetFullPath($DshHome)
@@ -110,7 +101,7 @@ if ($deployCommand) { $env:DSH_SUPERAGENT_DEPLOY_COMMAND = $deployCommand }
 
 $arguments = @($control, $Action, '--profile', $DshProfile, '--home', $DshHome)
 # A stop without a named URL discovers the running server; keep a configured/explicit URL exact.
-if ($urlGiven -or $Action -ne 'stop') { $arguments += @('--url', $Url) }
+if ($urlConfigured -or $Action -ne 'stop') { $arguments += @('--url', $Url) }
 if ($Action -in @('start', 'restart')) { $arguments += @('--timeout', [string]$Timeout) }
 if ($Action -in @('stop', 'restart')) { $arguments += @('--stop-timeout', [string]$StopTimeout) }
 if ($Action -eq 'verify') { $arguments += @('--survival-seconds', [string]$SurvivalSeconds) }

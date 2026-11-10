@@ -1441,19 +1441,21 @@ function acquireLock(profile, home) {
   }
 }
 
-const USAGE = `Usage: dsh-superagent [--respect-stop] <start|stop|restart|status|watchdog|verify> [options]
+const USAGE = `Usage: dsh-superagent <start|stop|restart|status>
+       dsh-superagent verify [--survival-seconds <n>]
+       dsh-superagent watchdog <snapshot|run|runs|recover|report> [options]
+       dsh-superagent --respect-stop start|restart
 
-Manage a local dsh-superagent service (one DSH profile, default \`superagent\`).
+Manage one local dsh-superagent service (default profile \`superagent\`). The lifecycle actions need no options, and
+normal use should not pass a target: on Windows, \`stop\` finds the running superagent from its management state and
+stops the only one (or the one matching the configured profile); \`start\` reports an already running server instead
+of starting a second one. The versioned PowerShell entry (\`scripts\\dsh-superagent.ps1 <action>\`) reads the machine
+configuration for the checkout, home, profile and URL, so an operator or an LLM never constructs those by hand.
 
-\`start\` and \`restart\` start the service outside any Windows Job when the caller is inside one, so a closing DSH tool
-command cannot kill it; \`status\` reports the process's Job membership and how the newest start began. The process that
-owns the listening socket of \`--url\` is authoritative; a process that merely matches \`--profile\` elsewhere is reported
-as \`unlistening\` and is never stopped by mistake. A service that spawns a child joins its own kill-on-close Job, which
-it holds, so \`status\` separates that from a Job it inherited. Logs and control files live under \`<home>/service/\`.
-On Windows, \`stop\` without \`--url\` discovers the running superagent servers from their management state and stops the
-only one, or the one matching \`--profile\`; it does not require a matching home or URL. An explicit \`--url\` is exact,
-a foreign listener is never stopped, and POSIX keeps its profile scan. \`start\` without an explicit URL reports an
-already running server instead of starting a second one on Windows.
+The process that owns the listening socket of the configured URL is authoritative for a direct target; a process that
+merely matches the profile elsewhere is reported as \`unlistening\` and is never stopped by mistake. A service that
+spawns a child joins its own kill-on-close Job, which it holds, so \`status\` separates that from a Job it inherited.
+Logs and control files live under \`<home>/service/\`.
 \`verify\` proves the service survived a deployment executor's exit: one process, the management API usable, no Windows
 Job it did not create, and the same process after --survival-seconds.
 \`watchdog\` prints a read-only JSON snapshot of the service, its open Tickets and the last recorded observation;
@@ -1464,22 +1466,24 @@ worker Session is missing, when the service's recovery mode is enforce;
 \`watchdog report --chat <chat id> [--note <text>]\` asks the server to send the current observation summary to that
 Feishu chat through the Feishu Source's bot.
 
-Options:
+Advanced targeting and timing (operators and tests only; the machine configuration normally supplies these):
   --profile <name>       DSH profile that loads dsh-superagent (default: $DSH_SUPERAGENT_PROFILE or superagent).
   --home <path>          DSH home holding that profile and its service logs/control files (default: $DSH_HOME or ~/.dsh).
-  --url <url>            Health-check URL (default: $DSH_SUPERAGENT_URL or http://127.0.0.1:3082).
+  --url <url>            Exact health-check target; omit it to let Windows discover the running server.
   --timeout <seconds>    Startup timeout (default: 60).
   --stop-timeout <s>     Graceful shutdown timeout (default: 300).
   --survival-seconds <n> How long \`verify\` waits before its second health check (default: 20, at most 3600).
+  --respect-stop         For monitoring: never start/restart after an intentional stop.
+
+Watchdog options:
   --stale-minutes <n>    Watchdog signal threshold in minutes (default: 30, at most 1440).
   --chat <chat id>       Feishu chat that \`watchdog report\` posts to (required, an \`oc_\` id the bot is in).
-  --note <text>          The Watchdog's one-sentence judgement for \`watchdog run\` or \`watchdog report\` (at most 500 characters).
+  --note <text>          The Watchdog's one-sentence judgement (at most 500 characters).
   --ticket <id>          Ticket for \`watchdog recover\`.
   --reason <text>        One-sentence evidence for \`watchdog recover\` (at most 2000 characters).
   --snapshot-at <time>   The snapshot's \`at\` value for \`watchdog recover\`; an older one is refused.
   --idempotency-key <k>  Optional stable recovery key; the default names the Ticket and snapshot.
-  --limit <n>            How many recent runs \`watchdog runs\` prints (default: 20, at most 100).
-  --respect-stop         For monitoring: never start/restart after an intentional stop.`
+  --limit <n>            How many recent runs \`watchdog runs\` prints (default: 20, at most 100).`
 
 async function main(argv = process.argv.slice(2)) {
   const args = parseArgv(argv)

@@ -185,7 +185,7 @@ pwsh scripts\dsh-superagent.ps1 stop
 pwsh scripts\dsh-superagent.ps1 restart
 ```
 
-除非用 `-Config` 或 `DSH_SUPERAGENT_SERVICE_CONFIG` 指定其他文件，它读取 `%USERPROFILE%\.dsh-superagent\service.json`；`examples/service.windows.json` 是模板。该文件固定 `checkout`、`home`、`agentsHome`、`profile`、回环 `url`、`node` 可执行文件、可选的 `path` 追加项以及可选的 `deployRequest`/`deployCommand`，并且不保存密钥。启动还需要用户级 `LUMOS_API_KEY`，包装脚本从用户环境复制。`-Checkout`、`-DshHome`、`-DshProfile` 和 `-Url` 可以只对一次调用覆盖文件；入口会拒绝 checkout、profile 目录或 URL 不匹配的目标，且只接受回环 URL。
+除非用 `-Config` 或 `DSH_SUPERAGENT_SERVICE_CONFIG` 指定其他文件，它读取 `%USERPROFILE%\.dsh-superagent\service.json`；`examples/service.windows.json` 是模板。该文件固定 `checkout`、`home`、`agentsHome`、`profile`、回环 `url`、`node` 可执行文件、可选的 `path` 追加项以及可选的 `deployRequest`/`deployCommand`，并且不保存密钥。启动还需要用户级 `LUMOS_API_KEY`，包装脚本从用户环境复制。入口只暴露动作（以及可选的 `-Config` 和 `-RespectStop`），目标和时序信息都留在文件里。它会拒绝不存在的 checkout、非回环 URL，以及启动时缺失的 profile 目录。
 
 切换完成后，把旧的硬编码 `C:\Users\dd\.dsh-superagent\service.ps1` 换成兼容 shim，让既有工具继续工作：
 
@@ -515,8 +515,8 @@ Windows 上使用当前 Windows 版本自带的 `curl.exe`，把 `cli` 设为 `g
 4. 运行 `scripts/dsh-superagent restart` 并检查其状态。
 
 Windows 上用 PowerShell 执行同样的步骤；PowerShell 7 支持 `&&`，服务命令是
-`pwsh scripts\dsh-superagent.ps1 -Action restart`。如果 checkout 还没有机器配置，显式传入 `-Checkout`、`-DshHome`、
-`-DshProfile` 和 `-Url`，或按 `examples/service.windows.json` 创建 `%USERPROFILE%\.dsh-superagent\service.json`。
+`pwsh scripts\dsh-superagent.ps1 restart`。入口只接收动作（以及可选的 `-Config`/`-RespectStop`）；目标信息保存在
+`%USERPROFILE%\.dsh-superagent\service.json`，按 `examples/service.windows.json` 创建。
 
 重启会结束正在运行的派工，并带恢复说明启动替代的派工。团队文本和被覆盖的提示词段落会保留；没有覆盖的段落跟随新的默认内容。升级后检查标记为 **默认内容已更新** 的段落。
 
@@ -542,7 +542,7 @@ Windows 上用 PowerShell 执行同样的步骤；PowerShell 7 支持 `&&`，服
 | 找不到 `pwsh`，或准备命令报 PowerShell 错误 | 安装 PowerShell 7 并把 `pwsh` 放到 `PATH` 上；准备命令不使用 Windows PowerShell 5.1 |
 | Windows 上启动时报 `dsh must be on PATH.` | 全局安装 DSH 并打开新的 shell；`start` 会解析 npm 的 `dsh.cmd` |
 | PowerShell 或 `cmd.exe` 无法运行 `scripts\dsh-superagent` | 该脚本在 Windows 上没有 `.cmd` shim；请运行 `pwsh scripts\dsh-superagent.ps1 <action>`，环境已设置好时也可 `node scripts\dsh-superagent <command>` |
-| `The service configuration does not exist` 或目标不匹配 | 按 `examples/service.windows.json` 创建 `%USERPROFILE%\.dsh-superagent\service.json`，或传入 `-Checkout`、`-DshHome`、`-DshProfile` 和 `-Url`；入口拒绝不匹配的 checkout 或非回环 URL，启动还要求 profile 目录存在 |
+| `The service configuration does not exist` 或目标不匹配 | 按 `examples/service.windows.json` 创建 `%USERPROFILE%\.dsh-superagent\service.json`；入口拒绝不存在的 checkout 或非回环 URL，启动还要求 profile 目录存在 |
 | `The management URL … is owned by PID …` | 端口被其他进程占用；停止它或改用服务真实的 `url`。入口绝不会杀外部监听者 |
 | `This home's dsh-superagent process … does not listen` | 记录过的进程仍在运行，但没有监听目标 URL。检查并修复其监听，或从独立任务重启；`start` 和显式 `--url` 的 `stop` 会拒绝，零参数 `stop` 会继续发现其他正在运行的实例 |
 | `gh` 或 `glab` 的 `.cmd` 包装脚本丢失或破坏参数 | 使用原生 `gh.exe` 或 `glab.exe` 及其配置目录（见 Windows 凭据）；绝不要让 JSON 或消息文本经过 `cmd.exe` |
