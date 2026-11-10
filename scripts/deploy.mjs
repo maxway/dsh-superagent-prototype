@@ -237,6 +237,10 @@ function readManifest(config) {
     }
     const sourceParts = relativeSegments(entry.source, `entry ${index} source`)
     const targetParts = relativeSegments(entry.target, `entry ${index} target`)
+    if (targetParts.some(part => part.toLowerCase() === '.git' || part.toLowerCase() === 'node_modules')
+      || sourceParts.some(part => part.toLowerCase() === '.git' || part.toLowerCase() === 'node_modules')) {
+      fail('invalid_manifest', `entry ${index} targets or copies .git/node_modules: ${entry.source} -> ${entry.target}`)
+    }
     if (FORBIDDEN_TARGETS.has(targetParts[0].toLowerCase())) {
       fail('invalid_manifest', `entry ${index} targets a protected path: ${entry.target}`)
     }
@@ -318,9 +322,15 @@ export async function inspect(config, request) {
     if (!path) fail('mechanical_config', `mechanical.${name} is required`)
   }
   if (!existsSync(config.control)) fail('control_missing', `the control script does not exist: ${config.control}`)
+  if (config.serviceScript && !existsSync(config.serviceScript)) {
+    fail('service_script_missing', `the configured service wrapper does not exist: ${config.serviceScript}`)
+  }
   if (!existsSync(config.runtimeRoot)) fail('runtime_missing', `the runtime root does not exist: ${config.runtimeRoot}`)
   if (samePath(config.candidateRoot, config.runtimeRoot) || inside(config.runtimeRoot, config.candidateRoot) || inside(config.candidateRoot, config.runtimeRoot)) {
     fail('overlapping_roots', 'the candidate and runtime roots must be separate, non-overlapping directories')
+  }
+  if (inside(config.candidateRoot, config.backupRoot) || inside(config.backupRoot, config.candidateRoot)) {
+    fail('overlapping_roots', 'the candidate and backup roots must be separate, non-overlapping directories')
   }
   if (!existsSync(config.backupRoot)) fail('backup_root_missing', `the backup root does not exist: ${config.backupRoot}`)
   if (inside(config.backupRoot, config.runtimeRoot)) fail('backup_root_inside_runtime', 'the backup root must be outside the runtime root')
