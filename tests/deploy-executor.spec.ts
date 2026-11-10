@@ -59,7 +59,7 @@ if (action === 'status') {
   process.exit(running ? 2 : 1)
 }
 if (action === 'stop') { write({ ...value, running: false }); console.log('stopped'); process.exit(0) }
-if (action === 'start') { write({ ...value, running: true }); console.log('started'); process.exit(0) }
+if (action === 'start') { write({ ...value, running: true }); console.log('started'); process.exit(Number(value.startCode ?? 0)) }
 if (action === 'verify') {
   const code = Number(value.verifyCode ?? 0)
   write({ ...value, verifyCode: 0 })
@@ -80,7 +80,7 @@ function commitAll(path: string): string {
   return execFileSync('git', ['-C', path, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
 }
 
-async function fixture(options: { workload?: { running: number, queued: number }, verifyCode?: number, manifest?: unknown, targetRevision?: string, candidateLock?: string } = {}): Promise<Fixture> {
+async function fixture(options: { workload?: { running: number, queued: number }, verifyCode?: number, startCode?: number, manifest?: unknown, targetRevision?: string, candidateLock?: string } = {}): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), 'dsh-superagent-deploy-'))
   directory = root
   const runtime = join(root, 'runtime')
@@ -103,7 +103,7 @@ async function fixture(options: { workload?: { running: number, queued: number }
   writeFileSync(join(runtime, 'package.json'), '{ "type": "module" }\n')
   const controlLog = join(root, 'control.log')
   const controlState = join(root, 'control-state.json')
-  writeFileSync(controlState, JSON.stringify({ running: true, verifyCode: options.verifyCode ?? 0 }))
+  writeFileSync(controlState, JSON.stringify({ running: true, verifyCode: options.verifyCode ?? 0, startCode: options.startCode ?? 0 }))
   const control = join(runtime, 'scripts', 'dsh-superagent')
   writeFileSync(control, fakeControl(root, runtime, stateDir, controlLog, controlState))
   writeFileSync(join(stateDir, 'orchestrator.sqlite'), 'sqlite bytes\n')
@@ -164,8 +164,10 @@ function run(config: string, ...args: string[]) {
 
 const controlCalls = (fixtureValue: Fixture) => readFileSync(fixtureValue.controlLog, 'utf8').trim().split('\n').filter(Boolean)
 const resultOf = (fixtureValue: Fixture) => JSON.parse(readFileSync(join(fixtureValue.root, 'deploy-result.json'), 'utf8')) as Record<string, unknown>
+/** These cases spawn node, git and, on Windows, PowerShell; a loaded CI runner needs more than the default 5 seconds. */
+const slow = (name: string, test: () => Promise<void>) => it(name, test, 30_000)
 
-it('prints a read-only plan without stopping, switching or archiving the request', async () => {
+slow('prints a read-only plan without stopping, switching or archiving the request', async () => {
   const value = await fixture()
   const planned = await run(value.config, '--plan')
   expect(planned.code).toBe(0)
@@ -178,7 +180,7 @@ it('prints a read-only plan without stopping, switching or archiving the request
   expect(existsSync(join(value.backups, 'deploy.lock'))).toBe(false)
 })
 
-it('stops, backs up the stopped state, switches the manifest, starts and verifies without a model', async () => {
+slow('stops, backs up the stopped state, switches the manifest, starts and verifies without a model', async () => {
   const value = await fixture()
   const deployed = await run(value.config)
   expect(deployed.stderr).toBe('')
@@ -207,14 +209,23 @@ it('stops, backs up the stopped state, switches the manifest, starts and verifie
   expect(calls.some(line => line.startsWith('verify ') && line.includes('--survival-seconds 0'))).toBe(true)
 })
 
-it('ignores an unrelated part error such as the evals health part', async () => {
+slow('ignores an unrelated part error such as the evals health part', async () => {
   // The fake status always reports errors.evals=error and exits 2; a routine switch must not block on it.
   const value = await fixture()
   expect((await run(value.config)).code).toBe(0)
   expect(resultOf(value)).toMatchObject({ ok: true, phase: 'verified' })
 })
 
-it('does not stop or switch when the service is busy', async () => {
+slow('continues when start reports a non-runtime part error', async () => {
+  // `start` returns 2 for a usable service with a part error, such as evals; only codes 1 and 3 are failed starts.
+  const value = await fixture({ startCode: 2 })
+  const deployed = await run(value.config)
+  expect(deployed.code).toBe(0)
+  expect(resultOf(value)).toMatchObject({ ok: true, phase: 'verified' })
+  expect(readFileSync(join(value.runtime, 'lib', 'new.txt'), 'utf8')).toBe('new lib\n')
+})
+
+slow('does not stop or switch when the service is busy', async () => {
   const value = await fixture({ workload: { running: 1, queued: 2 } })
   const deployed = await run(value.config)
   expect(deployed.code).toBe(1)
@@ -225,7 +236,7 @@ it('does not stop or switch when the service is busy', async () => {
   expect(existsSync(value.request)).toBe(true)
 })
 
-it('restores the previous runtime files and restarts the old build when verification fails', async () => {
+slow('restores the previous runtime files and restarts the old build when verification fails', async () => {
   const value = await fixture({ verifyCode: 1 })
   const deployed = await run(value.config)
   expect(deployed.code).toBe(1)
@@ -242,7 +253,7 @@ it('restores the previous runtime files and restarts the old build when verifica
   expect(calls.filter(line => line.startsWith('start '))).toHaveLength(2)
 })
 
-it('refuses a manifest that escapes the candidate or runtime root', async () => {
+slow('refuses a manifest that escapes the candidate or runtime root', async () => {
   const value = await fixture({ manifest: { entries: [{ source: '../candidate/lib', target: 'lib' }] } })
   const deployed = await run(value.config)
   expect(deployed.code).toBe(1)
@@ -251,7 +262,7 @@ it('refuses a manifest that escapes the candidate or runtime root', async () => 
   expect(controlCalls(value).some(line => line.startsWith('stop '))).toBe(false)
 })
 
-it('refuses a candidate that is not at the requested revision', async () => {
+slow('refuses a candidate that is not at the requested revision', async () => {
   const value = await fixture({ targetRevision: 'b'.repeat(40) })
   const deployed = await run(value.config)
   expect(deployed.code).toBe(1)
@@ -259,7 +270,7 @@ it('refuses a candidate that is not at the requested revision', async () => {
   expect(controlCalls(value).some(line => line.startsWith('stop '))).toBe(false)
 })
 
-it('refuses a dependency change instead of switching a stale node_modules tree', async () => {
+slow('refuses a dependency change instead of switching a stale node_modules tree', async () => {
   const value = await fixture({ candidateLock: 'lockfileVersion: changed\n' })
   const deployed = await run(value.config)
   expect(deployed.code).toBe(1)
@@ -268,7 +279,7 @@ it('refuses a dependency change instead of switching a stale node_modules tree',
   expect(controlCalls(value).some(line => line.startsWith('stop '))).toBe(false)
 })
 
-it('keeps the headless agent fallback when no mechanical block is configured', async () => {
+slow('keeps the headless agent fallback when no mechanical block is configured', async () => {
   const value = await fixture()
   const dsh = join(value.root, 'fake-dsh.mjs')
   writeFileSync(dsh, 'process.stdin.resume()\nprocess.stdin.on("end", () => process.exit(0))\nsetTimeout(() => process.exit(0), 100)\n')
@@ -318,4 +329,4 @@ it.skipIf(process.platform !== 'win32')('starts and stops through the operator s
   const calls = controlCalls(value)
   expect(calls.some(line => line.startsWith('stop '))).toBe(true)
   expect(calls.some(line => line.startsWith('start '))).toBe(true)
-})
+}, 30_000)

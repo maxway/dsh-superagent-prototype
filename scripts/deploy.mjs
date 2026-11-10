@@ -564,7 +564,13 @@ function startService(config) {
   const result = serviceAction(config, 'start', 180_000)
   relay(config, result.stdout)
   relay(config, result.stderr)
-  if (result.code !== 0) fail('start_failed', result.stderr.trim() || result.stdout.trim().slice(0, 500) || `start exited ${result.code}`)
+  // `start` returns 2 when the service is up but a non-runtime part (for example `evals`) reports an error. That is
+  // not a failed start: the deployment continues and `verify` decides whether the service is usable. Code 3 means setup
+  // is still pending and code 1 means the service or its runtime did not come up.
+  if (result.code === 1 || result.code === 3) {
+    fail('start_failed', result.stderr.trim() || result.stdout.trim().slice(0, 500) || `start exited ${result.code}`)
+  }
+  if (result.code === 2) log(config, 'the service started, but a non-runtime part reports an error; continuing to verification')
   return result
 }
 
