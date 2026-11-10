@@ -180,6 +180,34 @@ it('holds a Watchdog wait until the snapshot changes, and returns a version to r
   expect(timed.body).toMatchObject({ changed: false, reason: 'timeout' })
 })
 
+it('does not wake the Watchdog wait for a health timestamp-only change, but wakes on a state change', async () => {
+  const settings = SettingsSchema.parse({})
+  const health: Record<string, { state: string, detail?: string, at?: string }> = { runtime: { state: 'ready', detail: '' } }
+  const call = serve({
+    store: { settings: () => settings, tickets: { open: () => [] }, read: { subscribedThreads: () => [] } },
+    sources: new SourceRegistry(() => settings),
+    links: () => () => ({ url: '', label: { zh: '', en: '' } }),
+    executor: { activeCount: () => 0 },
+    machine: { stateDir: '/tmp/state', promptMaxChars: { get: () => 100_000 }, admissionContextMaxPages: { get: () => 1 },
+      admissionContextTimeoutMs: { get: () => 1_000 } },
+    health,
+    masterId: 'master',
+    configured: () => false,
+  })
+  const initial = await call('GET', 'watchdog/wait?timeout=1&stale_minutes=30')
+  const version = String(initial.body.version)
+  const pending = call('GET', `watchdog/wait?since=${version}&timeout=2&stale_minutes=30`)
+  await new Promise(resolve => setTimeout(resolve, 50))
+  // A health check updates detail and `at`; that is not a supervision fact and must not wake the wait.
+  health.runtime = { state: 'ready', detail: 'checked again', at: new Date().toISOString() }
+  const waited = await pending
+  expect(waited.body).toMatchObject({ changed: false, reason: 'timeout', version })
+  const next = call('GET', `watchdog/wait?since=${version}&timeout=2&stale_minutes=30`)
+  await new Promise(resolve => setTimeout(resolve, 50))
+  health.runtime = { state: 'error', detail: 'socket closed' }
+  expect((await next).body).toMatchObject({ changed: true, reason: 'change' })
+}, 10_000)
+
 it('wakes the Watchdog wait at the next silence deadline, without a data change', async () => {
   const settings = SettingsSchema.parse({})
   const activity = new Date(Date.now() - 59_000).toISOString()

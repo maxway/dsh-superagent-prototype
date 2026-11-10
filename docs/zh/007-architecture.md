@@ -360,15 +360,15 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/watchdog.ts` | 只读的 Watchdog 观测：从实时快照记录一次运行，并把渲染出的观测保存为“最近运行”心跳 |
 | `src/app/watchdog-recovery.ts` | enforce 模式下的有界恢复：重新检查缺失 worker Session、快照新鲜度、暂停状态和每 Session 恢复上限，然后 retry 一次并写审计行；绝不重启服务 |
 | `scripts/dsh-superagent` | 跨平台服务控制脚本：start、stop、restart、status、verify 与 Watchdog 命令；`--url` 的监听套接字所有者才是权威目标，Windows 上不传 `--url` 的 stop 会从管理状态自动发现正在运行的 superagent，日志和控制文件位于 `<DSH home>/service/`，需要时在 Windows Job 之外启动 |
-| `scripts/dsh-superagent.ps1` | 带版本的 Windows 操作入口：读取 checkout 之外的机器 JSON，固定 checkout/home/profile/回环 URL，校验目标后交给控制脚本 |
-| `scripts/watchdog` | 独立的 Watchdog 进程：自有配置、状态、日志与 pid；挂一个带版本号的等待请求，等待返回后读取面板快照、每轮记录一次运行、把发生变化的机械发现报告到飞书，发送配置好的安静日报，并可在服务不可达时写独立本地告警/恢复记录；`--gate` 提供一次性两段式形态：普通轮次记录后退出 0，风险轮次记录后退出 2，交给完整 agent 做模型判定 |
-| `scripts/watchdog-agent/` | agent 包装、机械 gate、提示词与配置/模型模板，与观察器同版本：普通 gate 记录运行后退出，风险轮次从同一制品启动完整 DSH agent |
-| `scripts/watchdog` | 独立的 Watchdog 进程：自有配置、状态、日志与 pid；挂一个带版本号的等待请求，等待返回后读取面板快照、每轮记录一次运行、把发生变化的机械发现报告到飞书，并发送配置好的安静日报；`--gate` 提供一次性两段式形态：普通轮次记录后退出 0，风险轮次记录后退出 2，交给完整 agent 做模型判定 |
-| `scripts/watchdog-agent/` | agent 包装、机械 gate、提示词与配置/模型模板，与观察器同版本：普通 gate 记录运行后退出，风险轮次从同一制品在自己的工作区（不是 checkout）启动完整 DSH agent |
+| `scripts/dsh-superagent.ps1` | 带版本的 Windows 操作入口：一个动作词（start/stop/restart/status）加可选的 `-Config`/`-RespectStop`；checkout 之外的机器 JSON 固定 checkout/home/profile/回环 URL，命令行不再暴露目标或时序参数 |
+| `scripts/watchdog` | 常驻的独立 Watchdog 进程：自有配置、状态、日志与 pid；挂一个带版本号的等待请求，等待返回后读取面板快照、每轮记录一次运行，发送配置好的安静日报，并可在服务不可达时写独立本地告警/恢复记录；配置 `agentConfig` 时，新的机械风险直接交给同版本完整 agent 判定与报告，不再由 30 分钟定时 gate 驱动；`--gate` 仅保留为一次性诊断入口 |
+| `scripts/watchdog-agent/` | agent 包装、机械 gate、提示词与配置/模型模板，与观察器同版本：普通 gate 记录运行后退出，风险轮次从同一制品在自己的工作区（不是 checkout）启动完整 DSH agent；常驻 observer 在出现新风险时调用它 |
 | `scripts/watchdog-artifact.mjs` | 构建不可变 Watchdog 制品及 manifest（文件哈希、总摘要、`apiVersion`、`minServiceVersion`），并在安装前校验制品 |
 | `scripts/watchdog-smoke.mjs` | 用本地 mock 管理 API 验证未安装的制品：观察器与 agent gate 必须记录带 manifest 版本的运行，不接触生产服务或飞书 |
-| `scripts/watchdog-launch.ps1` | 计划任务运行的稳定启动器：读取 `current.txt` 并启动该版本的 agent 包装，因此切换版本不需要改写任务动作 |
-| `scripts/watchdog-launch.vbs` | 该计划任务的无窗口入口：`wscript.exe` 没有控制台，VBS 以隐藏窗口运行 `launch-agent.ps1` 并等待其退出码，因此定时检查不会闪出 PowerShell 窗口 |
+| `scripts/watchdog-launch-observer.ps1` | 常驻 observer 的稳定启动器：读取 `current.txt` 并运行该版本的 `watchdog --config`，在非零退出时重启，因此切换版本不需要改写任务动作 |
+| `scripts/watchdog-launch-observer.vbs` | 常驻 observer 的隐藏入口：`wscript.exe` 以隐藏窗口运行 `launch-observer.ps1` 并等待其生命周期，因此常驻进程不会闪出 PowerShell 窗口 |
+| `scripts/watchdog-launch.ps1` | 一次性 agent 的稳定启动器：读取 `current.txt` 并启动该版本的 agent 包装，因此切换版本不需要改写任务动作 |
+| `scripts/watchdog-launch.vbs` | 一次性 agent 的无窗口入口：VBS 以隐藏窗口运行 `launch-agent.ps1` 并等待其退出码 |
 | `scripts/watchdog-update.mjs` | 独立 Watchdog 更新：请求与 staging 根校验、锁、smoke、安装、原子指针切换、agent 心跳、幂等与回滚；从不重启 superagent |
 | `src/app/views/threads.ts` | 线程列表、线程时间线、搜索和决定列表 |
 | `src/app/views/sources.ts` | 来源状态：每个来源实例的状态、它最后一天的计数，以及它在那一天过滤和丢弃的内容 |
@@ -469,10 +469,12 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/views.spec.ts` | 管理视图从 Store 推导出的内容，例如被丢弃的消息属于哪个线程 |
 | `tests/watchdog.spec.ts` | Watchdog 视图及其飞书观察汇总：阶段、最近报告、静默时长、故障、谷价与评审等待、来自输入的活跃度、缺失的 worker Session，以及渲染出的报告 |
 | `tests/watchdog-process.spec.ts` | 独立 Watchdog 进程：配置校验、机械发现及其稳定标识、运行记录、报告去重、安静日报、服务不可达时的独立告警与恢复、带版本等待与状态命令；gate 的 quiet/risk/unreachable 出口 |
+| `tests/watchdog-gate.spec.ts` | 制品 gate：真实快照形状（`person` + `review`）下等待评审超过一天的结果与连续失败会被升级，安静轮次不调用模型并记录观测，风险轮次先记录机械风险再交给完整 agent |
 | `tests/watchdog-artifact.spec.ts` | 版本化 Watchdog 制品：文件集与 manifest、稳定摘要、自包含观察器/gate 冒烟与篡改检测 |
 | `tests/watchdog-agent.spec.ts` | Watchdog agent 包装：完整 agent 在配置的独立工作区启动并使用 checkout 绝对路径命令、checkout 内的工作区被拒绝、未配置时按 service profile 使用 `watchdog_superagent`/`watchdog_sheepdoku` 等工作区 |
 | `tests/watchdog-recovery.spec.ts` | 有界 Watchdog 恢复：默认关闭；只对“运行中 Assignment 没有存活 Session”做一次审计 retry；幂等重放；每 Session 上限；Session 存在、快照过期或 Assignment 未运行均拒绝 |
-| `tests/watchdog-launch.spec.ts` | 计划任务的无窗口启动器：以隐藏窗口和任务参数启动同目录的 PowerShell 启动器，并保留 agent 的退出码 |
+| `tests/watchdog-observer-agent.spec.ts` | 常驻 observer 的事件驱动交接：新风险只运行一次完整 agent，同一发现不重复消耗模型调用，风险消除后重新武装，失败只报告一次且不重试，并校验 agent 配置 |
+| `tests/watchdog-launch.spec.ts` | 无窗口启动器：一次性 agent 与常驻 observer 的 VBS 都以隐藏窗口和任务参数启动同目录的 PowerShell 启动器，并保留其退出码 |
 | `tests/watchdog-update.spec.ts` | 独立 Watchdog 更新：制品校验、smoke、安装与指针切换、已记录运行心跳、幂等、回滚与 staging 根拒绝 |
 | `tests/timeline.spec.ts` | 线程的页面，以及触发按时间再按 id 排序的邻近项，每个已接收触发的时间都采用同一种形式 |
 | `tests/migration.spec.ts` | schema 11 迁移：每条已存储记录都处于当前形状，以及拒绝更旧的 schema |
