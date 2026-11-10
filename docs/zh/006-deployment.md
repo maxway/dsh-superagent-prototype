@@ -191,7 +191,7 @@ pwsh scripts\dsh-superagent.ps1 restart
 
 ```powershell
 param([ValidateSet('start', 'stop', 'restart', 'status', 'verify')][string]$Action = 'status')
-& 'F:\code\dsh-superagent-prototype\scripts\dsh-superagent.ps1' -Action $Action -Config "$env:USERPROFILE\.dsh-superagent\service.json"
+& 'F:\code\dsh-superagent-prototype\scripts\dsh-superagent.ps1' $Action -Config "$env:USERPROFILE\.dsh-superagent\service.json"
 exit $LASTEXITCODE
 ```
 
@@ -244,7 +244,7 @@ Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以
 Check dsh-superagent: run `scripts/dsh-superagent --profile superagent --home <DSH home> status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --home <DSH home> --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest <DSH home>/service/logs/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
 ```
 
-`--respect-stop` 保留有意的停止。只有 `stop` 写入标记；`start` 清除它。`restart` 不写标记，因此该检查可以恢复一次关闭超时的重启。Windows 上改用 `pwsh scripts\dsh-superagent.ps1 -Action status` 和 `pwsh scripts\dsh-superagent.ps1 -Action restart -RespectStop`，并读取配置的 DSH home 下的同一日志。
+`--respect-stop` 保留有意的停止。只有 `stop` 写入标记；`start` 清除它。`restart` 不写标记，因此该检查可以恢复一次关闭超时的重启。Windows 上改用 `pwsh scripts\dsh-superagent.ps1 status` 和 `pwsh scripts\dsh-superagent.ps1 restart -RespectStop`，并读取配置的 DSH home 下的同一日志。
 
 ### 任务级巡检（Watchdog）
 
@@ -300,7 +300,7 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 下次按这几点缩短前期准备：
 
-1. 在稳定 checkout 中先运行一次 `pwsh scripts\dsh-superagent.ps1 -Action status`。`status` 会报告 profile 目录、`service.ps1`、按 home 存放的 `serviceDirectory`/`logs`/`control`、配置的 `stateDir`、bundle 链接与目标、checkout 版本与分支、构建出的 `lib`、监听身份（`identity`、`listener`、`unlistening`、`foreign`），以及服务的 Windows Job 归属与最近一次启动方式；直接读这些，不再重新发现。
+1. 在稳定 checkout 中先运行一次 `pwsh scripts\dsh-superagent.ps1 status`。`status` 会报告 profile 目录、`service.ps1`、按 home 存放的 `serviceDirectory`/`logs`/`control`、配置的 `stateDir`、bundle 链接与目标、checkout 版本与分支、构建出的 `lib`、监听身份（`identity`、`listener`、`unlistening`、`foreign`），以及服务的 Windows Job 归属与最近一次启动方式；直接读这些，不再重新发现。
 2. 每个目标版本只保留一份候选，并记录 revision、产物哈希与测试证据。候选 worktree 的 `git rev-parse HEAD^{tree}` 与目标树相同、构建产物也一致时直接复用；不要在维护窗口里重新构建或重跑全量测试。
 3. 用同一份 `status` 输出确认服务空闲，并记录进行中与排队工单数。做一致性备份前暂停独立 Watchdog 的写入，服务恢复后按原方式恢复并核验。
 4. 在“文件已切换、服务已停止”的状态停下。`scripts/dsh-superagent start` 会检测 Windows Job，并通过 `service-start.ps1` 在 Job 之外创建服务；不要在 agent 的 shell 工具里直接启动一个裸子进程。DSH agent 退出后，外层部署任务运行 `verify --survival-seconds 30`；只有服务仍存活、在所有 Job 之外且管理 API 回答 ready，才算成功。

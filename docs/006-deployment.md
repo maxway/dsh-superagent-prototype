@@ -196,7 +196,7 @@ tools keep working:
 
 ```powershell
 param([ValidateSet('start', 'stop', 'restart', 'status', 'verify')][string]$Action = 'status')
-& 'F:\code\dsh-superagent-prototype\scripts\dsh-superagent.ps1' -Action $Action -Config "$env:USERPROFILE\.dsh-superagent\service.json"
+& 'F:\code\dsh-superagent-prototype\scripts\dsh-superagent.ps1' $Action -Config "$env:USERPROFILE\.dsh-superagent\service.json"
 exit $LASTEXITCODE
 ```
 
@@ -277,7 +277,7 @@ Create the hourly check in the DeepSeek Harness profile you normally use, not in
 Check dsh-superagent: run `scripts/dsh-superagent --profile superagent --home <DSH home> status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --home <DSH home> --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest <DSH home>/service/logs/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
 ```
 
-`--respect-stop` preserves an intentional stop. Only `stop` writes the marker; `start` clears it. `restart` writes no marker, so the check can recover a restart whose shutdown timed out. On Windows, use `pwsh scripts\dsh-superagent.ps1 -Action status` and `pwsh scripts\dsh-superagent.ps1 -Action restart -RespectStop` instead, and read the same log under the configured DSH home.
+`--respect-stop` preserves an intentional stop. Only `stop` writes the marker; `start` clears it. `restart` writes no marker, so the check can recover a restart whose shutdown timed out. On Windows, use `pwsh scripts\dsh-superagent.ps1 status` and `pwsh scripts\dsh-superagent.ps1 restart -RespectStop` instead, and read the same log under the configured DSH home.
 
 ### Task-level check (Watchdog)
 
@@ -335,7 +335,7 @@ The 2026-11-09 deployment history in `C:\Users\dd\.dsh\watchdog\watchdog-deploy.
 
 Use these facts to keep the next preflight short:
 
-1. From the stable checkout, run `pwsh scripts\dsh-superagent.ps1 -Action status` once. `status` reports the profile directory, `service.ps1`, the home-scoped `serviceDirectory`/`logs`/`control`, the configured `stateDir`, the bundle link and target, the checkout revision and branch, the built `lib`, the listener identity (`identity`, `listener`, `unlistening`, `foreign`), the service's Windows Job membership (`inJob` and `foreignJob`) and how the newest start began; read those instead of rediscovering them.
+1. From the stable checkout, run `pwsh scripts\dsh-superagent.ps1 status` once. `status` reports the profile directory, `service.ps1`, the home-scoped `serviceDirectory`/`logs`/`control`, the configured `stateDir`, the bundle link and target, the checkout revision and branch, the built `lib`, the listener identity (`identity`, `listener`, `unlistening`, `foreign`), the service's Windows Job membership (`inJob` and `foreignJob`) and how the newest start began; read those instead of rediscovering them.
 2. Keep one candidate per target revision and record its revision, artifact hashes and test evidence. If `git rev-parse HEAD^{tree}` of the candidate worktree equals the target tree and the built files match, reuse it; do not rebuild or rerun the full suite during the maintenance window.
 3. Confirm the service is idle with the same `status` output and record open and queued Ticket counts. Pause the independent Watchdog writers before the consistent backup, then restore and verify them after the service is ready.
 4. Stop at the switched, stopped state. `scripts/dsh-superagent start` detects a Windows Job and creates the service outside it through `service-start.ps1`, so do not start a raw detached child from the agent's shell tool. After the DSH agent exits, the outer deployment task runs `verify --survival-seconds 30`; only a service that is alive, in no Job it did not create, and answering ready counts as success.
