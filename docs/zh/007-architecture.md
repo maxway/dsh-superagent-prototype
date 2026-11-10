@@ -369,6 +369,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `scripts/watchdog-launch-observer.vbs` | 常驻 observer 的隐藏入口：`wscript.exe` 以隐藏窗口运行 `launch-observer.ps1` 并等待其生命周期，因此常驻进程不会闪出 PowerShell 窗口 |
 | `scripts/watchdog-launch.ps1` | 一次性 agent 的稳定启动器：读取 `current.txt` 并启动该版本的 agent 包装，因此切换版本不需要改写任务动作 |
 | `scripts/watchdog-launch.vbs` | 一次性 agent 的无窗口入口：VBS 以隐藏窗口运行 `launch-agent.ps1` 并等待其退出码 |
+| `scripts/launch-hidden.vbs` | 其他非交互 Windows 任务（部署、Watchdog 更新、服务启动）的无窗口入口：以隐藏窗口运行给定命令、等待并返回其退出码，因此计划任务里的 `node` 或 `pwsh` 及其控制台子进程不会出现在桌面上 |
 | `scripts/watchdog-update.mjs` | 独立 Watchdog 更新：请求与 staging 根校验、锁、smoke、安装、原子指针切换、agent 心跳、幂等与回滚；从不重启 superagent |
 | `src/app/views/threads.ts` | 线程列表、线程时间线、搜索和决定列表 |
 | `src/app/views/sources.ts` | 来源状态：每个来源实例的状态、它最后一天的计数，以及它在那一天过滤和丢弃的内容 |

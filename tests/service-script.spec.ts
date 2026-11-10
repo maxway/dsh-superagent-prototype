@@ -413,7 +413,7 @@ it.skipIf(process.platform !== 'win32')('reads Job ownership from the probe rath
     null
   ])
 })
-it('reports the deployment facts from the profile home for a release preflight', async () => {
+it('reads the deployment facts from the profile home for a release preflight', async () => {
   const home = join(root, 'home')
   const profileDir = join(home, 'profiles', 'superagent')
   mkdirSync(profileDir, { recursive: true })
@@ -432,6 +432,63 @@ it('reports the deployment facts from the profile home for a release preflight',
     `import(${JSON.stringify(module)}).then(m => console.log(JSON.stringify(m.parseArgv(['status'], { DSH_HOME: ${JSON.stringify(home)} }))))`],
   (error, stdout) => error ? reject(error) : resolve(stdout))))).toMatchObject({ home, profile: 'superagent' })
 })
+it('lists Windows service processes through a hidden PowerShell window', async () => {
+  const module = pathToFileURL(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')).href
+  const rows = [{ ProcessId: 7, Name: 'node.exe', CommandLine: 'node x --profile superagent' }]
+  const script = `import(${JSON.stringify(module)}).then(m => {
+    const calls = []
+    const run = (...args) => { calls.push(args); return { status: 0, stdout: ${JSON.stringify(JSON.stringify(rows))} } }
+    console.log(JSON.stringify({ value: m.windowsProcesses(run), options: calls[0][2] }))
+  })`
+  const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
+    (error, stdout) => error ? reject(error) : resolve(stdout)))
+  expect(JSON.parse(out)).toEqual({
+    value: [{ pid: 7, name: 'node', args: ['node', 'x', '--profile', 'superagent'] }],
+    options: { encoding: 'utf8', windowsHide: true },
+  })
+})
+it('restricts a Windows log through hidden helper processes', async () => {
+  const module = pathToFileURL(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')).href
+  const log = join(root, 'protected.log')
+  const identity = 'DESKTOP-MAX\\dd,S-1-5-21-1-2-3-1001'
+  const script = `import(${JSON.stringify(module)}).then(m => {
+    const calls = []
+    let answer = ${JSON.stringify(identity)}
+    const run = (...args) => { calls.push(args); const stdout = answer; answer = ''; return { status: 0, stdout } }
+    m.restrictWindowsLog(${JSON.stringify(log)}, run)
+    console.log(JSON.stringify(calls))
+  })`
+  const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ['-e', script],
+    (error, stdout) => error ? reject(error) : resolve(stdout)))
+  const calls = JSON.parse(out) as [string, string[], { windowsHide?: boolean }][]
+  expect(calls.map(([program]) => program)).toEqual(['whoami.exe', 'icacls.exe'])
+  expect(calls.map(([, , options]) => options.windowsHide)).toEqual([true, true])
+})
+it.skipIf(process.platform !== 'win32')('runs a non-interactive node entry point in a hidden window and keeps its exit code', async () => {
+  const background = join(root, 'background.mjs')
+  const pidFile = join(root, 'background.pid')
+  writeFileSync(background, [
+    "import { writeFileSync } from 'node:fs'",
+    `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))`,
+    'setTimeout(() => process.exit(7), 4000)',
+  ].join('\n'))
+  const launcher = join(import.meta.dirname, '..', 'scripts', 'launch-hidden.vbs')
+  const child = spawn('wscript.exe', [launcher, process.execPath, background], { stdio: 'ignore' })
+  const exited = new Promise<number | null>(resolve => child.once('exit', resolve))
+  try {
+    const deadline = Date.now() + 10_000
+    while (!existsSync(pidFile) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100))
+    expect(existsSync(pidFile)).toBe(true)
+    const pid = Number(readFileSync(pidFile, 'utf8'))
+    const window = execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${pid}).MainWindowHandle`],
+      { encoding: 'utf8' }).trim()
+    expect(window).toBe('0')
+  } catch (error) {
+    try { execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }) } catch { /* It already exited. */ }
+    throw error
+  }
+  expect(await exited).toBe(7)
+}, 20_000)
 it('launches a Windows npm shim through its Node entry', async () => {
   const shim = join(root, 'bin', 'dsh.cmd')
   const entryDir = join(root, 'bin', 'node_modules', '@deepseek-ai', 'dsh', 'lib')

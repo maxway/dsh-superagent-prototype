@@ -367,6 +367,7 @@ Some generic modules still need provider-specific behavior:
 | `scripts/watchdog-launch-observer.vbs` | The hidden entry point of that standing task: `wscript.exe` runs `launch-observer.ps1` in a hidden window and waits for its lifetime, so the standing process never flashes a PowerShell window |
 | `scripts/watchdog-launch.ps1` | The stable launcher for a one-shot agent: it reads `current.txt` and starts that version's agent wrapper, so switching versions does not rewrite the task action |
 | `scripts/watchdog-launch.vbs` | The windowless entry point for a one-shot agent: the VBS runs `launch-agent.ps1` in a hidden window and waits for its exit code |
+| `scripts/launch-hidden.vbs` | The windowless entry point for the other non-interactive Windows tasks (deployment, Watchdog update, service start): it starts the given command hidden, waits for it and returns its exit code, so a scheduled `node` or `pwsh` and its console children never appear on the desktop |
 | `scripts/watchdog-update.mjs` | The independent Watchdog update: request and staging-root validation, lock, smoke, install, atomic pointer switch, agent heartbeat, idempotency and rollback; it never restarts superagent |
 | `src/app/views/threads.ts` | The Thread lists, a Thread's timeline, the search and the Decision list |
 | `src/app/views/sources.ts` | The Source status: each Source instance's state, its last day's counts, and what it filtered and dropped in that day |

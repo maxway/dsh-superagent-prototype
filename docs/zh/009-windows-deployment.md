@@ -80,6 +80,8 @@ bundle 已经按平台把两个 agent preset 在 bash 和 pwsh 之间切换（`c
 
 随后运营者报告仍有另一个 Node 窗口；其 PID 是隐藏的主服务启动的飞书事件消费者，该消费者的启动没有设置 `windowsHide`。修复为消费者及其 Windows 终止工具增加此设置；隔离的假消费者测试通过。部署后把生产来源配置为原生 `lark-cli.exe`，主服务和消费者均没有可见窗口，GitLab 与飞书均报告 ready；最终令牌地址通过认证并使浏览器根地址返回 HTTP 200，启动日志的 ACL 受保护。上述观察期间执行器始终处于暂停状态；这不代表实际工单执行已经验证。
 
+其余非交互入口也有同类缺口。计划任务直接启动 `node` 或 `pwsh` 时没有可继承的控制台，Windows 会为它以及共享该控制台的每个子进程创建可见窗口。2026-11-10 起，部署、Watchdog 更新和服务启动任务改为通过 `scripts/launch-hidden.vbs` 启动：`wscript.exe` 没有控制台，启动器以隐藏窗口运行命令、等待并返回其退出码。控制脚本也会隐藏自己的 PowerShell、`git` 和 Windows ACL 辅助进程；发布预检改为从一次 `git status --porcelain=v2 --branch` 读取 revision、branch 和 dirty，不再启动三个 Git 进程。无窗口启动器测试同时检查退出码和所启动 Node 进程没有主窗口。
+
 ## 有没有必要？
 
 ### 场景
@@ -273,7 +275,7 @@ Windows 测试套件会在 Windows 上通过 `.cmd` shim 运行飞书消费者�
 
 ### 剩余问题
 
-- 是否把 Windows CI runner 从运营者工作站迁移到专用 CI 主机，并使用专用 Windows 账号。目前它是 `D:\dsh-ci` 下的用户级 shell runner，随登录启动，因此以运营者凭据运行 job，且无人登录时会停止。登录状态下，计划任务 `dsh-gitlab-runner-watchdog` 通过隐藏启动器每 15 分钟检查一次，进程缺失时重启 runner，并把每次重启写入 `D:\dsh-ci\watchdog.log`；它检测不到仍在运行但已不再轮询的 runner。
+- 是否把 Windows CI runner 从运营者工作站迁移到专用 CI 主机，并使用专用 Windows 账号。目前它是 `D:\dsh-ci` 下的用户级 shell runner，随登录启动，因此以运营者凭据运行 job，且无人登录时会停止。2026-11-10 起，计划任务 `dsh-gitlab-runner-watchdog` 只保留登录触发器，其余时候需要手动运行（`schtasks /run /tn dsh-gitlab-runner-watchdog`）；它在进程缺失时重启 runner，并把每次重启写入 `D:\dsh-ci\watchdog.log`。它检测不到仍在运行但已不再轮询的 runner；登录后停止的 runner 会一直停到有人手动检查，除非把它迁移为带失败恢复的服务。
 - 把真实飞书机器人接到 Windows 主机；这需要生产应用凭据，因此属于切换期间的运营者步骤。启动器和事件消费者路径已实现并在无凭据条件下测试。
 
 ## 不在范围内

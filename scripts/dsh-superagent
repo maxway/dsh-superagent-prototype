@@ -411,9 +411,10 @@ export function parseWindowsProcesses(value) {
   })
 }
 
-function windowsProcesses() {
+/** List DSH host processes through PowerShell; the hidden window keeps a control-script scan off the operator's desktop. */
+export function windowsProcesses(run = spawnSync) {
   const command = 'Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress'
-  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' })
+  const result = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', windowsHide: true })
   if (result.error) throw result.error
   return parseWindowsProcesses(result.stdout ?? '')
 }
@@ -715,11 +716,26 @@ async function status(args) {
   return outcome(pids, current)
 }
 
-/** Run a read-only Git command in the checkout; undefined when Git cannot answer. */
-function gitFact(...args) {
+/**
+ * Read the checkout's revision, branch and dirtiness with one hidden Git process; undefined when Git cannot answer.
+ * `git status --porcelain=v2 --branch` carries all three facts, so a status call no longer starts two extra rev-parse
+ * processes that would each need their own hidden window.
+ */
+function gitFacts() {
   try {
-    const result = spawnSync('git', ['-C', ROOT, ...args], { encoding: 'utf8' })
-    return result.status === 0 ? result.stdout.trim() : undefined
+    const result = spawnSync('git', ['-C', ROOT, 'status', '--porcelain=v2', '--branch'], { encoding: 'utf8', windowsHide: true })
+    if (result.error || result.status !== 0) return undefined
+    const lines = (result.stdout ?? '').split(/\r?\n/)
+    const header = name => lines.find(line => line.startsWith(`# ${name} `))?.slice(name.length + 3)
+    const head = header('branch.oid')
+    if (!head || !/^[0-9a-f]{40}$/.test(head)) return undefined
+    const branch = header('branch.head')
+    return {
+      head,
+      // A detached checkout keeps the value `rev-parse --abbrev-ref HEAD` reported before this probe changed shape.
+      branch: !branch || branch === '(detached)' ? 'HEAD' : branch,
+      dirty: lines.some(line => line !== '' && !line.startsWith('#')),
+    }
   } catch { return undefined }
 }
 
@@ -747,13 +763,12 @@ export function deploymentFacts(profile, home = process.env.DSH_HOME || join(hom
     const stat = statSync(lib)
     libFacts = { path: lib, modifiedAt: stat.mtime.toISOString(), files: readdirSync(lib).length }
   } catch {}
-  const head = gitFact('rev-parse', 'HEAD'), branch = gitFact('rev-parse', '--abbrev-ref', 'HEAD')
-  const changed = gitFact('status', '--porcelain')
+  const git = gitFacts()
   return {
     profile, home, profileDir, serviceScript: existsSync(join(home, 'service.ps1')) ? join(home, 'service.ps1') : undefined,
     serviceDirectory: serviceDirectory(home), logs: logsDirectory(home), control: controlDirectory(profile, home),
     stateDir: configuredStateDir(home, profile), bundleLink, ...bundle ? { bundleTarget: bundle } : {},
-    git: head ? { head, branch, dirty: changed === undefined ? undefined : changed.length > 0 } : undefined,
+    ...git ? { git } : {},
     ...libFacts ? { lib: libFacts } : {},
   }
 }
@@ -1154,11 +1169,13 @@ export function windowsStart(dsh, profile, node = findExecutable('node')) {
   return { file: /\s/.test(dsh) ? `"${dsh}"` : dsh, args: ['--profile', profile, '--no-open'], shell: true }
 }
 
-export function restrictWindowsLog(path) {
-  const identity = spawnSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
+export function restrictWindowsLog(path, run = spawnSync) {
+  // Both helpers are non-interactive console programs: hide their windows so a background start does not flash them.
+  const identity = run('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true })
   const sid = /S-1-(?:\d+-)+\d+/i.exec(identity.stdout ?? '')?.[0]
   if (identity.error || identity.status !== 0 || !sid) throw new Error('Could not identify the current Windows user for log access.')
-  const permissions = spawnSync('icacls.exe', [path, '/inheritance:r', '/grant:r', `*${sid}:(F)`, '*S-1-5-18:(F)', '*S-1-5-32-544:(F)'], { encoding: 'utf8' })
+  const permissions = run('icacls.exe', [path, '/inheritance:r', '/grant:r', `*${sid}:(F)`, '*S-1-5-18:(F)', '*S-1-5-32-544:(F)'],
+    { encoding: 'utf8', windowsHide: true })
   if (permissions.error || permissions.status !== 0) throw new Error(`Could not restrict access to the service log: ${(permissions.stderr ?? '').trim()}`)
 }
 
