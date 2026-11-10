@@ -1,7 +1,7 @@
 /** Block-scoped settings validation, optimistic concurrency saves, processing pause control, and source policy synchronization. */
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
-import { UserError, type EngineForSettings } from '../core/index.ts'
+import { UserError, CATEGORIES, type EngineForSettings } from '../core/index.ts'
 import type { GitProvider } from '../deployment.ts'
 import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema, policyEffects, policyVersion } from '../policy.ts'
 import type { Settings as SettingsValue, SettingsBlock, SettingsOrigin, SettingsSave } from '../policy.ts'
@@ -159,10 +159,15 @@ export class Settings {
     const parsed = rules.parse(value, sources, id)
     const current = store.settings()
     const candidate = rules.merge(current, parsed, id)
-    const model = block === 'eval' ? candidate.eval.model : block === 'executor' ? candidate.executor.model : null
-    const previous = block === 'eval' ? current.eval.model : block === 'executor' ? current.executor.model : null
-    if (model && JSON.stringify(model) !== JSON.stringify(previous)) {
-      try { await resolveRoleModel(this.host.context, model) }
+    const candidateModels = block === 'eval'
+      ? [{ next: candidate.eval.model, before: current.eval.model }]
+      : block === 'executor'
+        ? [{ next: candidate.executor.model, before: current.executor.model },
+          ...CATEGORIES.map(category => ({ next: candidate.executor.models[category], before: current.executor.models[category] }))]
+        : []
+    for (const { next, before } of candidateModels) {
+      if (!next || JSON.stringify(next) === JSON.stringify(before)) continue
+      try { await resolveRoleModel(this.host.context, next) }
       catch (error) { throw new UserError('modelUnavailable', { block, error: error instanceof Error ? error.message : String(error) }) }
     }
     rules.guard?.(current, candidate, origin)

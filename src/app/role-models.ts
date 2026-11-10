@@ -2,7 +2,13 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import type { RoleModel } from '../policy.ts'
+import { ticketCategory, type Ticket } from '../core/index.ts'
+import type { RoleModel, Settings } from '../policy.ts'
+
+/** The model a Ticket's worker starts on: its category's model, else the executor's default. */
+export function workerModel(settings: Settings, ticket: Pick<Ticket, 'category' | 'mandate'>): RoleModel | null {
+  return settings.executor.models[ticketCategory(ticket)] ?? settings.executor.model
+}
 
 /** Resolve a configured route through the live provider; catalog membership is not a restriction. */
 export async function resolveRoleModel(ctx: Context, model: RoleModel): Promise<ModelSelection> {

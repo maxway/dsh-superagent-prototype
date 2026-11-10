@@ -30,6 +30,12 @@
 
 主 Session 使用 `dsh-superagent-router`，具有相同的 5 秒 shell 和任务等待限制，以及用于路由的较小工具集。Session 会保留创建时选定的预设。执行器的子智能体使用 DeepSeek Harness 的 `standard` 预设。
 
+### 工单类别与模型
+
+每个新工单在接单时固定一个类别：`query` 以只读方式回答一个查询，`research` 以只读方式调查并报告发现，`development` 修改代码并运行检查。只读答疑问题默认为 `query`；未指定类别的接单默认为 `development`。类别之外的工作不在该工单内完成：执行器会停下并把发现交回，由人发起新的请求。一个触发只决定一个工单；混合请求保留其主要交付物，其余部分成为新的请求。
+
+执行器以 `executor` 设置块中的 `executor.models.<类别>` 启动；该项为空时使用 `executor.model`，再为空时使用宿主默认模型。模型只在创建执行器 Session 时写入；已有 Session 保留启动时的模型，因此修改设置不会切换正在运行的执行器。面板的执行设置编辑的是回退模型；类别模型可以在同一个 `executor` 块中通过管理 API 或 `orchestrator_settings_save` 保存，例如 `"models": {"query": {"provider": "…", "model": "…"}, "research": null, "development": null}`。类别模型不授予执行权：`query` 和 `research` 仍是只读指令，不是操作系统沙箱。
+
 ### 只读答疑工单
 
 从只读答疑问题接单的工单具有 `reply` 授权强度。只有群聊范围能接出这样的工单；名单外的私聊消息不被接纳，永远不会成为只读答疑工单。它的执行器可以用只读方式调查并回答，但不得修改、创建或删除文件，不得提交、推送、打开、合并或关闭变更请求，也不得更改设置或账号。它通过 `orchestrator_report` 回答：在 `reply_to_trigger_id` 中指明问题，把回答放在 summary 中；主 Session 会把该回答发到问题所在的会话。`ready` 报告会使工单以已完成结束，且它不交付 pull request。

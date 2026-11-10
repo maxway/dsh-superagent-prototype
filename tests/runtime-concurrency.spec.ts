@@ -873,11 +873,12 @@ describe('the Executor\'s parts', () => {
     expect(execution.assignment).not.toContain('trigger/tr1')
     expect(ticketExecution({ ...ticket, mandate: { ...ticket.mandate, strength: 'explicit' } } as Ticket,
       { kind: 'accept', title: 'Fix', scope: 'Fix', reason: 'r', name: 'fix-login', note: 'the login page' } as never, settings, '/state').assignment)
-      .toBe('Routing note (not the source request): the login page')
-    // The worker's system prompt holds the limits an inferred Mandate sets, so the assignment does not repeat them.
+      .toBe('Routing note (not the source request): the login page\nCategory: development.')
+    // Every worker reads its category contract in the system prompt, so the assignment only names the category.
     expect(execution.assignment).not.toContain(mandateInstructions(ticket.mandate))
     expect(execution.assignment).toContain('- Copy fixes (copy): Fix typos only.')
-    expect(mandateInstructions({ strength: 'explicit' })).toBe('')
+    expect(mandateInstructions({ strength: 'explicit' })).toContain('This is a development ticket')
+    expect(mandateInstructions({ strength: 'explicit', category: 'query' })).toContain('read-only investigation')
     // A reply-only ticket reads the read-only limits and the answer route.
     expect(mandateInstructions({ strength: 'reply' })).toContain('read-only reply ticket')
     expect(mandateInstructions({ strength: 'reply' })).toContain('reply_to_trigger_id')
