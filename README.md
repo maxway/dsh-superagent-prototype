@@ -41,7 +41,7 @@
 
 - 独立 Watchdog 通过只读路由 `GET /orchestrator/api/watchdog` 读取全部进行中工单的阶段、最近报告与静默时长，结合机械信号和模型判断，把异常报告给运营者。服务内的面板 Watchdog 介入设置、SQLite 决定审计与 retry/stop 路由已经移除。
 - `scripts/dsh-superagent watchdog` 输出机器可读快照（含 `lastRun`），`watchdog run [--note <text>]` 把本次观测从实时快照记录下来（没有异常也记，保留 30 天），`watchdog runs [--limit <n>]` 列出最近的观测结果，`watchdog report --chat <chat id> [--note <text>]` 让服务端把观察汇总通过飞书机器人发到该会话。`status` 还会报告 DSH home、profile 目录、stateDir、bundle 链接、checkout 版本与 `lib` 等部署事实，供发布预检复用。
-- 也可以把 `scripts/watchdog` 作为独立进程运行：它有自己的配置、状态、日志与 pid，不依赖 DSH profile，每轮记录一次观测、仅在机械发现变化时发飞书；配置 `dailyReport` 后，无异常时每天上午还会发一次安静的日报。它挂一个带版本号的只读等待，工单、健康或静默阈值变化时立即醒来；超时只用于重连，`intervalSeconds` 是最大兜底间隔。`--gate` 则只做机械预检，普通轮次记录观测并退出 0，高风险记录后退出 2，只有风险轮次才由完整 DSH agent 做模型判定。主会话还可以通过 `orchestrator_deploy` 把操作者的“部署superagent”请求交给独立 Watchdog 执行；部署只做最必要的停机、切换、启动和基础健康检查，稳定期目标控制在一分钟内。
+- 也可以把 `scripts/watchdog` 作为常驻 observer 运行：它有自己的配置、状态、日志与 pid，不依赖 DSH profile，每轮记录一次观测；配置 `dailyReport` 后，无异常时每天上午还会发一次安静的日报。它挂一个带版本号的只读等待，工单、健康或静默阈值变化时立即醒来；超时只用于重连，`intervalSeconds` 是最大兜底间隔。配置 `agentConfig` 后，新的机械风险交给同版本的完整 DSH agent 判定和报告，observer 不再重复发机械报告；同一发现不重复调用模型，风险消除后重新武装，失败只报告一次。它不再依赖每 30 分钟的定时 gate，`--once`/`--gate` 仅保留为诊断与一次性入口。主会话还可以通过 `orchestrator_deploy` 把操作者的“部署superagent”请求交给独立 Watchdog 执行；部署只做最必要的停机、切换、启动和基础健康检查，稳定期目标控制在一分钟内。
 
 #### 飞书只读答疑
 

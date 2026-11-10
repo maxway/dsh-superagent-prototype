@@ -5,13 +5,13 @@
 # task never needs its action rewritten. It never touches the superagent service.
 param(
   [string]$Config = '',
-  [string]$Home = ''
+  [string]$WatchdogHome = ''
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not $Home) { $Home = Split-Path -Parent $MyInvocation.MyCommand.Path }
-if (-not $Config) { $Config = Join-Path $Home 'agent.json' }
-$logFile = Join-Path $Home 'launch.log'
+if (-not $WatchdogHome) { $WatchdogHome = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $Config) { $Config = Join-Path $WatchdogHome 'agent.json' }
+$logFile = Join-Path $WatchdogHome 'launch.log'
 
 function Fail([string]$message) {
   try { "$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')) $message" | Add-Content -LiteralPath $logFile -Encoding utf8 } catch { /* The task result carries the error. */ }
@@ -20,11 +20,11 @@ function Fail([string]$message) {
 }
 
 try {
-  $currentPath = Join-Path $Home 'current.txt'
+  $currentPath = Join-Path $WatchdogHome 'current.txt'
   if (-not (Test-Path -LiteralPath $currentPath)) { Fail "No current Watchdog version at $currentPath." }
   $version = (Get-Content -Raw -LiteralPath $currentPath).Trim()
   if ($version -notmatch '^[A-Za-z0-9._-]+$') { Fail "Invalid Watchdog version in ${currentPath}: $version" }
-  $runner = Join-Path $Home "versions\$version\agent\run.ps1"
+  $runner = Join-Path $WatchdogHome "versions\$version\agent\run.ps1"
   if (-not (Test-Path -LiteralPath $runner)) { Fail "The current Watchdog version has no runner: $runner" }
   if (-not (Test-Path -LiteralPath $Config)) { Fail "The Watchdog agent configuration does not exist: $Config" }
   $powershell = (Get-Process -Id $PID).Path
