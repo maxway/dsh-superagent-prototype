@@ -167,10 +167,41 @@ function runTrigger(config, manifest) {
   return runCommand(config, config.observerStartCommand, manifest.version)
 }
 
+/** The old observer may outlive the task's top process; stop exactly its recorded pid before switching versions. */
+function observerPid(home) {
+  try {
+    const value = Number.parseInt(readFileSync(join(home, 'observer-state', 'watchdog.pid'), 'utf8').trim(), 10)
+    return Number.isInteger(value) && value > 0 ? value : undefined
+  } catch { return undefined }
+}
+
+function pidAlive(pid) {
+  if (!pid) return false
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+async function waitForExit(pid, milliseconds) {
+  const deadline = Date.now() + milliseconds
+  while (Date.now() < deadline) {
+    if (!pidAlive(pid)) return true
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 250))
+  }
+  return !pidAlive(pid)
+}
+
 /** Stop the old observer before the pointer switches; the scheduled task owns the lifecycle. */
-function stopObserver(config, version) {
+async function stopObserver(config, version) {
   if (!config.observerStopCommand) return undefined
-  return runCommand(config, config.observerStopCommand, version)
+  const evidence = runCommand(config, config.observerStopCommand, version)
+  const pid = observerPid(config.watchdogHome)
+  if (pid && pidAlive(pid)) {
+    if (!await waitForExit(pid, 10_000)) {
+      spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true })
+      if (!await waitForExit(pid, 10_000)) throw new Error(`The old observer pid ${pid} did not stop`)
+    }
+  }
+  rmSync(join(config.watchdogHome, 'observer-state', 'watchdog.pid'), { force: true })
+  return evidence
 }
 
 /** After a rollback, start the previous observer again. */
@@ -254,7 +285,7 @@ export async function update(config, rawRequest, dependencies = {}) {
     logLine(`artifact ${installed.installed ? 'installed' : 'reused'} at ${installed.destination}`)
     let stopped
     try {
-      stopped = stopObserver(config, current ?? '')
+      stopped = await stopObserver(config, current ?? '')
     } catch (error) {
       return finish({ at: now().toISOString(), ok: false, phase: 'failed', version: artifact.version,
         previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence,
