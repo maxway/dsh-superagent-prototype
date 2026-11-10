@@ -71,6 +71,15 @@ function pidAlive(pid) {
   try { process.kill(pid, 0); return true } catch { return false }
 }
 
+/** Kill the task's launcher processes too: a surviving launcher loop would restart the observer from its old path. */
+function stopLauncherProcesses(home) {
+  const escaped = home.replace(/'/g, "''")
+  const script = `$home='${escaped}'; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains($home) -and ($_.CommandLine.Contains('launch-observer.ps1') -or $_.CommandLine.Contains('launch-observer.vbs')) } | ForEach-Object { taskkill /PID $_.ProcessId /T /F }`
+  const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+    { encoding: 'utf8', timeout: 30_000, windowsHide: true })
+  if (result.error) throw result.error
+}
+
 function readObserverUrl(home) {
   try {
     const value = JSON.parse(readFileSync(join(home, 'observer.json'), 'utf8'))
@@ -183,8 +192,11 @@ export async function deployArtifact(options, dependencies = {}) {
   const config = controlConfig(options)
   const source = options.build ? buildFromRepo(config.watchdogHome) : resolve(options.artifact)
   const prepared = prepareArtifact(config.watchdogHome, source)
+  // Stop here, where the exact observer pid and launcher processes are known; the updater's stop command becomes a no-op.
+  await stopObserver(options)
   const apply = dependencies.update ?? update
-  const result = await apply(config, deployedRequest(prepared.manifest, prepared.path))
+  const result = await apply({ ...config, observerStopCommand: 'cmd /c exit 0' },
+    deployedRequest(prepared.manifest, prepared.path))
   if (result.ok && result.phase === 'already-current' && !pidAlive(observerPid(config.watchdogHome))) {
     await startObserver(options)
     return { ...result, started: true }
@@ -219,17 +231,15 @@ export async function startObserver(options) {
 export async function stopObserver(options) {
   const config = controlConfig(options)
   const state = taskState(options.task)
-  if (state === 'missing') return { stopped: true, task: options.task, note: 'task not installed' }
-  run(taskCommand('end', options.task), { allowFailure: true })
+  if (state !== 'missing') run(taskCommand('end', options.task), { allowFailure: true })
+  stopLauncherProcesses(config.watchdogHome)
   let pid = observerPid(config.watchdogHome)
   if (!await waitFor(() => !pidAlive(pid), 10_000)) {
     if (pid && pidAlive(pid)) run(`taskkill /pid ${pid} /t /f`, { allowFailure: true })
     if (!await waitFor(() => !pidAlive(pid), 10_000)) throw new Error(`The observer pid ${pid} is still alive`)
   }
-  // The launcher loop could still be alive if the task's top process ignored the first end; end it again.
-  run(taskCommand('end', options.task), { allowFailure: true })
   rmSync(join(config.watchdogHome, 'observer-state', 'watchdog.pid'), { force: true })
-  return { stopped: true, pid: pid ?? null, task: options.task }
+  return { stopped: true, pid: pid ?? null, task: options.task, ...(state === 'missing' ? { note: 'task not installed' } : {}) }
 }
 
 async function snapshot(config) {

@@ -32,7 +32,7 @@ it('parses the lifecycle options and creates scheduler commands without extra pa
   expect(parseArgv(['status', '--json'])).toMatchObject({ command: 'status', json: true })
 })
 
-it('prepares the artifact and hands one mechanical request to the updater', async () => {
+it.skipIf(process.platform !== 'win32')('prepares the artifact and hands one mechanical request to the updater', async () => {
   directory = mkdtempSync(join(tmpdir(), 'watchdog-control-'))
   const artifact = join(directory, 'artifact')
   buildArtifact(root, artifact, { version: 'ctl-1', commit: 'a'.repeat(40), builtAt: '2026-11-10T00:00:00.000Z' })
@@ -49,7 +49,7 @@ it('prepares the artifact and hands one mechanical request to the updater', asyn
   expect(calls).toHaveLength(1)
   expect(calls[0]).toMatchObject({ request: { target: { version: 'ctl-1', artifactPath: join(home, 'staging', 'ctl-1') } },
     config: { watchdogHome: home, observerStartCommand: 'schtasks /run /tn "watchdog-task"',
-      observerStopCommand: 'schtasks /end /tn "watchdog-task"' } })
+      observerStopCommand: 'cmd /c exit 0' } })
   expect(existsSync(join(home, 'staging', 'ctl-1', 'manifest.json'))).toBe(true)
   expect(existsSync(join(home, 'launch-observer.ps1'))).toBe(true)
   expect(existsSync(join(home, 'launch-observer.vbs'))).toBe(true)
