@@ -4,9 +4,9 @@
  *
  * The task runs outside the superagent service. It validates an operator request and an immutable artifact, smokes the
  * artifact against a local mock (no production Feishu or credentials), installs it under `versions/<version>`, switches
- * the `current.txt` pointer atomically, triggers the Watchdog agent task and waits for a recorded run from the new
- * version. A failed smoke, trigger or heartbeat restores the previous pointer. It never restarts or reconfigures the
- * superagent service. A persistent observer is not started here: the scheduled Watchdog agent task owns that lifecycle.
+ * the `current.txt` pointer atomically, stops and starts the standing observer task and waits for a recorded run from the
+ * new version. A failed smoke, start or heartbeat restores the previous pointer. It never restarts or reconfigures the
+ * superagent service and never asks a model to decide anything: the observer task owns the long-running lifecycle.
  */
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -42,20 +42,16 @@ export function loadConfig(path) {
   const requestPath = required('requestPath')
   const serviceUrl = String(value.serviceUrl ?? '').trim()
   if (!serviceUrl) throw new Error('The update configuration needs serviceUrl')
-  const triggerCommand = typeof value.triggerCommand === 'string' ? value.triggerCommand : ''
-  const agentTask = typeof value.agentTask === 'string' ? value.agentTask : ''
   const observerStopCommand = typeof value.observerStopCommand === 'string' ? value.observerStopCommand : ''
   const observerStartCommand = typeof value.observerStartCommand === 'string' ? value.observerStartCommand : ''
-  if (!triggerCommand && !agentTask && !observerStartCommand) {
-    throw new Error('The update configuration needs triggerCommand, agentTask or observerStartCommand')
+  if (!observerStopCommand || !observerStartCommand) {
+    throw new Error('The update configuration needs observerStopCommand and observerStartCommand')
   }
   return {
     watchdogHome,
     stagingRoot: value.stagingRoot ? resolve(String(value.stagingRoot)) : dirname(requestPath),
     requestPath,
     serviceUrl: serviceUrl.replace(/\/+$/, ''),
-    triggerCommand,
-    agentTask,
     observerStopCommand,
     observerStartCommand,
     serviceVersion: typeof value.serviceVersion === 'string' ? value.serviceVersion : '',
@@ -165,20 +161,50 @@ function runCommand(config, command, version) {
   return { command, at: new Date().toISOString() }
 }
 
-/** Start the new observer when configured, otherwise trigger the scheduled agent task. */
+/** Start the new standing observer after the pointer switches. */
 function runTrigger(config, manifest) {
-  const command = config.observerStartCommand || config.triggerCommand || (config.agentTask ? `schtasks /run /tn ${config.agentTask}` : '')
-  if (!command) throw new Error('The update configuration needs triggerCommand, agentTask or observerStartCommand')
-  return runCommand(config, command, manifest.version)
+  if (!config.observerStartCommand) throw new Error('The update configuration needs observerStartCommand')
+  return runCommand(config, config.observerStartCommand, manifest.version)
 }
 
-/** Stop the old observer before the pointer switches; without this command the scheduled agent owns the lifecycle. */
-function stopObserver(config, version) {
+/** The old observer may outlive the task's top process; stop exactly its recorded pid before switching versions. */
+function observerPid(home) {
+  try {
+    const value = Number.parseInt(readFileSync(join(home, 'observer-state', 'watchdog.pid'), 'utf8').trim(), 10)
+    return Number.isInteger(value) && value > 0 ? value : undefined
+  } catch { return undefined }
+}
+
+function pidAlive(pid) {
+  if (!pid) return false
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+async function waitForExit(pid, milliseconds) {
+  const deadline = Date.now() + milliseconds
+  while (Date.now() < deadline) {
+    if (!pidAlive(pid)) return true
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 250))
+  }
+  return !pidAlive(pid)
+}
+
+/** Stop the old observer before the pointer switches; the scheduled task owns the lifecycle. */
+async function stopObserver(config, version) {
   if (!config.observerStopCommand) return undefined
-  return runCommand(config, config.observerStopCommand, version)
+  const evidence = runCommand(config, config.observerStopCommand, version)
+  const pid = observerPid(config.watchdogHome)
+  if (pid && pidAlive(pid)) {
+    if (!await waitForExit(pid, 10_000)) {
+      spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true })
+      if (!await waitForExit(pid, 10_000)) throw new Error(`The old observer pid ${pid} did not stop`)
+    }
+  }
+  rmSync(join(config.watchdogHome, 'observer-state', 'watchdog.pid'), { force: true })
+  return evidence
 }
 
-/** After a rollback, start the previous observer again; a scheduled agent needs no immediate start. */
+/** After a rollback, start the previous observer again. */
 function restartPrevious(config, version) {
   if (!config.observerStartCommand || !version) return undefined
   return runCommand(config, config.observerStartCommand, version)
@@ -259,7 +285,7 @@ export async function update(config, rawRequest, dependencies = {}) {
     logLine(`artifact ${installed.installed ? 'installed' : 'reused'} at ${installed.destination}`)
     let stopped
     try {
-      stopped = stopObserver(config, current ?? '')
+      stopped = await stopObserver(config, current ?? '')
     } catch (error) {
       return finish({ at: now().toISOString(), ok: false, phase: 'failed', version: artifact.version,
         previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence,

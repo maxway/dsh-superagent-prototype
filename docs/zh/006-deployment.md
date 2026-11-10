@@ -281,7 +281,7 @@ Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --
 
 常驻 observer 由计划任务在登录时启动，或在前台/进程管理器下运行 `node scripts/watchdog --config watchdog.json`。`--status` 打印最近记录的状态；进程在 `stateDir` 下写 `state.json` 与 `watchdog.log`，运行期间持有 `watchdog.pid`。它每轮都记录一次运行，因此 `GET watchdog` 的 `lastRun` 与 `watchdog runs` 能看出它还活着。长时间运行的进程不按 `intervalSeconds` 睡眠，而是挂一个带版本号的等待请求：工单、健康、暂停或安装配置变化，到达下一个静默/评审截止时刻，或达到 API 的 240 秒上限时返回。变化或截止时刻会立即跑完整轮次；达到上限只是重新挂起等待，只有距上次轮次已过 `intervalSeconds` 才跑兜底轮次，因此 `intervalSeconds` 是两次轮次之间的最大间隔。配置 `agentConfig` 后，新的机械风险（工单信号、部件报错、安装配置未完成、ready 结果等待超过一天、连续两次失败）交给同一制品的完整 DSH agent 判定和报告；observer 记录 `agentFingerprint`，同一发现不重复消耗模型调用，风险消除后重新武装，agent 失败只报告一次、不重试。没有 `agentConfig` 时仍只做机械报告。配置 `dailyReport` 后，无异常时每天上午还会发一次安静的日报，让人知道安静的服务仍在被检查；每本地日只发一次（在兜底间隔内）。服务停止时它只记录失败并写独立告警文件，无法通过飞书机器人发报告（机器人属于服务）。
 
-`--once` 和 `--gate` 保留为诊断/一次性入口：`--once` 跑一轮并退出；`--gate` 只做机械门控（quiet 退出 0、risk 记录后退出 2、不可达退出 1），不再作为定时监控。常驻 observer 不依赖每 30 分钟的定时 gate；模型只在长连接发现新风险时运行。主机检查项、有界恢复与部署监督（路线图工作流 K、L）后续也放进这个进程。
+`--once` 保留为诊断入口：跑一轮并退出；常驻 observer 不依赖每 30 分钟的定时 gate，模型只在长连接发现新风险时运行。日常运维用 `node scripts/watchdog-control.mjs status|start|stop|deploy --build`：它读取当前指针和计划任务，部署时校验制品、跑 smoke、切换 `current.txt`、重启任务并等待新版本心跳；每一步都是机械的，不经过模型，也不需要手填版本、摘要或任务参数。主机检查项、有界恢复与部署监督（路线图工作流 K、L）后续也放进这个进程。
 
 ### 在 Windows Job 之外启动服务
 
@@ -386,13 +386,13 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 ### 版本化 Watchdog 制品与更新任务
 
-Watchdog 不再通过拉取 superagent 检出更新：仓库构建不可变制品，观察器、agent 包装与 gate 只从同一版本导入。`node scripts/watchdog-artifact.mjs --out <dir> --version <id> --commit <sha>` 把 `scripts/watchdog`、`scripts/watchdog-agent/*` 和两套稳定启动器（常驻 observer 与一次性 agent）复制到制品，并写入包含文件哈希、总摘要、`apiVersion` 与 `minServiceVersion` 的 `manifest.json`。`node scripts/watchdog-smoke.mjs <dir>` 用本地 mock 管理 API 验证制品，不接触生产服务或飞书。
+Watchdog 不再通过拉取 superagent 检出更新：仓库构建不可变制品，观察器、agent 包装与 gate 只从同一版本导入。`node scripts/watchdog-control.mjs deploy --build` 从干净的当前检出构建制品、跑 smoke、安装、切换指针、重启 observer 并核对新版本心跳；也可以把已构建的目录交给 `deploy --artifact <dir>`。制品仍包含 `scripts/watchdog`、`scripts/watchdog-agent/*` 和常驻 observer 的两个启动器文件（`launch-observer.ps1` 与 `launch-observer.vbs`），并写入包含文件哈希、总摘要、`apiVersion` 与 `minServiceVersion` 的 `manifest.json`；`node scripts/watchdog-smoke.mjs <dir>` 可单独验证制品，不接触生产服务或飞书。
 
-把制品安装到 `<watchdogHome>\versions\<version>`，用 `<watchdogHome>\current.txt` 表示当前版本；`previous.txt` 是回滚点。常驻 observer 由计划任务通过 `wscript.exe` 运行 `<watchdogHome>\launch-observer.vbs -Config <observer.json>`；VBS 以隐藏窗口启动 `launch-observer.ps1`，后者读取 `current.txt`、运行该版本的 `watchdog --config`，非零退出时等待 10 秒重启。一次性或手动检查仍可用 `launch-agent.vbs -Config <agent.json>` 运行 `agent\run.ps1`；它不是监控入口，监控不再使用每 30 分钟的定时 gate。切换版本不需要改写任务动作，也从不重启 superagent 服务。observer 配置（服务 URL、chat id、state/log、agentConfig）与 agent 配置（checkout、workspace、DSH home、模型 patch）留在仓库外；`scripts/watchdog-agent/config.example.json` 与 `model.patch.example.yml` 是 agent 模板。
+把制品安装到 `<watchdogHome>\versions\<version>`，用 `<watchdogHome>\current.txt` 表示当前版本；`previous.txt` 是回滚点。常驻 observer 由计划任务通过 `wscript.exe` 运行 `<watchdogHome>\launch-observer.vbs -Config <observer.json>`；VBS 以隐藏窗口启动 `launch-observer.ps1`，后者读取 `current.txt`、运行该版本的 `watchdog --config`，非零退出时等待 10 秒重启。切换版本不需要改写任务动作，也从不重启 superagent 服务。observer 配置（服务 URL、chat id、state/log、agentConfig）与 agent 配置（checkout、workspace、DSH home、模型 patch）留在仓库外；`scripts/watchdog-agent/config.example.json` 与 `model.patch.example.yml` 是 agent 模板。一次性 agent 不再有独立启动器；需要诊断时直接调用制品的 `agent\run.ps1`。
 
 agent 必须运行在自己的工作区，而不是 checkout。不需要人工填写路径：未设置 `workspace` 时，包装脚本使用 `<配置目录>\workspaces\watchdog_<service profile>` —— 本部署是 `watchdog_superagent`，service profile 为 `sheepdoku` 时是 `watchdog_sheepdoku` —— 因此同一主机上的多个 Watchdog 不会共用工作区。只有想换名字或位置时才需要设置 `workspace`。`run.ps1` 在目录缺失时创建它，拒绝等于 checkout 或位于 checkout 内的路径，并在运行 gate 和完整 agent 前切换进去。提示词用绝对路径引用 checkout，因此 agent 仍能读取部署文档并运行 `node <checkout>\scripts\dsh-superagent ...`。DSH 按工作目录把 Session 归入工作区，因此 Watchdog 的 Session 不再进入 checkout 的 Desktop DSH 工作区；把该工作区目录添加为 DSH 项目即可在自己的工作区下查看，否则它们保持未分组。已有安装必须使用重新构建的制品；superagent 发布不会更新当前本机部署的旧包装脚本。这只隔离工作区，不是安全边界：agent 仍可完全访问 checkout，共享 DSH home 时仍共享其 Session 与工作区存储。
 
-独立的 `dsh-superagent-watchdog-update` 任务通过同一个隐藏启动器运行 `node scripts/watchdog-update.mjs --config <update.json>`：`wscript.exe <checkout>\scripts\launch-hidden.vbs <node> <checkout>\scripts\watchdog-update.mjs --config <update.json>`。主会话或操作员写入 `watchdog-update-request.json`，包含操作者确认、目标版本、制品路径、可选摘要和幂等键。任务校验制品位于 staging 根目录内且与 manifest 一致，做 smoke、安装、切换 `current.txt`、停止旧 observer 并按配置启动新版本，再等待带新版本的已记录运行。smoke、启动或心跳失败时恢复上一个指针并重启上一版；锁让并发更新被拒绝，重复幂等键返回已记录结果。更新任务从不备份、重启或替换 superagent。快照的 `lastRun` 与已记录运行携带 Watchdog 的 `version` 和 `commit`，供面板与审计使用。
+独立的 `dsh-superagent-watchdog-update` 任务通过同一个隐藏启动器运行 `node scripts/watchdog-update.mjs --config <update.json>`：`wscript.exe <checkout>\scripts\launch-hidden.vbs <node> <checkout>\scripts\watchdog-update.mjs --config <update.json>`。主会话或操作员写入 `watchdog-update-request.json`，包含操作者确认、目标版本、制品路径、可选摘要和幂等键。任务校验制品位于 staging 根目录内且与 manifest 一致，做 smoke、安装、切换 `current.txt`、停止旧 observer 并按配置启动新版本，再等待带新版本的已记录运行。smoke、启动或心跳失败时恢复上一个指针并重启上一版；锁让并发更新被拒绝，重复幂等键返回已记录结果。更新任务从不备份、重启或替换 superagent，也不调用模型。日常单次部署优先用 `watchdog-control deploy`，它固定同一套机械步骤，不需要手写请求文件。快照的 `lastRun` 与已记录运行携带 Watchdog 的 `version` 和 `commit`，供面板与审计使用。
 
 ```json
 {
@@ -400,7 +400,6 @@ agent 必须运行在自己的工作区，而不是 checkout。不需要人工�
   "stagingRoot": "C:\\Users\\dd\\.dsh\\watchdog-independent\\staging",
   "requestPath": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update-request.json",
   "serviceUrl": "http://127.0.0.1:3083",
-  "triggerCommand": "schtasks /run /tn dsh-superagent-watchdog-observer",
   "observerStopCommand": "schtasks /end /tn dsh-superagent-watchdog-observer",
   "observerStartCommand": "schtasks /run /tn dsh-superagent-watchdog-observer",
   "logFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update.log",
@@ -412,7 +411,7 @@ agent 必须运行在自己的工作区，而不是 checkout。不需要人工�
 }
 ```
 
-首次安装是操作员步骤：构建或复制制品到 staging 根目录，安装两套稳定启动器、observer 配置与 agent 配置，把计划任务的 `wscript.exe` 指向 `launch-observer.vbs -Config observer.json`，并写入 `current.txt`。该任务应在登录时启动、失败时重启；旧的每 30 分钟 `dsh-superagent-watchdog-agent` 任务应删除，不再作为监控入口。执行页现在显示 Superagent 版本、最近一次 Watchdog 记录中的制品版本和该次心跳；没有心跳或心跳过期会显示为警告。部署可用 DSH_SUPERAGENT_VERSION 命名运行版本，未设置时回退到包版本。
+首次安装是操作员步骤：构建或复制制品到 staging 根目录，安装 observer 启动器、observer 配置与 agent 配置，把计划任务的 `wscript.exe` 指向 `launch-observer.vbs -Config observer.json`，并写入 `current.txt`。该任务应在登录时启动、失败时重启；旧的每 30 分钟 `dsh-superagent-watchdog-agent` 任务应删除，不再作为监控入口。安装后用 `node scripts/watchdog-control.mjs status` 核对任务、进程、当前版本和心跳；日常启停用 `start`/`stop`，部署用 `deploy --build`。执行页现在显示 Superagent 版本、最近一次 Watchdog 记录中的制品版本和该次心跳；没有心跳或心跳过期会显示为警告。部署可用 DSH_SUPERAGENT_VERSION 命名运行版本，未设置时回退到包版本。
 
 面板还显示已安装的当前与上一版、最近一次请求的候选版本，以及那次更新的时间和结果。安装信息来自 `DSH_SUPERAGENT_WATCHDOG_HOME` 下的 `current.txt`、`previous.txt` 和 `watchdog-update-result.json`（可用 `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT` 覆盖结果路径）；未设置该目录时面板显示未配置安装。本机安装在 `C:\Users\dd\.dsh\watchdog-independent`，因此服务环境应把 `DSH_SUPERAGENT_WATCHDOG_HOME` 指向该目录，否则安装信息为 null。更新配置应设置 `observerStopCommand` 与 `observerStartCommand`：更新任务先停止旧 observer、再切换指针、启动新版本；启动失败时恢复指针并重新启动上一版。命令会收到 `DSH_WATCHDOG_VERSION` 与 `DSH_WATCHDOG_SERVICE_URL`，并在 superagent 服务之外运行。
 

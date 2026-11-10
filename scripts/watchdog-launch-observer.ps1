@@ -23,20 +23,27 @@ function Log([string]$message) {
   try { "$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')) $message" | Add-Content -LiteralPath $logFile -Encoding utf8 } catch { /* The task result carries the error. */ }
 }
 
-try {
+function CurrentObserver {
   $currentPath = Join-Path $WatchdogHome 'current.txt'
   if (-not (Test-Path -LiteralPath $currentPath)) { Fail "No current Watchdog version at $currentPath." }
   $version = (Get-Content -Raw -LiteralPath $currentPath).Trim()
   if ($version -notmatch '^[A-Za-z0-9._-]+$') { Fail "Invalid Watchdog version in ${currentPath}: $version" }
   $observer = Join-Path $WatchdogHome "versions\$version\watchdog"
   if (-not (Test-Path -LiteralPath $observer)) { Fail "The current Watchdog version has no observer: $observer" }
+  return [pscustomobject]@{ Version = $version; Observer = $observer }
+}
+
+try {
   if (-not (Test-Path -LiteralPath $Config)) { Fail "The Watchdog observer configuration does not exist: $Config" }
   $node = (Get-Command node -ErrorAction Stop).Source
-  Log "observer launcher start version=$version config=$Config node=$node"
+  Log "observer launcher start config=$Config node=$node"
   while ($true) {
-    & $node $observer --config $Config
+    # Re-read the pointer on every restart: a switch performed while the old observer was stopped must start the new version.
+    $target = CurrentObserver
+    Log "observer start version=$($target.Version)"
+    & $node $target.Observer --config $Config
     $code = $LASTEXITCODE
-    Log "observer exit=$code version=$version"
+    Log "observer exit=$code version=$($target.Version)"
     if ($code -eq 0) { exit 0 }
     Start-Sleep -Seconds 10
   }

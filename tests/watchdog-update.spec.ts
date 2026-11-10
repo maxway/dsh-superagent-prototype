@@ -81,8 +81,9 @@ if (!response.ok) process.exit(1)
   const requestPath = join(root, 'request.json')
   const configPath = join(root, 'update.json')
   const resultPath = join(root, 'result.json')
-  const config = (triggerCommand: string, heartbeatTimeoutSeconds = 10) => writeFileSync(configPath, JSON.stringify({
-    watchdogHome: home, stagingRoot: join(root, 'staging'), requestPath, serviceUrl, triggerCommand,
+  const config = (startCommand: string, heartbeatTimeoutSeconds = 10) => writeFileSync(configPath, JSON.stringify({
+    watchdogHome: home, stagingRoot: join(root, 'staging'), requestPath, serviceUrl,
+    observerStopCommand: `"${process.execPath}" "${noop}"`, observerStartCommand: startCommand,
     logFile: join(root, 'update.log'), resultFile: resultPath, heartbeatTimeoutSeconds, pollSeconds: 1, lockStaleSeconds: 60 }))
   const request = (version: string, key: string, artifactPath: string) => writeFileSync(requestPath, JSON.stringify({
     at: new Date().toISOString(), requestedBy: 'operator', confirmation: '更新 watchdog', idempotencyKey: key,

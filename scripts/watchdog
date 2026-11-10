@@ -6,9 +6,7 @@
  * A long-running process holds one versioned management wait and reads the snapshot when a Ticket, health or silence
  * deadline changes, using `intervalSeconds` only as the maximum fallback gap. With `agentConfig`, new mechanical risk is
  * handed to the full DSH agent from the same artifact, so the long connection drives model judgement instead of a timed
- * gate. `--gate` keeps the cheap one-shot form for diagnostics: it records a quiet observation and exits 0, or records
- * the risk and exits 2 so a caller can run the full DSH agent. The host and deployment checks of roadmap workflows K and
- * L are meant to plug into this process later.
+ * gate. The host and deployment checks of roadmap workflows K and L are meant to plug into this process later.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
@@ -22,7 +20,7 @@ const VERSION = 1
 const MAX_LOG_BYTES = 5 * 1024 * 1024
 /** The management API holds one wait request at most this long; longer `intervalSeconds` values fall back sooner. */
 const WAIT_MAX_SECONDS = 240
-const USAGE = `Usage: watchdog --config <path> [--once|--gate|--status|--help]
+const USAGE = `Usage: watchdog --config <path> [--once|--status|--help]
 
 Watch dsh-superagent from an independent process: a long-running process holds one versioned wait request and reads
 the read-only snapshot when a Ticket, health or silence deadline changes, records the observation as a run, reports
@@ -36,12 +34,8 @@ by it.
 Options:
   --config <path>   JSON configuration (default: ./watchdog.json).
   --once            Run one cycle and exit; exit 0 when the service answered, 1 when it did not.
-  --gate            Run one mechanical gate cycle: record the observation and exit 2 when a full agent should judge it.
   --status          Print the last recorded state and exit.
-  --help            Print this help.
-
-Exit codes for --gate: 0 quiet (recorded, no model call), 1 management API unreachable, 2 risk detected (the caller
-runs the full DSH agent for the detailed judgement).`
+  --help            Print this help.`
 
 /** A configuration problem: reported with a usage-style message and exit code 2. */
 class ConfigError extends Error {}
@@ -526,8 +520,6 @@ function summarize(findings) {
     : finding.kind === 'health' ? `${finding.part} ${finding.state}` : `setup ${finding.code}`)
 }
 
-const QUIET_GATE_NOTE = '机械预检无风险：没有需要关注的信号、服务错误或安装问题；本轮的详细判定未调用模型。'
-
 /**
  * The gate's findings: the mechanical ones plus risks a signal threshold does not raise by itself, such as a ready
  * result waiting longer than a day or two failed attempts in a row. `collectFindings` already suppresses signals that
@@ -547,65 +539,6 @@ export function gateFindings(snapshot) {
   return findings
 }
 
-/**
- * One cheap gate cycle: read the snapshot, record the observation as the heartbeat, and exit 2 when the full agent should
- * judge it. The gate never calls the model and never sends a findings report; it does send the configured once-a-morning
- * quiet report on a quiet cycle, so a healthy deployment still proves it is checked.
- */
-export async function gateCycle(config, state, now = new Date()) {
-  const at = now.toISOString()
-  let snapshot
-  try {
-    snapshot = await readSnapshot(config)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    state.lastCycleAt = at
-    state.reachable = false
-    state.lastError = message
-    state.gate = 'unreachable'
-    alertUnreachable(config, state, message, at)
-    writeState(config.stateDir, state)
-    log(config, 'error', message)
-    return { ok: false, risk: false, findings: [], code: 1 }
-  }
-  const findings = gateFindings(snapshot)
-  const risk = findings.length > 0
-  const note = risk ? oneLine(`机械预检发现高风险（${summarize(findings).join('；')}），已升级完整 agent 判定。`, 500) : QUIET_GATE_NOTE
-  state.lastCycleAt = at
-  state.reachable = true
-  alertReachable(config, state, at)
-  delete state.lastError
-  state.gate = risk ? 'risk' : 'quiet'
-  state.current = summarize(findings)
-  try {
-    const recorded = await recordRun(config, note)
-    if (!recorded.recorded && !state.runRecordMissing) {
-      state.runRecordMissing = true
-      log(config, 'warn', 'The management API has no watchdog run route yet; observation runs are not being recorded.')
-    }
-    if (recorded.recorded) delete state.runRecordMissing
-  } catch (error) {
-    log(config, 'warn', `Could not record the gate observation: ${error instanceof Error ? error.message : String(error)}`)
-  }
-  let daily = false
-  if (!risk && dailyReportDue(config, state, now)) {
-    try {
-      await sendReport(config, DAILY_QUIET_NOTE)
-      const { date } = localClock(config.dailyReport.timezone, now)
-      state.quietReportDate = date
-      state.quietReportedAt = at
-      daily = true
-    } catch (error) {
-      log(config, 'error', `Could not send the daily quiet report: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-  writeState(config.stateDir, state)
-  log(config, 'info', risk ? `Gate risk; observation recorded and escalated: ${note}`
-    : daily ? `Gate quiet; observation recorded; daily quiet report sent: ${DAILY_QUIET_NOTE}`
-      : 'Gate quiet; observation recorded; no model call.')
-  return { ok: true, risk, findings, code: risk ? 2 : 0 }
-}
-
 /** Wait for the interval so a stop signal is honoured promptly. */
 function sleep(ms, signal) {
   return new Promise(resolvePromise => {
@@ -618,7 +551,7 @@ function sleep(ms, signal) {
 
 /** Parse the command line, including options before the action. */
 export function parseArgv(argv) {
-  const args = { config: 'watchdog.json', once: false, gate: false, status: false, help: false }
+  const args = { config: 'watchdog.json', once: false, status: false, help: false }
   for (let index = 0; index < argv.length; index++) {
     const word = argv[index]
     if (word === '--config') {
@@ -628,13 +561,12 @@ export function parseArgv(argv) {
       index++
     } else if (word.startsWith('--config=')) args.config = word.slice('--config='.length)
     else if (word === '--once') args.once = true
-    else if (word === '--gate') args.gate = true
     else if (word === '--status') args.status = true
     else if (word === '-h' || word === '--help') args.help = true
     else throw new ConfigError(`unrecognized argument: ${word}`)
   }
-  if ([args.once, args.gate, args.status].filter(Boolean).length > 1) {
-    throw new ConfigError('--once, --gate and --status cannot be combined')
+  if ([args.once, args.status].filter(Boolean).length > 1) {
+    throw new ConfigError('--once and --status cannot be combined')
   }
   return args
 }
@@ -694,19 +626,6 @@ export async function main(argv = process.argv.slice(2)) {
   if (args.status) {
     process.stdout.write(`${JSON.stringify(readState(config.stateDir), null, 2)}\n`)
     return 0
-  }
-  if (args.gate) {
-    let gateRelease
-    try { gateRelease = acquireLock(config.stateDir) } catch (error) {
-      process.stderr.write(`${error.message}\n`)
-      return 2
-    }
-    try {
-      const result = await gateCycle(config, readState(config.stateDir))
-      return result.code
-    } finally {
-      gateRelease()
-    }
   }
   let release
   try { release = acquireLock(config.stateDir) } catch (error) {
