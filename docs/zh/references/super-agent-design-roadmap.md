@@ -214,7 +214,7 @@
 
 ### K. Superagent 部署入口与独立 Watchdog
 
-> 状态：部署请求文件、独立执行任务与 `scripts/deploy.ps1` 已落地（MR !43）；执行器退出后的存活校验和 Job 归属判定已修复，生产 `verify` 于 2026-11-10 以 `foreignJob=false` 通过。版本化 Watchdog 制品、独立更新任务和面板安装/心跳信息已落地（P2）。仍未完成：面板发起部署的入口、部署状态查询与断线恢复；另外生产服务的 `DSH_SUPERAGENT_DEPLOY_REQUEST` 仍指向旧 `watchdog` 路径，与部署任务的 `requestPath`（`watchdog-deploy`）不一致，需在下次启动前对齐。当前生产发布仍由操作员批准维护窗口。详见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)。
+> 状态：部署请求文件、独立执行任务与 `scripts/deploy.ps1` 已落地（MR !43）；执行器退出后的存活校验和 Job 归属判定已修复，生产 `verify` 于 2026-11-10 以 `foreignJob=false` 通过。2026-11-10 新增 `scripts/deploy.mjs` 机械执行器（只读计划、停服、停机状态备份、清单切换、启动、存活校验与回滚，不调用模型）；配置 `mechanical` 后例行部署不再使用 headless agent，生产配置尚未启用。版本化 Watchdog 制品、独立更新任务和面板安装/心跳信息已落地（P2）。仍未完成：面板发起部署的入口、部署状态查询与断线恢复；另外生产服务的 `DSH_SUPERAGENT_DEPLOY_REQUEST` 仍指向旧 `watchdog` 路径，与部署任务的 `requestPath`（`watchdog-deploy`）不一致，需在下次启动前对齐。当前生产发布仍由操作员批准维护窗口。详见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)。
 
 **目标。** 在 Superagent 面板提供部署入口，展示当前版本、候选版本和部署状态；由独立于被更新服务的 Watchdog 或部署监督器在授权后执行发布，服务停止或重启时监督器仍能继续工作。面板断线后可恢复查看结果，服务无法恢复时也能从监督器侧查询。
 

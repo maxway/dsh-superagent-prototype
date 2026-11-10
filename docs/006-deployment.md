@@ -329,26 +329,36 @@ The versioned `scripts\dsh-superagent.ps1` is the service entry point: it valida
 
 ### Deploying the latest superagent
 
-The main Session can send the operator's explicit deployment request to the independent Watchdog instead of releasing anything itself. The `orchestrator_deploy` tool writes the request to the file named by `DSH_SUPERAGENT_DEPLOY_REQUEST` and starts the command in `DSH_SUPERAGENT_DEPLOY_COMMAND` (for example `schtasks /run /tn dsh-superagent-deploy`); unset values disable the tool. The independent deployment task reads the request, verifies the operator's words, and releases the latest commit in its own process, so the main instance only stops; the outer task starts and verifies it after the agent exits. The request path must match the deployment task's configured `requestPath`, otherwise the task exits normally with `no deploy request` and nothing is released; this deployment uses `C:\Users\dd\.dsh\watchdog-deploy\deploy-request.json`. The tool is used when the operator explicitly asks to deploy superagent ("部署superagent"); ordinary requests never deploy, and the main Session never backs up, releases or restarts itself.
+The main Session can send the operator's explicit deployment request to the independent Watchdog instead of releasing anything itself. The `orchestrator_deploy` tool writes the request to the file named by `DSH_SUPERAGENT_DEPLOY_REQUEST` and starts the command in `DSH_SUPERAGENT_DEPLOY_COMMAND` (for example `schtasks /run /tn dsh-superagent-deploy`); unset values disable the tool. The independent deployment task reads the request, verifies the operator's words, and releases the latest commit in its own process, so the main instance only stops; the outer task starts and verifies it after the executor exits. The request path must match the deployment task's configured `requestPath`, otherwise the task exits normally with `no deploy request` and nothing is released; this deployment uses `C:\Users\dd\.dsh\watchdog-deploy\deploy-request.json`. The tool is used when the operator explicitly asks to deploy superagent ("部署superagent"); ordinary requests never deploy, and the main Session never backs up, releases or restarts itself.
 
-The deployment keeps to the minimum. A first deployment, before a candidate is staged, follows the full controlled release (candidate build and validation, a consistent backup, the start check and the rollback path) and is slower. In the stable period the Watchdog pre-builds and pre-validates the latest commit, and a deployment only stops the service, switches the built `lib` and `prompts` plus any other changed runtime file such as `scripts/watchdog` or `locale/`, starts it and runs a basic health check, keeping the previous build for rollback and targeting under a minute. The repository checks and the external maintenance channel cover code quality, so the deployment skips repeated test runs and broad checks. The Watchdog reports the result. The first deployment, which installs this command itself, is started by the operator or the Watchdog directly with the operator's confirmation; once the running superagent has the tool and the two environment values, the main Session sends later requests.
+`scripts/deploy.ps1` is the scheduled task's entry point: a thin Windows shim over `scripts/deploy.mjs`, which owns both deployment paths. It reads and archives the request, pauses and restarts the independent observer only when those commands are configured, and it never retries blindly.
 
-#### Deployment retrospective and a faster preflight
+- **Routine mechanical release (no model call).** With a `mechanical` block in the configuration, `deploy.mjs` runs a read-only preflight, stops the service, backs up the stopped SQLite state, switches an explicit runtime manifest, starts the service outside every foreign Windows Job, verifies it, and rolls the runtime files back and restarts the previous build when verification fails. The candidate is built and checked before the maintenance window. This is the normal path in the stable period: it starts no DSH Session and calls no model.
+- **Agent fallback.** Without `mechanical`, or with `-Agent`, `deploy.ps1` runs the headless DSH agent with the operator's prompt and then runs the same survival check. This keeps the first deployment (which installs the command) and a request that needs judgement working, but it is not the routine path.
 
-The 2026-11-09 deployment history in `C:\Users\dd\.dsh\watchdog-archive-20261109-2234\watchdog-deploy.log` (the old directory is archived) shows where the time went. Two deployments each took about ten minutes end to end: the 08:46:58 run ended at 08:56:53, and the 10:33:47 run ended at 10:43:09. In the second run the service was stopped at about 10:40:56 and was ready at about 10:41:50, so the actual switch took about 54 seconds; almost all the remaining time was preflight, not release. The preflight repeated work the deployment already knew: which DSH home and profile directory the running service used, where its state directory and bundle link were, whether a candidate build already matched the target tree, and which watchdog writers had to pause. The request was also ambiguous ("deploy !43 and set two environment variables"), so the supervisor had to reconstruct the intent before it could start.
+`deploy.ps1` passes `-Validate`, `-Plan` and `-Agent` through. `-Validate` prints the resolved paths and starts nothing. `-Plan` performs the same read-only preflight as a release and prints the plan, including the target revision, the candidate, the paths that would be replaced, the database backup that would be made and the survival window; it does not stop, switch or archive the request. Run it once after staging a candidate and before the maintenance window.
 
-Use these facts to keep the next preflight short:
+#### What the mechanical preflight keeps and drops
 
-1. From the stable checkout, run `pwsh scripts\dsh-superagent.ps1 status` once. `status` reports the profile directory, `service.ps1`, the home-scoped `serviceDirectory`/`logs`/`control`, the configured `stateDir`, the bundle link and target, the checkout revision and branch, the built `lib`, the listener identity (`identity`, `listener`, `unlistening`, `foreign`), the service's Windows Job membership (`inJob` and `foreignJob`) and how the newest start began; read those instead of rediscovering them.
-2. Keep one candidate per target revision and record its revision, artifact hashes and test evidence. If `git rev-parse HEAD^{tree}` of the candidate worktree equals the target tree and the built files match, reuse it; do not rebuild or rerun the full suite during the maintenance window.
-3. Confirm the service is idle with the same `status` output and record open and queued Ticket counts. Stop the standing observer before the consistent backup (`schtasks /end /tn dsh-superagent-watchdog-observer`), then restart it after the service is ready and verify that it records runs again.
-4. Stop at the switched, stopped state. `scripts/dsh-superagent start` detects a Windows Job and creates the service outside it through `service-start.ps1`, so do not start a raw detached child from the agent's shell tool. After the DSH agent exits, the outer deployment task runs `verify --survival-seconds 30`; only a service that is alive, in no Job it did not create, and answering ready counts as success.
-5. Write the measured stop, start and ready times into the deployment log. The log is the retrospective: a slow run can be compared with the previous one, and the switch target stays under a minute.
-6. After deploying a change to `scripts/watchdog`, rebuild and install the artifact; the standing task should run the versioned artifact's `launch-observer.vbs -Config observer.json`, not the old `gate.mjs` from the checkout, and the 30-minute timed gate must not be restored. Use that artifact's `agent\gate.mjs` (or `scripts/watchdog --gate`) only for a one-shot gate.
+The preflight is deliberately the set a switch actually needs:
 
-The release supervisor still owns identity checks, the backup, rollback readiness and the maintenance window; these facts shorten discovery, they do not replace those steps. The summarized timing record is in [the deployment-speed evidence](evidence/deployment-speed/).
+- the operator's non-empty confirmation is present, and the request is archived only when a release starts;
+- exactly one process serves the profile, the runtime reports ready, setup has no problem, the service is not manually stopped, and `load.running` is zero (rechecked after the observer pause, immediately before the stop);
+- the running bundle link resolves inside the runtime root, so the files being replaced are the files the service loads;
+- the candidate worktree is at the requested revision (the fetched `origin/main`, a full commit, or `mechanical.targetRevision`) and has no uncommitted files;
+- the candidate `pnpm-lock.yaml` matches the runtime checkout, because this path swaps runtime files but not `node_modules`; a dependency change uses the agent fallback or a deliberate install first;
+- the manifest is explicit, relative and inside the candidate and runtime roots, includes the built `lib`, and names only runtime paths;
+- the state directory contains a SQLite database; the stopped-state copy is hashed and kept under the backup root;
+- after start, `verify` proves one process, a usable management API, the same PID after the survival window and no foreign Windows Job;
+- a failed switch, start or verify restores every replaced path and starts the previous build.
 
-The independent task runs `scripts/deploy.ps1` from this repository with a JSON configuration outside it. The script reads and archives the request, runs the headless DSH agent, and after that agent exits runs `verify` with a survival window; it records the agent's exit code and the survival result in the result file, and it never starts the observer or retries blindly. `-Validate` prints the resolved paths without running anything. The deployment-specific paths, prompt and model patch stay outside the repository:
+The executor proves the candidate worktree revision, not that the built `lib` came from it: the pre-window build process must build that revision, and keeping one candidate directory per revision is what makes that check meaningful.
+
+It does not repeat repository tests or builds during the window (CI owns code quality), does not block on unrelated health parts such as `evals`, does not require Feishu setup, does not re-hash the whole checkout or audit ACLs, hardlinks or Git index flags, and does not ask a model to judge a deterministic request. The survival window defaults to 3 seconds for the mechanical path because `start` already waited for readiness; `survivalSeconds` can raise it, and the agent path keeps 30.
+
+#### Configuration and manifest
+
+The deployment-specific paths stay outside the repository. The agent fallback keeps `promptPath`, `modelPatch`, `workdir` and `dsh`; the mechanical path needs `candidateRoot`, `manifestPath`, `backupRoot` and usually `runtimeRoot`:
 
 ```json
 {
@@ -359,16 +369,54 @@ The independent task runs `scripts/deploy.ps1` from this repository with a JSON 
   "node": "D:\\Program Files\\nodejs\\node.exe",
   "dsh": "C:\\Users\\dd\\.local\\opt\\dsh-0.2.2-rc.1\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
   "home": "C:\\Users\\dd\\.dsh",
+  "serviceHome": "C:\\Users\\dd\\.dsh-superagent",
+  "serviceAgentsHome": "C:\\Users\\dd\\.dsh-superagent\\agents",
+  "serviceScript": "F:\\code\\dsh-superagent-prototype\\scripts\\dsh-superagent.ps1",
   "agentProfile": "headless",
   "serviceProfile": "superagent",
   "url": "http://127.0.0.1:3083",
   "logFile": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy.log",
   "resultFile": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-result.json",
-  "survivalSeconds": 30
+  "survivalSeconds": 3,
+  "mechanical": {
+    "candidateRoot": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\candidates\\<revision>",
+    "manifestPath": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\release-manifest.json",
+    "backupRoot": "C:\\Users\\dd\\.dsh\\state\\superagent-backups",
+    "runtimeRoot": "F:\\code\\dsh-superagent-prototype",
+    "stateDir": "C:\\Users\\dd\\.dsh\\state\\superagent",
+    "observerStopCommand": "schtasks /end /tn dsh-superagent-watchdog-observer",
+    "observerStartCommand": "schtasks /run /tn dsh-superagent-watchdog-observer"
+  }
 }
 ```
 
-The `dsh-superagent-deploy` task then runs `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`. **Rollout status (2026-11-09).** The production service has been switched to `0cf6a69` by the independent deployment task, and `verify --survival-seconds 3` passed on 2026-11-10 00:39 with `foreignJob=false`: the service is outside any external Job, `recovery=enforce`, and the management API is ready. Pointing the task at the versioned control script and this document's `requestPath` remains an operator step; the executor's post-exit survival check records the result in `deploy-result.json`. See `docs/zh/references/watchdog-superagent-mutual-assist.md` (in Chinese) for the target relationship and the remaining phases.
+`home` is the deployment agent's DSH home; `serviceHome` is the running service's DSH home and defaults to `home` when omitted, so a host whose service uses its own home must set it. `serviceScript` is the service entry wrapper — the versioned `scripts\dsh-superagent.ps1`, or the operator's `service.ps1` compatibility shim — and must accept `start` and `stop`; when set, start and stop go through it, so its pinned home, profile and URL must match `serviceHome`, `serviceProfile` and `url`. `runtimeRoot` defaults to the `checkout` field or the checkout containing the task script; `stateDir` defaults to `status.deployment.stateDir`; `control` defaults to `<checkout>\scripts\dsh-superagent`, and a top-level `control` can point at a versioned control script. The manifest lists only paths the release actually changes; `lib` is required, and `prompts`, `locale`, `skills`, `cordis.patch.yml` or the control scripts are added when they change:
+
+```json
+{ "entries": [
+  { "source": "lib", "target": "lib" },
+  { "source": "prompts", "target": "prompts" },
+  { "source": "scripts/dsh-superagent", "target": "scripts/dsh-superagent" }
+] }
+```
+
+Each replaced path is renamed beside itself as `<name>.previous-<revision>-<token>`; the state database and WAL files are copied to `<backupRoot>\deploy-<revision>-<timestamp>\state` after the service has stopped. The executor never restores a database; a rollback restores only runtime files and starts the previous build. A database migration that the previous build cannot read therefore needs manual recovery, and the executor reports it as a manual intervention instead of claiming the rollback succeeded. The result file records the phase (`verified`, `rolled_back`, ...), the revision, timings, backup paths and any manual intervention; a failed rollback or a service that could not be restarted keeps the deployment lock for a person and sets `manualIntervention`.
+
+#### Preparing and activating a mechanical release
+
+Activation is an operator step and does not change the scheduled task:
+
+1. Build the target commit in a separate worktree, never in the running stable checkout: `git -C <clone> worktree add <candidate> <revision>`, then install and build there with Windows Node. Keep the worktree clean; `lib` is ignored, so build output does not make it dirty.
+2. Write the manifest for the runtime paths that differ from the running build. When installing this change itself, the manifest must include `scripts/deploy.mjs` and `scripts/deploy.ps1`; the task entry point cannot start without the executor file.
+3. Point `mechanical` at the candidate, the manifest and an existing backup root, set `serviceHome` and `serviceScript` to the running service's home and wrapper, and set `survivalSeconds` to 3 unless a longer window is wanted.
+4. Run `deploy.ps1 -Config <configuration> -Plan` and check the revision, entries, databases and backup directory.
+5. Leave the production task unchanged; the next request takes the mechanical path. Until this is done, the existing agent path continues to work.
+
+The first deployment that installs this executor still uses the agent fallback; a candidate built from the commit that contains `deploy.mjs` makes later requests mechanical.
+
+**Measured baseline.** The 2026-11-09 history in `C:\Users\dd\.dsh\watchdog-archive-20261109-2234\watchdog-deploy.log` shows two deployments of about ten minutes each: 08:46:58 to 08:56:53, and 10:33:47 to 10:43:09. In the second, the service was stopped at about 10:40:56 and ready at about 10:41:50, so the switch took about 54 seconds; almost all of the rest was the agent rediscovering the service identity, the candidate and the writers to pause. The mechanical path removes that discovery and judgement from the window: after a staged candidate the measured work is the stop, the stopped backup, the file copy, the start and the 3-second survival check. The timing record is in [the deployment-speed evidence](evidence/deployment-speed/); production has not yet run a mechanical release, so the under-one-minute target is a design target, not a measurement. The `status` facts (the versioned `scripts\dsh-superagent.ps1 status` or the control script's `--home`, profile, home-scoped service/log/control directories, `stateDir`, bundle target, Git revision, listener identity and start/job facts) remain useful for the agent fallback and for a person inspecting a plan.
+
+The `dsh-superagent-deploy` task runs `pwsh -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`. **Rollout status (2026-11-09).** The production service has been switched to `0cf6a69` by the independent deployment task, and `verify --survival-seconds 3` passed on 2026-11-10 00:39 with `foreignJob=false`: the service is outside any external Job, `recovery=enforce`, and the management API is ready. The production configuration still has no `mechanical` block, so the task keeps using the agent fallback until the operator stages a candidate and activates it as described above. Pointing the task at the versioned control script and this document's `requestPath` remains an operator step; the result is recorded in `deploy-result.json`. See `docs/zh/references/watchdog-superagent-mutual-assist.md` (in Chinese) for the target relationship and the remaining phases.
 
 ### Versioned Watchdog artifact and update task
 

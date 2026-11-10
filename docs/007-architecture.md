@@ -440,6 +440,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/gitlab-webhook.spec.ts` | The GitLab webhook: listener verification, wake coalescing, and creation, update and removal of the project hook |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/deploy-command.spec.ts` | The main Session's deploy request: the configuration from the environment, the atomic request file, starting the independent task and a failing command |
+| `tests/deploy-executor.spec.ts` | The mechanical deployment executor: a read-only plan, stopped-state backup, manifest switch, start and survival check, rollback on failed verification, the headless agent fallback and the operator service wrapper, and refusals for a busy service, an escaping manifest, a wrong candidate revision and a changed lockfile |
 | `tests/commands-window.spec.ts` | The hidden window of a background CLI command |
 | `tests/github-read.spec.ts` | GitHub reads |
 | `tests/admission-context.spec.ts` | The Thread window of assessments |
