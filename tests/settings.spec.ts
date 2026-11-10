@@ -52,6 +52,16 @@ it('validates a category model before saving the executor block', async () => {
   expect(store.settings().executor.models.query).toBeNull()
 })
 
+it('validates tier models before saving the executor block', async () => {
+  h = await startRuntime()
+  const { settings, store } = h.runtime
+  const llm = (h.ctx as unknown as { llm: { resolveCallConfig: ReturnType<typeof vi.fn> } }).llm
+  llm.resolveCallConfig.mockRejectedValueOnce(new Error('unknown tier provider'))
+  const executor = store.settings().executor
+  await expect(settings.save('executor', { ...executor, tierModels: { ...executor.tierModels, low: { provider: 'nowhere', model: 'x' } } },
+    store.blockRevision('executor'), 'panel')).rejects.toMatchObject({ code: 'modelUnavailable' })
+  expect(store.settings().executor.tierModels.low).toBeNull()
+})
 it('records nothing for a pause that changes nothing, and names an unknown block', async () => {
   h = await startRuntime()
   const { settings, store } = h.runtime

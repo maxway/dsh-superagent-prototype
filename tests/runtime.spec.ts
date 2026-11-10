@@ -132,10 +132,10 @@ async function route(item: Record<string, unknown>): Promise<Record<string, unkn
   if (results[0]!.refused) throw new Error(String(results[0]!.refused))
   return results[0]!
 }
-async function acceptedTicket(trigger = feishu('1', '@bot 修一下回归'), category?: 'query' | 'research' | 'development') {
+async function acceptedTicket(trigger = feishu('1', '@bot 修一下回归'), category?: 'query' | 'research' | 'development', tier?: 'low' | 'high') {
   await receive(trigger)
   expect(relays(runtime.masterId).some(item => item.trigger_id === trigger.id)).toBe(true)
-  const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '修复回归', category,
+  const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '修复回归', category, tier,
     worktree_name: worktreeName, acknowledgement: '收到，修复回归。' })
   const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
   return { trigger, ticket, sessionId: `worker-${ticket.id}` }
@@ -253,6 +253,14 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
   expect(await route({ kind: 'accept', trigger_id: trigger.id, title: 'again', worktree_name: worktreeName, acknowledgement: 'x' })).toMatchObject({ ticket: { ticket_id: ticket.id } })
 })
 
+it('records tier independently of the deliverable and defaults conservatively', async () => {
+  const low = await acceptedTicket(feishu('31', '@bot 小改动'), 'development', 'low')
+  const high = await acceptedTicket(feishu('32', '@bot 调研'), 'research')
+  const query = await acceptedTicket(feishu('33', '@bot 查询'), 'query', 'high')
+  expect(low.ticket).toMatchObject({ category: 'development', tier: 'low' })
+  expect(high.ticket).toMatchObject({ category: 'research', tier: 'high' })
+  expect(query.ticket).toMatchObject({ category: 'query', tier: 'low' })
+})
 it('records a query ticket and gives its worker a read-only category contract', async () => {
   const { ticket, sessionId } = await acceptedTicket(feishu('2', '@bot 只查一下'), 'query')
   expect(ticket.category).toBe('query')
@@ -294,7 +302,7 @@ it('assesses a proactive observation in the orchestrator Session and creates the
   // The rules are in the main Session's Policy section; the context names the Policy version it was built from.
   expect(details).not.toHaveProperty('rules')
   expect(details).toMatchObject({ trigger_id: trigger.id, strength: 'inferred', policy_version: policyVersion(runtime.store.settings()), thread: { error: expect.stringContaining('no Thread context'), complete: false } })
-  const decision = (id: string) => ({ trigger_id: id, decision: 'accept', title: '文案修订', worktree_name: 'copy-fix', scope: '改副标题', reason: 'explicit copy change', intent_evidence: 'quoted', acknowledgement: '收到，把副标题改成“浏览网页”。',
+  const decision = (id: string) => ({ trigger_id: id, decision: 'accept', title: '文案修订', worktree_name: 'copy-fix', tier: 'low', scope: '改副标题', reason: 'explicit copy change', intent_evidence: 'quoted', acknowledgement: '收到，把副标题改成“浏览网页”。',
     rule_assessments: [{ rule_id: 'copy', matched: true, reason: 'copy change' }, { rule_id: 'visual', matched: false, reason: 'not visual' }],
     direction: { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'the message names the replacement' } })
   expect(await runTool(runtime.masterId, 'orchestrator_eval_decide', decision(trigger.id))).toMatchObject({ decision: 'ignore', reason: expect.stringContaining('Observe mode') })
@@ -307,6 +315,7 @@ it('assesses a proactive observation in the orchestrator Session and creates the
   const accepted = await runTool(runtime.masterId, 'orchestrator_eval_decide', decision(again.id))
   expect(accepted).toMatchObject({ decision: 'accept', ticket: { ticket_id: expect.any(String) } })
   const ticket = runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
+  expect(ticket.tier).toBe('low')
   expect(ticket.mandate).toMatchObject({ strength: 'inferred', basis: expect.objectContaining({ via: 'admission', rules: ['copy'], observation: { mode: 'auto' } }) })
   expect(runtime.store.replyStatus(key('ack', again.id))).toBeDefined()
   expect(await runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `ticket/${ticket.id}/assignment` })).toMatchObject({ text: expect.stringContaining('Proactively accepted under copy') })
