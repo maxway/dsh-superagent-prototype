@@ -68,7 +68,7 @@ function settingsChanges(before: SettingsVersion['settings'], after: SettingsVer
   if (before.eval.mode !== after.eval.mode) changes.push({ code: 'mode', from: before.eval.mode, to: after.eval.mode })
   if (before.eval.timeoutSeconds !== after.eval.timeoutSeconds) changes.push({ code: 'timeout', from: before.eval.timeoutSeconds, to: after.eval.timeoutSeconds })
   if (!same(before.eval.model, after.eval.model)) changes.push({ code: 'evalModel' })
-  if (!same(before.executor.model, after.executor.model) || !same(before.executor.models, after.executor.models)) changes.push({ code: 'executorModel' })
+  if (!same(before.executor.model, after.executor.model) || !same(before.executor.models, after.executor.models) || !same(before.executor.tierModels, after.executor.tierModels)) changes.push({ code: 'executorModel' })
   if (before.executor.maxWorkers !== after.executor.maxWorkers) changes.push({ code: 'maxWorkers', from: before.executor.maxWorkers, to: after.executor.maxWorkers })
   if (before.paused !== after.paused) changes.push({ code: after.paused ? 'paused' : 'resumed' })
   if (before.executor.directory !== after.executor.directory) changes.push({ code: 'executionDirectory', from: before.executor.directory, to: after.executor.directory })

@@ -101,6 +101,8 @@ export type Strength = 'explicit' | 'reply' | 'inferred'
 /** One Ticket's deliverable kind: a read-only answer, a read-only investigation, or a code change. */
 export const CATEGORIES = ['query', 'research', 'development'] as const
 export type Category = typeof CATEGORIES[number]
+export const TIERS = ['low', 'high'] as const
+export type Tier = typeof TIERS[number]
 /** A Ticket accepted before categories existed, and one accepted without a choice, is development work. */
 export const DEFAULT_CATEGORY: Category = 'development'
 /** The cells of a receiving scope's row in the admission table, by whether the sender is listed and addresses the agent. */
@@ -294,6 +296,7 @@ export interface Ticket {
   decisionId: string
   /** The one deliverable this Ticket carries; absent on Tickets accepted before categories existed. */
   category?: Category
+  tier?: Tier
   mandate: Mandate
   /** The Channels of the messages it was accepted from, which its replies go to. */
   channels: ChannelRef[]

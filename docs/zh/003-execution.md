@@ -34,7 +34,7 @@
 
 每个新工单在接单时固定一个类别：`query` 以只读方式回答一个查询，`research` 以只读方式调查并报告发现，`development` 修改代码并运行检查。只读答疑问题默认为 `query`；未指定类别的接单默认为 `development`。类别之外的工作不在该工单内完成：执行器会停下并把发现交回，由人发起新的请求。一个触发只决定一个工单；混合请求保留其主要交付物，其余部分成为新的请求。
 
-执行器以 `executor` 设置块中的 `executor.models.<类别>` 启动；该项为空时使用 `executor.model`，再为空时使用宿主默认模型。模型只在创建执行器 Session 时写入；已有 Session 保留启动时的模型，因此修改设置不会切换正在运行的执行器。面板的执行设置编辑的是回退模型；类别模型可以在同一个 `executor` 块中通过管理 API 或 `orchestrator_settings_save` 保存，例如 `"models": {"query": {"provider": "…", "model": "…"}, "research": null, "development": null}`。类别模型不授予执行权：`query` 和 `research` 仍是只读指令，不是操作系统沙箱。
+新工单另有独立的能力档位：`query` 为 `low`，其他工作明确适合低档才选 `low`，否则选 `high`。通过管理 API 或 `orchestrator_settings_save` 配置 `executor.tierModels.low` 和 `executor.tierModels.high`。档位模型未设置时依次回退到原有 `executor.models.<类别>`、`executor.model` 和宿主默认模型；没有档位的旧工单仍按类别选模型。模型只在创建执行器 Session 时写入，已有 Session 保留原选择。档位不改变类别的授权：`query` 和 `research` 仍是只读指令，不是操作系统沙箱。
 
 ### 只读答疑工单
 

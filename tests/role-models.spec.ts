@@ -53,6 +53,16 @@ it('inherits the host when unset and fails unavailable routes before recording a
   await expect(initializeRoleModel(ctx, agent, { provider: 'unknown', model: 'x' })).rejects.toThrow('unknown provider')
   expect(selections()).toEqual([])
 })
+it('uses tier models independently of category while retaining legacy fallback', () => {
+  const settings = SettingsSchema.parse({ executor: { model: { provider: 'p', model: 'default' },
+    models: { query: { provider: 'p', model: 'legacy' } }, tierModels: { low: { provider: 'p', model: 'luna' }, high: { provider: 'p', model: 'terra' } } } })
+  const ticket = (category: Ticket['category'], tier?: Ticket['tier']) => ({ category, tier, mandate: { strength: 'explicit' as const } as Ticket['mandate'] })
+  expect(workerModel(settings, ticket('development', 'low'))?.model).toBe('luna')
+  expect(workerModel(settings, ticket('research', 'high'))?.model).toBe('terra')
+  expect(workerModel(settings, ticket('query'))?.model).toBe('legacy')
+  settings.executor.tierModels.low = null
+  expect(workerModel(settings, ticket('query', 'low'))?.model).toBe('legacy')
+})
 it('selects a worker model by Ticket category, falling back to the executor default', () => {
   const settings = SettingsSchema.parse({ executor: { model: { provider: 'p', model: 'default' },
     models: { query: { provider: 'p', model: 'luna' }, research: null, development: { provider: 'p', model: 'terra' } } } })

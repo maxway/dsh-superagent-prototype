@@ -8,7 +8,7 @@ import { deploymentConfig, requestDeployment } from '../deployment.ts'
 import { offPeakByDefault } from '../../offpeak.ts'
 import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
-import { CategorySchema } from '../../policy.ts'
+import { CategorySchema, TierSchema } from '../../policy.ts'
 import { ticketCard } from '../cards.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
 import { readResource, type MainResourceHost, type ResourceHost } from '../resources.ts'
@@ -53,6 +53,7 @@ const RouteItemSchema = z.object({
   ticket_id: z.string().nullish().describe('attach and stop: the ticket.'),
   title: z.string().nullish().describe('accept: a short label of at most 200 characters describing the original request; no added requirements or implementation advice.'),
   category: CategorySchema.nullish().describe('accept: query answers read-only, research investigates read-only, development changes code. One primary deliverable; a reply question defaults to query.'),
+  tier: TierSchema.nullish().describe('accept: low for clearly low-capability work including queries, otherwise high; independent of category.'),
   worktree_name: z.string().nullish().describe(`accept: ${WorktreeNameSchema.description ?? ''}`),
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It may ask the one question that must be answered before the work starts. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
@@ -67,6 +68,7 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Kind[]; needs: r
   ticket_id: { check: z.string(), reads: ['attach', 'stop'], needs: ['attach', 'stop'] },
   title: { check: z.string().max(200), reads: ['accept'], needs: ['accept'] },
   category: { check: CategorySchema, reads: ['accept'], needs: [] },
+  tier: { check: TierSchema, reads: ['accept'], needs: [] },
   worktree_name: { check: WorktreeNameSchema, reads: ['accept'], needs: ['accept'] },
   acknowledgement: { check: AcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
   note: { check: RoutingNoteSchema, reads: ['accept', 'attach'], needs: [] },
@@ -106,7 +108,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
       // A reply-only candidate becomes a read-only ticket that answers its question and may not execute.
       const reply = host.engine.candidate(item.trigger_id)?.strength === 'reply'
       const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: reply ? 'replyRouted' : 'explicitRouted' },
-        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...(item.category ? { category: item.category } : {}),
+        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...(item.category ? { category: item.category } : {}), ...(item.tier ? { tier: item.tier } : {}),
         ...(offPeak ? { offPeak: true as const } : {}), ...note })
       // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
       if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }

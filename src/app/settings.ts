@@ -1,7 +1,7 @@
 /** Block-scoped settings validation, optimistic concurrency saves, processing pause control, and source policy synchronization. */
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
-import { UserError, CATEGORIES, type EngineForSettings } from '../core/index.ts'
+import { UserError, CATEGORIES, TIERS, type EngineForSettings } from '../core/index.ts'
 import type { GitProvider } from '../deployment.ts'
 import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema, policyEffects, policyVersion } from '../policy.ts'
 import type { Settings as SettingsValue, SettingsBlock, SettingsOrigin, SettingsSave } from '../policy.ts'
@@ -163,7 +163,8 @@ export class Settings {
       ? [{ next: candidate.eval.model, before: current.eval.model }]
       : block === 'executor'
         ? [{ next: candidate.executor.model, before: current.executor.model },
-          ...CATEGORIES.map(category => ({ next: candidate.executor.models[category], before: current.executor.models[category] }))]
+          ...CATEGORIES.map(category => ({ next: candidate.executor.models[category], before: current.executor.models[category] })),
+          ...TIERS.map(tier => ({ next: candidate.executor.tierModels[tier], before: current.executor.tierModels[tier] }))]
         : []
     for (const { next, before } of candidateModels) {
       if (!next || JSON.stringify(next) === JSON.stringify(before)) continue

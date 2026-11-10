@@ -5,7 +5,7 @@
 import { LIMITS } from './limits.ts'
 import { z } from 'zod'
 import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell, type AdmissionRow } from './admission.ts'
-import { CATEGORIES, key, type AssessmentOutcome, type Category, type Mandate, type Policy, type PolicyEffect, type SourceScope, type Strength, type Thread, type Ticket,
+import { CATEGORIES, TIERS, key, type AssessmentOutcome, type Category, type Tier, type Mandate, type Policy, type PolicyEffect, type SourceScope, type Strength, type Thread, type Ticket,
   type Trigger, type ActorRef, type GateResult } from './core/index.ts'
 import { sameName } from './infra/text.ts'
 import { WORKER_COMMANDS } from './infra/environment.ts'
@@ -37,6 +37,7 @@ export interface Assessment {
   decision: 'accept' | 'ignore' | 'unavailable'; rule_assessments: RuleAssessment[]; direction: unknown
   title: string; scope: string; reason: string; intent_evidence?: string | null; acknowledgement?: string | null; worktree_name?: string
   category?: Category | null
+  tier?: Tier | null
 }
 /**
  * Validate an assessment against enabled rules and convert it into an engine `AssessmentOutcome`.
@@ -64,7 +65,7 @@ export function assessmentOutcome(assessment: Assessment, settings: Pick<Setting
     return { kind: 'ignore', audit: { ...audit, would_accept: true, proposal }, reason: { code: 'observed', values: { text: assessment.reason } } }
   }
   return { kind: 'accept', title, scope, reason: assessment.reason, ...(assessment.acknowledgement ? { acknowledgement: assessment.acknowledgement } : {}),
-    rules: matches.map(match => match.rule_id), ...(assessment.category ? { category: assessment.category } : {}), audit, ...(name ? { name } : {}) }
+    rules: matches.map(match => match.rule_id), ...(assessment.category ? { category: assessment.category } : {}), ...(assessment.tier ? { tier: assessment.tier } : {}), audit, ...(name ? { name } : {}) }
 }
 const DEFAULT_RULES = [
   { id: 'copy', name: 'Copy fixes', enabled: true, instruction: 'Explicit requests to correct a typo, wording, punctuation or existing translation. Preserve product promises and business meaning.' },
@@ -77,6 +78,8 @@ export type Rule = z.infer<typeof RuleSchema>
 export const RoleModelSchema = z.object({ provider: z.string().trim().min(1), model: z.string().trim().min(1), reasoningEffort: z.string().trim().min(1).optional() }).strict()
 export type RoleModel = z.infer<typeof RoleModelSchema>
 export const CategorySchema = z.enum(CATEGORIES)
+export const TierSchema = z.enum(TIERS)
+export const TierModelsSchema = z.object({ low: RoleModelSchema.nullable().default(null), high: RoleModelSchema.nullable().default(null) }).strict()
 /** Models by Ticket category; a category left empty inherits the executor's default model. */
 export const CategoryModelsSchema = z.object({
   query: RoleModelSchema.nullable().default(null),
@@ -106,6 +109,7 @@ const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => n
 export const ExecutorConfigSchema = z.object({
   model: RoleModelSchema.nullable().default(null),
   models: CategoryModelsSchema.default(() => CategoryModelsSchema.parse({})),
+  tierModels: TierModelsSchema.default(() => TierModelsSchema.parse({})),
   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
   directory: z.string().trim().refine(path => path === '' || isAbsolutePath(path), 'An absolute path, or empty for <stateDir>/work').default(''),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),

@@ -26,7 +26,7 @@ function cardState(ticket: Ticket): TicketCardState {
 export function ticketCard(ticket: Ticket) {
   const ended = ticket.ended && { at: ticket.ended.at, by: ticket.ended.by, reason: ticket.ended.reason ?? ticket.ended.outcome }
   const { attention } = ticket
-  return { ticket_id: ticket.id, title: ticket.title, category: ticketCategory(ticket), state: cardState(ticket), strength: ticket.mandate.strength,
+  return { ticket_id: ticket.id, title: ticket.title, category: ticketCategory(ticket), ...(ticket.tier ? { tier: ticket.tier } : {}), state: cardState(ticket), strength: ticket.mandate.strength,
     ...(changeNumber(ticket) ? { pr_number: changeNumber(ticket) } : {}), ...(ended ? { ended } : {}),
     ...(attention ? { attention: { question: attention.question, ...attention.triggerId ? { trigger_id: attention.triggerId } : {} } } : {}),
     preview: preview(latestReport(ticket)?.summary ?? ''), read: `ticket/${ticket.id}` }
