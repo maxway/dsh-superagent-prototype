@@ -53,7 +53,7 @@ const RouteItemSchema = z.object({
   ticket_id: z.string().nullish().describe('attach and stop: the ticket.'),
   title: z.string().nullish().describe('accept: a short label of at most 200 characters describing the original request; no added requirements or implementation advice.'),
   category: CategorySchema.nullish().describe('accept: query answers read-only, research investigates read-only, development changes code. One primary deliverable; a reply question defaults to query.'),
-  tier: TierSchema.nullish().describe('accept: low for clearly low-capability work including queries, otherwise high; independent of category.'),
+  tier: TierSchema.nullish().describe('accept: low for clearly simple work, high for complex or unclear work; query defaults to low, other categories to high. Independent of category.'),
   worktree_name: z.string().nullish().describe(`accept: ${WorktreeNameSchema.description ?? ''}`),
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It may ask the one question that must be answered before the work starts. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),

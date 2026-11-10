@@ -25,7 +25,7 @@ export const AssessmentSchema = z.object({
     .refine(assessments => new Set(assessments.map(assessment => assessment.rule_id)).size === assessments.length,
       'Duplicate rule assessment IDs').describe('One per enabled rule.'),
   category: CategorySchema.nullish().describe('For acceptance: query, research or development; defaults to development.'),
-  tier: TierSchema.nullish().describe('For acceptance: low for clearly low-capability work including queries, otherwise high.'),
+  tier: TierSchema.nullish().describe('For acceptance: low for clearly simple work, high for complex or unclear work. Query defaults to low; other categories default to high.'),
   direction: AdmissionDirectionSchema.describe('Required for every decision.'),
   title: z.string().min(1).max(160),
   worktree_name: WorktreeNameSchema.optional(),

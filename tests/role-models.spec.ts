@@ -59,6 +59,7 @@ it('uses tier models independently of category while retaining legacy fallback',
   const ticket = (category: Ticket['category'], tier?: Ticket['tier']) => ({ category, tier, mandate: { strength: 'explicit' as const } as Ticket['mandate'] })
   expect(workerModel(settings, ticket('development', 'low'))?.model).toBe('luna')
   expect(workerModel(settings, ticket('research', 'high'))?.model).toBe('terra')
+  expect(workerModel(settings, ticket('query', 'high'))?.model).toBe('terra')
   expect(workerModel(settings, ticket('query'))?.model).toBe('legacy')
   settings.executor.tierModels.low = null
   expect(workerModel(settings, ticket('query', 'low'))?.model).toBe('legacy')

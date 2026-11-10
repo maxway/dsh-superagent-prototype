@@ -87,7 +87,7 @@ export interface DomainEvents {
   'trigger.received': { triggerId: string; threads: string[] }
   'eval.started': { evalId: string; threadKey: string; triggerIds: string[]; strength: Strength }
   'decision.recorded': { decisionId: string; kind: DecisionKind; threadKey: string }
-  'ticket.created': { ticketId: string; decisionId: string; strength: Strength }
+  'ticket.created': { ticketId: string; decisionId: string; strength: Strength; category: Category; tier: Tier }
   'ticket.resumed': { ticketId: string; triggerId: string }
   'ticket.ended': { ticketId: string; by: TicketEndBy; outcome: TicketOutcome; reason?: string }
   'assignment.started': { ticketId: string; assignmentId: string }

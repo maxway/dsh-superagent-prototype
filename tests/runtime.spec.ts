@@ -254,12 +254,15 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
 })
 
 it('records tier independently of the deliverable and defaults conservatively', async () => {
+  const queryHigh = await acceptedTicket(feishu('34', '@bot 复杂查询'), 'query', 'high')
   const low = await acceptedTicket(feishu('31', '@bot 小改动'), 'development', 'low')
   const high = await acceptedTicket(feishu('32', '@bot 调研'), 'research')
-  const query = await acceptedTicket(feishu('33', '@bot 查询'), 'query', 'high')
+  const query = await acceptedTicket(feishu('33', '@bot 查询'), 'query')
   expect(low.ticket).toMatchObject({ category: 'development', tier: 'low' })
   expect(high.ticket).toMatchObject({ category: 'research', tier: 'high' })
   expect(query.ticket).toMatchObject({ category: 'query', tier: 'low' })
+  expect(queryHigh.ticket).toMatchObject({ category: 'query', tier: 'high' })
+  expect(sections.get(queryHigh.sessionId)!.text({})).toContain('This is a query ticket: answer it with read-only investigation.')
 })
 it('records a query ticket and gives its worker a read-only category contract', async () => {
   const { ticket, sessionId } = await acceptedTicket(feishu('2', '@bot 只查一下'), 'query')
