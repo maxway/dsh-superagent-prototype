@@ -2,6 +2,15 @@ node_modules/
 lib/
 /lib-previous-*/
 /prompts-previous-*/
+/lib.previous-*/
+/prompts.previous-*/
+/skills.previous-*/
+/scripts/dsh-superagent-previous-*
+/scripts/dsh-superagent.previous-*
+/scripts/service-start.ps1-previous-*
+/scripts/service-start.ps1.previous-*
+/scripts/.dsh-superagent.paired-operation.guard
+/scripts/.service-start.ps1.paired-operation.guard
 /.lib.paired-operation.guard
 /.prompts.paired-operation.guard
 .artifacts/
