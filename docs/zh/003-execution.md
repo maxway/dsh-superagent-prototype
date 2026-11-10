@@ -34,7 +34,7 @@
 
 每个新工单在接单时固定一个类别：`query` 以只读方式回答一个查询，`research` 以只读方式调查并报告发现，`development` 修改代码并运行检查。只读答疑问题默认为 `query`；未指定类别的接单默认为 `development`。类别之外的工作不在该工单内完成：执行器会停下并把发现交回，由人发起新的请求。一个触发只决定一个工单；混合请求保留其主要交付物，其余部分成为新的请求。
 
-新工单另有独立的能力档位：显式指定的档位优先；未指定时 `query` 默认为 `low`，其他工作默认为 `high`。明确简单的工作可显式选 `low`，复杂查询可选 `high`。工单卡片、管理 API 摘要和创建事件展示选定档位。旧工单没有记录档位时，管理 API 摘要返回 `null`，不做迁移。通过管理 API 或 `orchestrator_settings_save` 配置 `executor.tierModels.low` 和 `executor.tierModels.high`。档位模型未设置时依次回退到原有 `executor.models.<类别>`、`executor.model` 和宿主默认模型；没有档位的旧工单仍按类别选模型。模型只在创建执行器 Session 时写入，已有 Session 保留原选择。档位不改变类别的授权：`query` 和 `research` 仍是只读指令，不是操作系统沙箱。
+新工单另有独立的能力档位：人工在原始任务消息中单独一行填写 `档位: expert`（或 `tier: expert`）可选择专家档，自动路由和评估不能选专家档。接受任务的回复包含实际 worker 档位。显式指定的其他档位优先；未指定时 `query` 默认为 `low`，其他工作默认为 `high`。明确简单的工作可显式选 `low`，复杂查询可选 `high`。工单卡片、管理 API 摘要和创建事件展示选定档位。旧工单没有记录档位时，管理 API 摘要返回 `null`，不做迁移。通过管理 API 或 `orchestrator_settings_save` 配置 `executor.tierModels.low`、`executor.tierModels.high` 和 `executor.tierModels.expert`。档位模型未设置时依次回退到原有 `executor.models.<类别>`、`executor.model` 和宿主默认模型；没有档位的旧工单仍按类别选模型。模型只在创建执行器 Session 时写入，已有 Session 保留原选择。档位不改变类别的授权：`query` 和 `research` 仍是只读指令，不是操作系统沙箱。
 
 当 `low` 执行器在同一授权任务内需要更强能力时，可用 `orchestrator_ticket_handoff` 内部接力给新的 `high` 工单，并概述已完成事项、未完成事项和风险。新工单保留原授权和类别，不扩大权限，并沿用原飞书话题；旧工单停止并退订。新工单使用新的执行器 Session 和工作目录；摘要不是完整会话记录，也不保证旧工作目录仍然存在。停止旧执行器和外部副作用是异步的，因此切换期间可能偶发重复工作或回复。原飞书话题已退订、存在待人处理事项或工单仍有开放的跟随线程（例如 pull request）时，接力会被拒绝。交付物变化或超出原范围的请求不适用此接力。
 

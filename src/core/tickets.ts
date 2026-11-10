@@ -19,6 +19,17 @@ export const automatic = (input: TicketInput | undefined): boolean => input?.kin
 const readBefore = (input: Extract<TicketInput, { kind: 'trigger' }>, until: string): boolean => input.readAt === undefined
   ? (input.deliveredAt && input.deliveredAt > input.at ? input.deliveredAt : input.at) <= until : !!input.readAt && input.readAt < until
 const STATUS_REQUEST = 'Report the current ticket status with orchestrator_report. This is a status-only request: do not resume implementation or perform external actions.'
+const expertRequested = (text: string): boolean => {
+  let fence: string | undefined
+  for (const line of text.split(/\r?\n/)) {
+    const marker = /^[\t ]*(`{3,}|~{3,})/.exec(line)?.[1]
+    if (marker) {
+      if (!fence) fence = marker
+      else if (marker[0] === fence[0] && marker.length >= fence.length) fence = undefined
+    } else if (!fence && /^[\t ]*(?:tier|档位)[\t ]*[:：=][\t ]*expert[\t ]*$/i.test(line)) return true
+  }
+  return false
+}
 
 /**
  * Manages each ticket's lifecycle: creates the ticket for an accept decision with its Mandate, Subscriptions, and first
@@ -44,7 +55,8 @@ export class Tickets extends EnginePart {
     const category = mandate.strength === 'reply'
       ? outcome.category === 'research' ? 'research' : 'query'
       : outcome.category ?? 'development'
-    const tier = outcome.tier ?? (category === 'query' ? 'low' : 'high')
+    const expert = mandate.strength === 'explicit' && primary?.human && expertRequested(primary.text)
+    const tier = expert ? 'expert' : outcome.tier === 'expert' ? (category === 'query' ? 'low' : 'high') : outcome.tier ?? (category === 'query' ? 'low' : 'high')
     let ticket: Ticket = { id, title: outcome.title, decisionId, category, tier, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
       createdAt: at, updatedAt: at, origin, ...(outcome.offPeak ? { offPeak: true } : {}) }
     for (const triggerId of triggerIds) {
@@ -55,7 +67,7 @@ export class Tickets extends EnginePart {
     const assignment = this.newAssignment(ticket)
     this.repo.tickets.save(ticket)
     for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
-    if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, outcome.acknowledgement)
+    if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, `${outcome.acknowledgement} Worker: ${tier}.`)
     this.options.executor.start(this.require(id), assignment)
     this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength, category, tier })
   }

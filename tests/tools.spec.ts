@@ -260,7 +260,8 @@ it('checks an acknowledgement against the IM word limit, not a character count',
   h.runtime.receive(trigger); await h.runtime.idle()
   const accept = (acknowledgement: string) => h.route({ kind: 'accept', trigger_id: trigger.id, title: 'Fix', worktree_name: 'fix-regression', acknowledgement })
   await expect(accept(words(IM_WORDS + 1))).rejects.toThrow(`at most ${IM_WORDS} words`)
-  expect(await accept(words(IM_WORDS))).toMatchObject({ decision: 'accept', ticket: { title: 'Fix' } })
+  await expect(accept(words(IM_WORDS))).rejects.toThrow('Leave room for the worker tier')
+  expect(await accept(words(IM_WORDS - 2))).toMatchObject({ decision: 'accept', ticket: { title: 'Fix' } })
 })
 
 it('saves a settings block by name, a Source\'s block with the Source\'s id', async () => {

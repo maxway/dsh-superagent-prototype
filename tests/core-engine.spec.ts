@@ -71,6 +71,28 @@ function accepted(h: ReturnType<typeof harness>, id = '1', thread = 't1') {
   return decision
 }
 
+describe('expert tier', () => {
+  it('uses only an explicit human directive from the original request', () => {
+    const h = harness()
+    h.engine.receive(trigger('1', { text: 'Please investigate\n档位: expert' })); h.pump()
+    const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Investigate', scope: 'investigate', reason: 'asked', tier: 'low', acknowledgement: '收到。' })
+    expect(h.repo.tickets.get(decision.ticketId!)?.tier).toBe('expert')
+    expect(h.outbox.at(-1)?.text).toBe('收到。 Worker: expert.')
+  })
+  it.each(['Use expert for this task', '不要使用 expert', '> tier: expert', '```\ntier: expert\n```'])('does not infer approval from %s', text => {
+    const h = harness()
+    h.engine.receive(trigger('1', { text })); h.pump()
+    const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Work', scope: 'work', reason: 'asked', tier: 'expert' })
+    expect(h.repo.tickets.get(decision.ticketId!)?.tier).toBe('high')
+  })
+  it('does not select expert for inferred work even with a directive', () => {
+    const h = harness({ gate: () => ({ admissible: true, strength: 'inferred', basis: { via: 'followup' } }) })
+    h.engine.receive(trigger('1', { text: 'tier: expert' })); h.pump()
+    const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Work', scope: 'work', reason: 'asked', tier: 'expert', rules: ['copy'] })
+    expect(h.repo.tickets.get(decision.ticketId!)?.tier).toBe('high')
+  })
+})
+
 describe('low to high handoff', () => {
   const prepare = (ticket: Ticket) => ({ ...ticket, execution: { name: ticket.id, directory: `work/${ticket.id}`, assignment: '' } })
   function low(h: ReturnType<typeof harness>) {
@@ -248,7 +270,7 @@ describe('eval', () => {
     expect(ticket).not.toHaveProperty('ended')
     expect(ticket.assignments).toEqual([expect.objectContaining({ state: 'running', startedAt: expect.any(String) })])
     expect(h.repo.threads.get('chat:t1')?.subscriptions).toEqual([ticket.id])
-    expect(h.outbox).toEqual([{ id: key('ack', '1'), channel: trigger('1').channel, text: 'ok', kind: 'acknowledgement', ticketId: ticket.id }])
+    expect(h.outbox).toEqual([{ id: key('ack', '1'), channel: trigger('1').channel, text: 'ok Worker: high.', kind: 'acknowledgement', ticketId: ticket.id }])
     expect(h.executor.start).toHaveBeenCalledOnce()
   })
   it('refuses to decide an eval that a later eval replaced, and decides the later one', async () => {
@@ -1143,7 +1165,7 @@ describe('direct decisions', () => {
     const second = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Other', scope: 'small', reason: 'routed', acknowledgement: 'On it' })
     expect(second.ticketId).not.toBe(first.ticketId)
     expect(h.repo.tickets.get(second.ticketId!)!.origin).toEqual({ triggerId: '2', triggerIds: ['2'] })
-    expect(h.outbox.find(message => message.id === key('ack', '2'))).toMatchObject({ text: 'On it', kind: 'acknowledgement' })
+    expect(h.outbox.find(message => message.id === key('ack', '2'))).toMatchObject({ text: 'On it Worker: high.', kind: 'acknowledgement' })
     // The replayed request still answers with the ticket it started.
     expect(h.engine.decide('1', { kind: 'accept', title: 'Again', scope: 'small', reason: 'again' })).toEqual(first)
   })
@@ -1201,7 +1223,7 @@ describe('replies', () => {
     const ticketId = accepted(h).ticketId!
     // The acknowledgement of the accept stays; a later request for one reuses it.
     expect(h.engine.reply({ purpose: 'acknowledgement', ticketId, triggerId: '1', text: 'On it' })).toEqual({ id: key('ack', '1'), status: 'pending', reused: true })
-    expect(h.outbox.map(message => message.text)).toEqual(['ok'])
+    expect(h.outbox.map(message => message.text)).toEqual(['ok Worker: high.'])
     h.engine.receive(trigger('2', { actor: guest }))
     expect(h.engine.reply({ purpose: 'acknowledgement', ticketId, triggerId: '2', text: 'Looking' })).toEqual({ id: key('ack', '2'), status: 'pending', reused: false })
     h.engine.receive(trigger('3', { human: false }))

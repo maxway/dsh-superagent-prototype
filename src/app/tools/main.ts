@@ -8,14 +8,14 @@ import { deploymentConfig, requestDeployment } from '../deployment.ts'
 import { offPeakByDefault } from '../../offpeak.ts'
 import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
-import { CategorySchema, TierSchema } from '../../policy.ts'
+import { CategorySchema } from '../../policy.ts'
 import { ticketCard } from '../cards.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
 import { readResource, type MainResourceHost, type ResourceHost } from '../resources.ts'
 import type { Sessions } from '../sessions.ts'
 import type { Settings } from '../settings.ts'
 import type { Store } from '../store.ts'
-import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
+import { AcceptanceAcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
 
 const RoutingNoteSchema = z.string().trim()
   .refine(text => wordCount(text) <= NOTE_WORDS, `Routing note must not exceed ${NOTE_WORDS} words (Chinese uses word segmentation). Shorten it; do not split it across deliveries.`)
@@ -53,7 +53,7 @@ const RouteItemSchema = z.object({
   ticket_id: z.string().nullish().describe('attach and stop: the ticket.'),
   title: z.string().nullish().describe('accept: a short label of at most 200 characters describing the original request; no added requirements or implementation advice.'),
   category: CategorySchema.nullish().describe('accept: query answers read-only, research investigates read-only, development changes code. One primary deliverable; a reply question defaults to query.'),
-  tier: TierSchema.nullish().describe('accept: low for clearly simple work, high for complex or unclear work; query defaults to low, other categories to high. Independent of category.'),
+  tier: z.enum(['low', 'high']).nullish().describe('accept: low for clearly simple work, high for complex or unclear work; query defaults to low, other categories to high. Independent of category.'),
   worktree_name: z.string().nullish().describe(`accept: ${WorktreeNameSchema.description ?? ''}`),
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It may ask the one question that must be answered before the work starts. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
@@ -68,9 +68,9 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Kind[]; needs: r
   ticket_id: { check: z.string(), reads: ['attach', 'stop'], needs: ['attach', 'stop'] },
   title: { check: z.string().max(200), reads: ['accept'], needs: ['accept'] },
   category: { check: CategorySchema, reads: ['accept'], needs: [] },
-  tier: { check: TierSchema, reads: ['accept'], needs: [] },
+  tier: { check: z.enum(['low', 'high']), reads: ['accept'], needs: [] },
   worktree_name: { check: WorktreeNameSchema, reads: ['accept'], needs: ['accept'] },
-  acknowledgement: { check: AcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
+  acknowledgement: { check: AcceptanceAcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
   note: { check: RoutingNoteSchema, reads: ['accept', 'attach'], needs: [] },
   off_peak: { check: z.boolean(), reads: ['accept'], needs: [] },
   reason: { check: z.string().max(500), reads: ['ignore', 'stop'], needs: ['ignore'] },
