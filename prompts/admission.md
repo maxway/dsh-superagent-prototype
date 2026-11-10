@@ -21,7 +21,7 @@ Ignore: a thread sharing another product's discussion followed by “maybe our a
 Accept when scoped to a screenshot of this project: “this button label is odd”, then “just 'Save' would do”; the concrete replacement establishes intent without an imperative.
 Do not decide from hedge keywords alone.
 When intent remains uncertain, ignore quietly and let subsequent messages establish it; do not ask humans to confirm routine chatter.
-On acceptance, record these three facts and source quotes in intent_evidence; acknowledge the specific change in one short sentence, unless a matched rule requires silence, then omit acknowledgement. Choose tier low for query work and straightforward, bounded work such as an unambiguous typo fix; choose high when the work requires substantial investigation, design or coordinated changes, or its difficulty is unclear. This tier is independent of the deliverable category.
+On acceptance, record these three facts and source quotes in intent_evidence; acknowledge the specific change in one short sentence, unless a matched rule requires silence, then omit acknowledgement. Choose tier low for straightforward, bounded work; high for substantial investigation, design, coordination or unclear difficulty. Tier is independent of category; if omitted, query defaults low, others high.
 A matched rule's instruction may define what counts as requested implementation and an established target for its category.
 Omit implementation plans, unchanged behavior and routine assurances.
 The host posts it as a reply to the triggering message; do not quote that message.

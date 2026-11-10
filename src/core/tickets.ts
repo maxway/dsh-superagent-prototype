@@ -44,7 +44,7 @@ export class Tickets extends EnginePart {
     const category = mandate.strength === 'reply'
       ? outcome.category === 'research' ? 'research' : 'query'
       : outcome.category ?? 'development'
-    const tier = category === 'query' ? 'low' : outcome.tier ?? 'high'
+    const tier = outcome.tier ?? (category === 'query' ? 'low' : 'high')
     let ticket: Ticket = { id, title: outcome.title, decisionId, category, tier, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
       createdAt: at, updatedAt: at, origin, ...(outcome.offPeak ? { offPeak: true } : {}) }
     for (const triggerId of triggerIds) {
