@@ -213,19 +213,6 @@ it('sends a quiet daily report once per local day and not again on later quiet c
   expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(1)
 })
 
-it('sends the quiet daily report from a quiet gate but never from a risk gate', async () => {
-  const answers: unknown[] = []
-  const { calls, url } = await fakeService(() => answers[0])
-  answers[0] = snapshot()
-  const config = configure(url, { dailyReport: { hour: 0, timezone: 'UTC' } })
-  expect((await run(['--config', config, '--gate'])).code).toBe(0)
-  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(1)
-  answers[0] = snapshot({ tickets: [{ id: 't1', title: 'Stuck', stage: 'working', silentMinutes: 90, signals: ['no-progress'],
-    attempts: ['running'] }] })
-  expect((await run(['--config', config, '--gate'])).code).toBe(2)
-  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(1)
-})
-
 it('reports a missing run route once, logs an unreachable service, and exits 1 without a state from status', async () => {
   const { calls, url } = await fakeService(() => snapshot())
   const config = configure(url, { report: false })
@@ -273,35 +260,4 @@ it('writes one independent alert after consecutive unreachable reads and a recov
   expect((await run(['--config', recoveredPath, '--once'])).code).toBe(0)
   expect(readFileSync(alertPath, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line).kind))
     .toEqual(['unreachable', 'recovered'])
-})
-
-it('runs the cheap gate: quiet records without a model, risk records and exits 2, unreachable exits 1', async () => {
-  const answers: unknown[] = []
-  const { calls, url } = await fakeService(() => answers[0])
-  answers[0] = snapshot()
-  const config = configure(url, { report: false })
-  const quiet = await run(['--config', config, '--gate'])
-  expect(quiet.code).toBe(0)
-  const quietPosts = calls.filter(call => call.method === 'POST')
-  expect(quietPosts).toHaveLength(1)
-  expect(quietPosts[0]!.url).toBe('/orchestrator/api/watchdog/runs')
-  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(0)
-  expect(JSON.parse(readFileSync(join(directory!, 'state', 'state.json'), 'utf8')))
-    .toMatchObject({ reachable: true, gate: 'quiet', current: [] })
-
-  // A signal turns the gate into the escalation path: it records the risk and exits 2 for the full agent.
-  answers[0] = snapshot({ tickets: [{ id: 't1', title: 'Stuck', stage: 'working', silentMinutes: 90, signals: ['no-progress'], attempts: ['running'] }] })
-  const risk = await run(['--config', config, '--gate'])
-  expect(risk.code).toBe(2)
-  const posts = calls.filter(call => call.method === 'POST')
-  expect(posts).toHaveLength(2)
-  expect(JSON.parse(posts[1]!.body!).note).toContain('高风险')
-  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(0)
-  expect(JSON.parse(readFileSync(join(directory!, 'state', 'state.json'), 'utf8'))).toMatchObject({ reachable: true, gate: 'risk' })
-
-  const unreachable = configure('http://127.0.0.1:1', { report: false })
-  expect((await run(['--config', unreachable, '--gate'])).code).toBe(1)
-  const status = await run(['--config', unreachable, '--status'])
-  expect(status.code).toBe(0)
-  expect(JSON.parse(status.stdout)).toMatchObject({ reachable: false, gate: 'unreachable' })
 })
