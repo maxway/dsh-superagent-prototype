@@ -6,7 +6,7 @@
 
 ## 本检出的生产主机
 
-目标生产主机是原生 Windows，使用固定检出目录 `F:\code\dsh-superagent-prototype`，以及与 Desktop 分离的 DSH 根目录。仅使用不同的 profile 并不能隔离工作区和会话存储。2026-11-08，操作员批准切换到 `C:\Users\dd\.dsh-superagent`，并将 `DSH_AGENTS_HOME` 设置为其中的 `agents` 子目录。本机 `C:\Users\dd\.dsh-superagent\service.ps1` 在 `start`、`stop`、`restart` 和 `status` 时设置这些变量；不带这些变量使用通用脚本可能重新使用 Desktop 的共享目录。原有专属状态目录仍位于新根目录之外的 `C:\Users\dd\.dsh\state\superagent`。启动报告显示运行时和飞书 ready、GitLab starting；根据操作员要求，切换后未独立验证工作区、会话恢复和端到端行为。这种分离不是操作系统安全边界。profile 直接链接 F: 检出；不要为了匹配包名而重命名目录。Windows profile 示例位于 `examples/profile.cordis.patch.yml`；POSIX / WSL 示例保留在 `examples/profile.posix.cordis.patch.yml`，供独立部署使用。历史 WSL 状态与工作树不是 Windows worker 目录，不得清理或在 Windows 上直接恢复。
+目标生产主机是原生 Windows，使用固定检出目录 `F:\code\dsh-superagent-prototype`，以及与 Desktop 分离的 DSH 根目录。仅使用不同的 profile 并不能隔离工作区和会话存储。2026-11-08，操作员批准切换到 `C:\Users\dd\.dsh-superagent`，并将 `DSH_AGENTS_HOME` 设置为其中的 `agents` 子目录。带版本的入口 `scripts\dsh-superagent.ps1` 读取 checkout 之外的 `%USERPROFILE%\.dsh-superagent\service.json`，固定 checkout、DSH home、profile、本机回环 URL、Node 路径、可选的 PATH 追加项以及部署请求/命令；没有该文件而直接使用通用脚本，可能重新使用 Desktop 的共享目录。本机 `C:\Users\dd\.dsh-superagent\service.ps1` 仍是既有工具的兼容入口；切换后应缩减为向带版本入口传 `-Config` 的 shim。原有专属状态目录仍位于新根目录之外的 `C:\Users\dd\.dsh\state\superagent`。启动报告显示运行时和飞书 ready、GitLab starting；根据操作员要求，切换后未独立验证工作区、会话恢复和端到端行为。这种分离不是操作系统安全边界。profile 直接链接 F: 检出；不要为了匹配包名而重命名目录。Windows profile 示例位于 `examples/profile.cordis.patch.yml`；POSIX / WSL 示例保留在 `examples/profile.posix.cordis.patch.yml`，供独立部署使用。历史 WSL 状态与工作树不是 Windows worker 目录，不得清理或在 Windows 上直接恢复。
 
 Windows 进程不能安全依赖共享检出内 WSL 创建的依赖链接。应在生产服务停止、其他使用该依赖树的进程静止后，于最终路径准备并验证完整的 Windows 依赖安装。pnpm 的 `Already up to date` 不代表可用：用 Windows Node 构建并导入实际 bundle，再确认带 `x-orchestrator-request: 1` 的 `GET /orchestrator/api/state` 返回 200，并检查来源健康。仅监听 Web 端口不够。两种平台都需要运行时，应分离各自的依赖树。后台运行时还要确认服务与飞书消费者没有可见控制台，且含令牌的启动日志只允许目标用户和管理员访问。
 
@@ -176,22 +176,39 @@ Windows 上用 PowerShell 运行同一段内容，把 `> /dev/null` 换成 `> $n
 
 ## 启动与停止
 
+Windows 上，带版本的入口就是操作命令。它读取 checkout 之外的机器配置，因此目标不会随当前目录或无关的环境变量漂移：
+
+```powershell
+pwsh scripts\dsh-superagent.ps1 status
+pwsh scripts\dsh-superagent.ps1 start
+pwsh scripts\dsh-superagent.ps1 stop
+pwsh scripts\dsh-superagent.ps1 restart
+```
+
+除非用 `-Config` 或 `DSH_SUPERAGENT_SERVICE_CONFIG` 指定其他文件，它读取 `%USERPROFILE%\.dsh-superagent\service.json`；`examples/service.windows.json` 是模板。该文件固定 `checkout`、`home`、`agentsHome`、`profile`、回环 `url`、`node` 可执行文件、可选的 `path` 追加项以及可选的 `deployRequest`/`deployCommand`，并且不保存密钥。启动还需要用户级 `LUMOS_API_KEY`，包装脚本从用户环境复制。入口只暴露动作（以及可选的 `-Config` 和 `-RespectStop`），目标和时序信息都留在文件里。它会拒绝不存在的 checkout、非回环 URL，以及启动时缺失的 profile 目录。
+
+切换完成后，把旧的硬编码 `C:\Users\dd\.dsh-superagent\service.ps1` 换成兼容 shim，让既有工具继续工作：
+
+```powershell
+param([ValidateSet('start', 'stop', 'restart', 'status', 'verify')][string]$Action = 'status')
+& 'F:\code\dsh-superagent-prototype\scripts\dsh-superagent.ps1' $Action -Config "$env:USERPROFILE\.dsh-superagent\service.json"
+exit $LASTEXITCODE
+```
+
+Node 脚本仍是实现，也是两个平台上已设置好环境时的可用入口：
+
 ```sh
 scripts/dsh-superagent start
 scripts/dsh-superagent status
 ```
 
-Windows 上通过 Node 运行同一个脚本，因为该文件没有 `.cmd` shim：
+Windows 上写作 `node scripts\dsh-superagent start` 等；该文件没有 `.cmd` shim，因此需要 Node。
 
-```powershell
-node scripts\dsh-superagent start
-node scripts\dsh-superagent status
-node scripts\dsh-superagent stop
-```
+`--url` 监听套接字的所有者才是权威目标。`status` 报告 `identity: "listener"`、`listener` PID、`unlistening`（匹配 profile 但不拥有该 URL 的进程）和 `foreign`（另有进程拥有该 URL）。`start` 会拒绝外部监听者，或本 home 记录过但已不再监听的进程。Windows 上 `stop` 不传 `--url` 时会从各 DSH 进程的监听端口和管理状态中自动发现正在运行的 superagent，并停止唯一实例或与 `--profile` 匹配的实例，因此不需要匹配的 home 或 URL；显式 `--url` 则按精确目标处理。外部监听者绝不会被停止，两者也都绝不强杀。监听查询不可用时，`identity: "scan"` 表示退回了旧的命令行扫描。
 
 `start` 在 tmux 会话 `dsh-superagent` 中运行 `dsh --profile superagent`；其他 profile 则使用 `dsh-<profile>`。它最多等待一分钟，让运行时变为就绪或报告安装配置要求。首次运行时，它会打印缺失的安装配置信息。它会拒绝重复的实例，包括从这个脚本之外启动的实例。每个 profile 使用独立命名的 tmux socket。pane 使用调用者的 `DSH_HOME`、`HOME` 和 `PATH`（包括未设置的情况），并在启动 DSH 前清除 `TMUX` 与 `TMUX_PANE`，避免 worker 继承服务 socket。仅设置 `TMUX_TMPDIR` 不能覆盖继承的 `TMUX`；这些措施只是护栏，不是操作系统安全边界。
 
-Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以分离进程启动 `dsh --profile <profile> --no-open`，日志和控制文件与 POSIX 相同，并等待管理 API；它不使用 tmux。`status` 通过 Windows PowerShell（`powershell.exe`，Windows 自带）列出进程。`stop` 通过 `POST /orchestrator/api/service/stop` 让 DSH 退出，而不是发送信号；它最多等待五分钟，绝不会强制杀死进程。上面的 tmux socket 与 `TMUX` 细节只适用于 POSIX。两种平台使用相同的退出码、日志名和 `manually-stopped` 标记。
+Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以分离进程启动 `dsh --profile <profile> --no-open`，日志和控制文件与 POSIX 相同，并等待管理 API；它不使用 tmux。当调用者位于 Windows Job 中时，它通过 `scripts\service-start.ps1` 在 Job 之外创建服务，并把同一个 `--home` 传下去。`status` 通过 Windows PowerShell（`powershell.exe`，Windows 自带）列出进程。`stop` 通过 `POST /orchestrator/api/service/stop` 让 DSH 退出，而不是发送信号；它最多等待五分钟，绝不会强制杀死进程。上面的 tmux socket 与 `TMUX` 细节只适用于 POSIX。两种平台使用相同的退出码、日志名和 `manually-stopped` 标记。
 
 `stop` 和 `restart` 请求优雅 drain，并最多等待进程五分钟退出。执行器 drain 的上限是十秒，DSH 启动器再加五秒宽限，因此停止通常约十五秒完成；drain 之后仍在回合中的 worker 可能被打断。POSIX 上它们绝不会强制杀死进程，也不会碰其他 tmux 会话。
 
@@ -210,10 +227,12 @@ Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以
 
 `status` 在 `errors` 下返回失败的部分及其详情，在 `setup` 下返回安装配置要求。`start` 和 `restart` 会逐行打印这些问题；如果服务始终没有起来，它们以 1 退出。只有有意的 `stop` 会暂停自动恢复。
 
-每个 profile 在 `.artifacts/` 下保存日志和控制文件：
+每个 DSH home 在自己的 `service/` 下保存服务的日志和控制文件，因此脏的或共享的 checkout 不再是运行时状态：
 
-- 启动日志：`dsh-superagent-<profile>-<date>-<time>-<pid>.log`，其中 pid 属于脚本。保留最新的 20 个。
-- 控制文件：`control/profiles/<profile>/`，包含停止标记、锁和进程 id。
+- 启动日志：`<DSH home>\service\logs\dsh-superagent-<profile>-<date>-<time>-<pid>.log`，其中 pid 属于脚本。保留最新的 20 个。
+- 控制文件：`<DSH home>\service\control\profiles\<profile>\`，包含停止标记、锁、进程 id 和最近一次启动事实。
+
+本版本仍会读取旧的 `<checkout>\.artifacts\control\profiles\<profile>\` 停止标记、记录 PID 和启动事实，使有意的停止和当前启动在升级后继续有效。正常启动不再向那里写入；停止一个仍由旧位置记录的服务时，会把停止标记写回该目录，让恢复检查继续生效。新入口部署完成、且没有旧的调用方式后，可以归档该目录。
 
 打开日志中打印的 URL，然后在侧边栏中选择 **Superagent**。
 
@@ -222,10 +241,10 @@ Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以
 在你日常使用的 DeepSeek Harness profile 中创建每小时检查，而不是在 `superagent` 中。智能体服务停止时，它必须继续运行。让该 profile 中的智能体用下面这段提示词创建每小时计划，并填入检出路径：
 
 ```text
-Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest .artifacts/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
+Check dsh-superagent: run `scripts/dsh-superagent --profile superagent --home <DSH home> status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --home <DSH home> --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest <DSH home>/service/logs/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
 ```
 
-`--respect-stop` 保留有意的停止。只有 `stop` 写入标记；`start` 清除它。`restart` 不写标记，因此该检查可以恢复一次关闭超时的重启。Windows 上使用同一段提示词，把命令换成 `node scripts\dsh-superagent ...`。
+`--respect-stop` 保留有意的停止。只有 `stop` 写入标记；`start` 清除它。`restart` 不写标记，因此该检查可以恢复一次关闭超时的重启。Windows 上改用 `pwsh scripts\dsh-superagent.ps1 status` 和 `pwsh scripts\dsh-superagent.ps1 restart -RespectStop`，并读取配置的 DSH home 下的同一日志。
 
 ### 任务级巡检（Watchdog）
 
@@ -243,7 +262,7 @@ Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --
 
 ### 独立 Watchdog 进程
 
-`scripts/watchdog` 读取同一份只读快照，把每次观测记录成一次运行，把发生变化的机械发现报告给飞书，并维护自己的配置、状态和日志；它不需要 DSH，也不依赖运营者的 profile，主机看护与部署监督也放在这个进程里。创建 `watchdog.json`；其中的相对路径按该文件所在目录解析：
+`scripts/watchdog` 是常驻 observer：读取同一份只读快照，把每次观测记录成一次运行，维护自己的配置、状态和日志；它不需要 DSH，也不依赖运营者的 profile。配置 `agentConfig` 后，新的机械风险交给同版本的完整 DSH agent 判定和报告，observer 自己不再重复发机械发现报告，因此监控由 HTTP 长连接驱动，不依赖每 30 分钟的定时 gate。主机看护与部署监督也放在这个进程里。创建 `watchdog.json`；其中的相对路径按该文件所在目录解析：
 
 ```json
 {
@@ -253,19 +272,22 @@ Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --
   "intervalSeconds": 900,
   "staleMinutes": 30,
   "dailyReport": { "hour": 9, "timezone": "Asia/Shanghai" },
-  "stateDir": "watchdog-state"
+  "stateDir": "observer-state",
+  "alertFile": "observer-alerts.jsonl",
+  "agentConfig": "agent.json",
+  "agentTimeoutSeconds": 900
 }
 ```
 
-在前台或进程管理器下运行 `node scripts/watchdog --config watchdog.json`，或由计划任务每 15 到 30 分钟运行一次 `--once`。`--status` 打印最近记录的状态；进程在 `stateDir` 下写 `state.json` 与 `watchdog.log`，运行期间持有 `watchdog.pid`。它每轮都记录一次运行，因此 `GET watchdog` 的 `lastRun` 与 `watchdog runs` 能看出它还活着；机械发现集合变化时才发报告。长时间运行的进程不再按 `intervalSeconds` 睡眠，而是挂一个带版本号的等待请求：工单、健康、暂停或安装配置变化，到达下一个静默/评审截止时刻，或达到 API 的 240 秒上限时返回。变化或截止时刻会立即跑完整轮次；达到上限只是重新挂起等待，只有距上次轮次已过 `intervalSeconds` 才跑兜底轮次，因此 `intervalSeconds` 是两次轮次之间的最大间隔。配置 `dailyReport` 后，无异常时每天上午还会发一次安静的日报，让人知道安静的服务仍在被检查；每本地日只发一次（在兜底间隔内），有异常时的报告不受影响。它没有模型判断：报告工单信号、异常的服务部件和安装配置问题，执行器满载或服务暂停会解释掉相应的工单信号。服务停止时它只记录失败并继续检查，无法通过飞书机器人发报告（机器人属于服务）。
+常驻 observer 由计划任务在登录时启动，或在前台/进程管理器下运行 `node scripts/watchdog --config watchdog.json`。`--status` 打印最近记录的状态；进程在 `stateDir` 下写 `state.json` 与 `watchdog.log`，运行期间持有 `watchdog.pid`。它每轮都记录一次运行，因此 `GET watchdog` 的 `lastRun` 与 `watchdog runs` 能看出它还活着。长时间运行的进程不按 `intervalSeconds` 睡眠，而是挂一个带版本号的等待请求：工单、健康、暂停或安装配置变化，到达下一个静默/评审截止时刻，或达到 API 的 240 秒上限时返回。变化或截止时刻会立即跑完整轮次；达到上限只是重新挂起等待，只有距上次轮次已过 `intervalSeconds` 才跑兜底轮次，因此 `intervalSeconds` 是两次轮次之间的最大间隔。配置 `agentConfig` 后，新的机械风险（工单信号、部件报错、安装配置未完成、ready 结果等待超过一天、连续两次失败）交给同一制品的完整 DSH agent 判定和报告；observer 记录 `agentFingerprint`，同一发现不重复消耗模型调用，风险消除后重新武装，agent 失败只报告一次、不重试。没有 `agentConfig` 时仍只做机械报告。配置 `dailyReport` 后，无异常时每天上午还会发一次安静的日报，让人知道安静的服务仍在被检查；每本地日只发一次（在兜底间隔内）。服务停止时它只记录失败并写独立告警文件，无法通过飞书机器人发报告（机器人属于服务）。
 
-要让模型成本只发生在真正需要的轮次，可以在使用计划任务的一次性形态时，用 `--gate` 按同样的间隔把它当作门控运行。门控轮次读取快照、记录这次观测；没有风险就退出 0，有风险就退出 2：工单信号、部件报错、安装配置未完成、ready 结果等待超过一天，或连续两次失败尝试。只有退出 2 时才运行完整 DSH agent 做详细判定，由 agent 自己记录观测并报告，因此 LLM 只在风险轮次产生费用。门控只发送配置好的安静日报，不发送发现报告，也不修改其他东西；`--status`、状态文件和日志会给出它的退出原因。主机检查项、有界恢复与部署监督（路线图工作流 K、L）后续也放进这个进程。
+`--once` 和 `--gate` 保留为诊断/一次性入口：`--once` 跑一轮并退出；`--gate` 只做机械门控（quiet 退出 0、risk 记录后退出 2、不可达退出 1），不再作为定时监控。常驻 observer 不依赖每 30 分钟的定时 gate；模型只在长连接发现新风险时运行。主机检查项、有界恢复与部署监督（路线图工作流 K、L）后续也放进这个进程。
 
 ### 在 Windows Job 之外启动服务
 
 DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Windows Job；从其中启动的服务会在命令结束时被终止，而命令内部此前的健康检查可能已经通过。`scripts/dsh-superagent start` 会检测这一状态，让 WMI 提供程序在 Job 之外创建 `scripts/service-start.ps1`，并等待健康检查。该包装脚本从受限文件中恢复服务环境、启动分离的服务后退出；它从不启动 observer。不在 Job 中的普通终端启动仍走原路径；计划任务所在的 Job 也按同样方式离开，`status` 会报告实时的 `inJob` 值以及 `start` 中最近一次启动的方式。无法证明服务位于所有 Windows Job 之外的启动会失败，而不是留下一个可能被关闭命令杀死的服务。
 
-操作员的 `service.ps1` 仍是服务入口：它设置生产 home 并调用控制脚本，因此服务在进程位于 Job 之外时仍使用自己的 profile home 和凭据。`scripts/service-start.ps1` 也可以由独立计划任务直接运行；该任务应通过 `wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\service-start.ps1 ...` 启动，使包装脚本和它运行的 node 控制脚本都没有窗口。
+带版本的 `scripts\dsh-superagent.ps1` 是服务入口：它校验机器配置并调用控制脚本，因此服务在进程位于 Job 之外时仍使用自己的 profile home 和凭据。操作员的 `C:\Users\dd\.dsh-superagent\service.ps1` 仍是既有工具的兼容入口；切换后应缩减为指向该入口的 shim。`scripts/service-start.ps1` 也可以由独立计划任务直接运行；它会收到与父进程相同的 `-DshHome`。该任务应通过 `wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\service-start.ps1 ...` 启动，使包装脚本和它运行的 node 控制脚本都没有窗口。
 
 计划任务没有可继承的控制台，Windows 会给它启动的第一个控制台程序（`node` 或 `pwsh`）一个可见窗口。因此所有非交互入口都经过 `scripts/launch-hidden.vbs`：`wscript.exe` 自身没有控制台，启动器以隐藏窗口运行命令、等待并返回它的退出码，该命令的所有控制台子进程共享这个隐藏控制台。这适用于部署、Watchdog 更新、服务启动以及计划任务一次性运行 `scripts/watchdog --once`/`--gate`；Watchdog agent 的启动器（`launch-agent.vbs`）遵循同样的模式。只有人在交互查看时才直接运行命令。控制脚本也会隐藏它自己的 PowerShell、`git` 和 Windows ACL 辅助进程，因此后台的 `status`、`start` 或 `stop` 也不会闪出它们。
 
@@ -273,68 +295,116 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 ### 部署最新 superagent
 
-主会话可以把操作者明确的部署请求发给独立 Watchdog，而不是自己发布任何东西。`orchestrator_deploy` 工具把请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST` 指定的文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` 中的命令（例如 `schtasks /run /tn dsh-superagent-deploy`）；两个值未设置时工具关闭。独立的部署任务读取请求、核验操作者的原话，并在自己的进程里发布最新提交，主实例只负责停机；外层任务在 agent 退出后启动并核验它。只有操作者明确要求部署 superagent（“部署superagent”）时才使用该工具；普通请求不会触发部署，主会话也从不自己备份、发布或重启。
+主会话可以把操作者明确的部署请求发给独立 Watchdog，而不是自己发布任何东西。`orchestrator_deploy` 工具把请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST` 指定的文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` 中的命令（例如 `schtasks /run /tn dsh-superagent-deploy`）；两个值未设置时工具关闭。独立的部署任务读取请求、核验操作者的原话，并在自己的进程里发布最新提交，主实例只负责停机；外层任务在执行器退出后启动并核验它。请求文件路径必须与部署任务配置里的 `requestPath` 一致，否则任务会以 `no deploy request` 正常退出而不会发布；本部署使用 `C:\Users\dd\.dsh\watchdog-deploy\deploy-request.json`。只有操作者明确要求部署 superagent（“部署superagent”）时才使用该工具；普通请求不会触发部署，主会话也从不自己备份、发布或重启。
 
-部署尽量只做最必要的内容。还没有预构建候选的首次部署走完整受控发布（候选构建与验证、一致性备份、启动检查与回滚路径），会更慢。稳定期由 Watchdog 预构建并预验证最新提交，部署只做停机、切换构建好的 `lib` 与 `prompts`（以及 `scripts/watchdog`、`locale/` 等实际运行的变更文件）、启动和基础健康检查，保留上一版用于回滚，目标控制在一分钟内。代码质量由仓库检查和外部维护通道保证，因此跳过重复的全量测试与大范围检查。结果由 Watchdog 报告。首次部署（也就是安装这个命令本身）由操作员或 Watchdog 直接带上确认发起；运行中的 superagent 具备该工具和两个环境变量后，后续请求由主会话发送。
+`scripts/deploy.ps1` 是计划任务的入口，只是 `scripts/deploy.mjs` 的 Windows 薄封装；两条部署路径都在后者里。它读取并归档请求，只在配置了相应命令时暂停并重新启动独立 observer，且从不盲目重试。
 
-#### 部署复盘与提速
+- **例行机械发布（不调用模型）。** 配置里有 `mechanical` 段时，`deploy.mjs` 做只读预检、停服、备份停机状态的 SQLite、按显式清单切换运行文件、在外部 Windows Job 之外启动并做存活校验；任一环节失败就恢复运行文件并启动上一版。候选在维护窗口之前构建并检查。这是稳定期的常规路径：不启动 DSH Session，也不调用模型。
+- **Agent 回退。** 没有 `mechanical`，或显式 `-Agent` 时，`deploy.ps1` 用原来的 headless DSH agent 按操作者提示词部署，然后做同样的存活检查。它保留首次部署（安装本命令本身）和需要判断的请求，但不是常规路径。
 
-2026-11-09 的部署历史在 `C:\Users\dd\.dsh\watchdog\watchdog-deploy.log` 里，能看出时间花在哪。两次部署端到端都约十分钟：08:46:58 那次到 08:56:53，10:33:47 那次到 10:43:09。第二次服务约 10:40:56 停止、约 10:41:50 就绪，实际切换约 54 秒；其余时间几乎都在前期准备，而不是发布本身。准备阶段重复了部署早就知道的事：运行中的服务用哪个 DSH home 和 profile 目录、stateDir 与 bundle 链接在哪、已有的候选构建是否已经匹配目标树、哪些 watchdog 写入者需要暂停。请求本身也有歧义（“部署 !43 并设置两个环境变量”），监督器要先还原意图才能开始。
+`deploy.ps1` 透传 `-Validate`、`-Plan`、`-Agent`。`-Validate` 只打印解析后的路径，不执行任何操作；`-Plan` 执行与发布相同的只读预检并打印计划：目标 revision、候选、要替换的路径、要备份的数据库和存活窗口。它不停服、不切换、不归档请求，适合在候选准备好之后、维护窗口之前跑一次。
 
-下次按这几点缩短前期准备：
+#### 机械预检保留与去掉的检查
 
-1. 在稳定 checkout 中先运行一次 `node scripts/dsh-superagent status --profile superagent --url <面板 URL> --home <DSH home>`。`status` 会报告 profile 目录、`service.ps1`、配置的 `stateDir`、bundle 链接与目标、checkout 版本与分支、构建出的 `lib`，以及服务的 Windows Job 归属与最近一次启动方式；直接读这些，不再重新发现。
-2. 每个目标版本只保留一份候选，并记录 revision、产物哈希与测试证据。候选 worktree 的 `git rev-parse HEAD^{tree}` 与目标树相同、构建产物也一致时直接复用；不要在维护窗口里重新构建或重跑全量测试。
-3. 用同一份 `status` 输出确认服务空闲，并记录进行中与排队工单数。做一致性备份前暂停独立 Watchdog 的写入，服务恢复后按原方式恢复并核验。
-4. 在“文件已切换、服务已停止”的状态停下。`scripts/dsh-superagent start` 会检测 Windows Job，并通过 `service-start.ps1` 在 Job 之外创建服务；不要在 agent 的 shell 工具里直接启动一个裸子进程。DSH agent 退出后，外层部署任务运行 `verify --survival-seconds 30`；只有服务仍存活、在所有 Job 之外且管理 API 回答 ready，才算成功。
-5. 把实测的停机、启动和就绪时间写进部署日志。日志就是复盘材料：慢的那次可以和上一次比较，切换本身应保持在一分钟内。
-6. 部署 `scripts/watchdog` 的改动后，在独立 Watchdog 的 `watchdog.json` 里加上 `dailyReport` 并重启该进程；如果计划任务仍运行旧的 `gate.mjs`，把它改为 `scripts/watchdog --gate`，让安静日报走已部署的版本。
+预检刻意只保留切换真正需要的部分：
 
-身份核验、备份、回滚准备与维护窗口仍由发布监督器负责；这些事实只缩短发现过程，不替代那些步骤。汇总的时间记录见[部署提速证据](../evidence/deployment-speed/)。
+- 有非空的操作者确认；只有真正开始发布时才归档请求；
+- 恰好一个进程服务该 profile，runtime ready，setup 无问题，服务不是人工停止，`load.running` 为 0（暂停 observer 后、停服前会再查一次）；
+- 运行中的 bundle 链接解析后位于运行时根目录内，确保替换的就是服务实际加载的文件；
+- 候选 worktree 位于请求的 revision（已 fetch 的 `origin/main`、完整提交或 `mechanical.targetRevision`），且没有未提交文件；
+- 候选的 `pnpm-lock.yaml` 与运行时 checkout 一致，因为这条路径只切换运行文件、不切换 `node_modules`；依赖有变化时走 agent 回退或先做一次明确的依赖安装；
+- 清单显式、使用相对路径、位于候选与运行时根目录内，包含构建出的 `lib`，且只列运行路径；
+- 状态目录里存在 SQLite 数据库；停机状态的副本做哈希后放在备份根目录；
+- 启动后由 `verify` 证明一个进程、管理 API 可用、存活窗口后仍是同一 PID、且不在外部 Windows Job 中；
+- 切换、启动或校验失败时恢复所有被替换的路径并启动上一版。
 
-独立任务用仓库外的 JSON 配置运行本仓库的 `scripts/deploy.ps1`。脚本读取并归档请求、运行 headless DSH agent，并在该 agent 退出后带存活窗口运行 `verify`；它把 agent 退出码和存活结果写入结果文件，从不启动 observer，也不盲目重试。`-Validate` 只打印解析后的路径，不执行任何操作。部署相关路径、提示词和模型补丁留在仓库外：
+执行器证明的是候选 worktree 的 revision，而不是构建出的 `lib` 来自该 revision：窗口前的构建流程必须构建这个 revision，按 revision 保留候选目录才能让这项检查有意义。
+
+它不会在窗口里重复仓库测试或构建（代码质量由 CI 负责），不会因 `evals` 等无关健康部件阻塞，不要求飞书完成配置，不重算整个 checkout 的哈希，也不审计 ACL、硬链接或 Git 索引标记；确定性请求不交给模型判断。机械路径的存活窗口默认 3 秒，因为 `start` 已经等到 ready；`survivalSeconds` 可以调大，agent 路径仍默认 30 秒。
+
+#### 配置与清单
+
+部署相关路径留在仓库外。Agent 回退继续使用 `promptPath`、`modelPatch`、`workdir` 和 `dsh`；机械路径需要 `candidateRoot`、`manifestPath`、`backupRoot`，通常还需要 `runtimeRoot`：
 
 ```json
 {
-  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-request.json",
-  "promptPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-prompt.md",
-  "modelPatch": "C:\\Users\\dd\\.dsh\\watchdog\\model.patch.yml",
+  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-request.json",
+  "promptPath": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-prompt.md",
+  "modelPatch": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\model.patch.yml",
   "workdir": "F:\\code\\superagent-ops",
   "node": "D:\\Program Files\\nodejs\\node.exe",
   "dsh": "C:\\Users\\dd\\.local\\opt\\dsh-0.2.2-rc.1\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
   "home": "C:\\Users\\dd\\.dsh",
+  "serviceHome": "C:\\Users\\dd\\.dsh-superagent",
+  "serviceAgentsHome": "C:\\Users\\dd\\.dsh-superagent\\agents",
+  "serviceScript": "F:\\code\\dsh-superagent-prototype\\scripts\\dsh-superagent.ps1",
   "agentProfile": "headless",
   "serviceProfile": "superagent",
   "url": "http://127.0.0.1:3083",
-  "logFile": "C:\\Users\\dd\\.dsh\\watchdog\\watchdog-deploy.log",
-  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-result.json",
-  "survivalSeconds": 30
+  "logFile": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy.log",
+  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-result.json",
+  "survivalSeconds": 3,
+  "mechanical": {
+    "candidateRoot": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\candidates\\<revision>",
+    "manifestPath": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\release-manifest.json",
+    "backupRoot": "C:\\Users\\dd\\.dsh\\state\\superagent-backups",
+    "runtimeRoot": "F:\\code\\dsh-superagent-prototype",
+    "stateDir": "C:\\Users\\dd\\.dsh\\state\\superagent",
+    "observerStopCommand": "schtasks /end /tn dsh-superagent-watchdog-observer",
+    "observerStartCommand": "schtasks /run /tn dsh-superagent-watchdog-observer"
+  }
 }
 ```
 
-`dsh-superagent-deploy` 任务随后在后台运行它：`wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`。启动器等待部署结束并返回它的退出码，任务和它启动的 node 进程都没有可见窗口。**上线说明（2026-11-09）。** 把生产服务从 Desktop DSH Job 迁移到这条路径需要操作员维护窗口：拉取已合并提交、把任务指向带版本的脚本，并在 DSH 之外重启一次当前生产实例，使它的进程不再位于该 Job 中。目标关系与剩余阶段见 `docs/zh/references/watchdog-superagent-mutual-assist.md`。
+`home` 是部署 agent 的 DSH home；`serviceHome` 是运行中服务自己的 DSH home，省略时等于 `home`，因此服务使用独立 home 的主机必须设置它。`serviceScript` 是服务入口包装脚本——带版本的 `scripts\dsh-superagent.ps1`，或操作员的 `service.ps1` 兼容 shim——必须接受 `start` 和 `stop`；设置后 start/stop 都经它执行，因此它固定的 home、profile、URL 必须与 `serviceHome`、`serviceProfile`、`url` 一致。`runtimeRoot` 默认取 `checkout` 字段或任务脚本所在的 checkout；`stateDir` 默认取 `status.deployment.stateDir`；`control` 默认 `<checkout>\scripts\dsh-superagent`，顶层 `control` 可指向带版本的控制脚本。清单只列本次实际变化的路径；`lib` 必需，`prompts`、`locale`、`skills`、`cordis.patch.yml` 或控制脚本有变化时才加入：
+
+```json
+{ "entries": [
+  { "source": "lib", "target": "lib" },
+  { "source": "prompts", "target": "prompts" },
+  { "source": "scripts/dsh-superagent", "target": "scripts/dsh-superagent" }
+] }
+```
+
+每个被替换的路径会在同目录改名为 `<name>.previous-<revision>-<token>`；服务停止后，状态数据库和 WAL 文件复制到 `<backupRoot>\deploy-<revision>-<timestamp>\state`。执行器从不恢复数据库；回滚只恢复运行文件并启动上一版。因此上一版无法读取的数据库迁移需要人工恢复，执行器会把它报告为需要人工介入，而不是声称回滚成功。结果文件记录阶段（`verified`、`rolled_back` 等）、revision、耗时、备份路径和是否需要人工介入；回滚失败或服务无法重启时保留部署锁并设置 `manualIntervention`。
+
+#### 准备与启用一次机械发布
+
+启用是操作员步骤，不改计划任务：
+
+1. 在独立 worktree 构建目标提交（绝不在运行中的稳定 checkout 里构建）：`git -C <clone> worktree add <candidate> <revision>`，然后用 Windows Node 安装依赖并构建。保持 worktree 干净；`lib` 已被忽略，构建产物不会让它变脏。
+2. 为与运行版本不同的运行路径写清单。安装本次改动本身时，清单必须包含 `scripts/deploy.mjs` 和 `scripts/deploy.ps1`；缺少执行器文件时任务入口无法启动。
+3. 把 `mechanical` 指向候选、清单和已存在的备份根目录，把 `serviceHome` 与 `serviceScript` 指向运行中服务的 home 和包装脚本，`survivalSeconds` 设为 3（或操作者希望的值）。
+4. 运行 `deploy.ps1 -Config <configuration> -Plan`，检查 revision、条目、数据库和备份目录。
+5. 生产任务不用改；下一次请求就走机械路径。完成之前，现有 agent 路径继续可用。
+
+安装这个执行器的首次部署仍走 agent 回退；用包含 `deploy.mjs` 的提交构建一次候选后，后续请求就会走机械路径。
+
+**已测基线。** 2026-11-09 的部署历史在 `C:\Users\dd\.dsh\watchdog-archive-20261109-2234\watchdog-deploy.log` 里：两次部署端到端都约十分钟（08:46:58 到 08:56:53，10:33:47 到 10:43:09）。第二次服务约 10:40:56 停止、约 10:41:50 就绪，实际切换约 54 秒；其余时间几乎都是 agent 在重新发现服务身份、候选和需要暂停的写入者。机械路径把这些发现和判断移出窗口：候选准备好后，实测工作就是停机、停机状态备份、文件复制、启动和 3 秒存活检查。时间记录见[部署提速证据](../evidence/deployment-speed/)；生产尚未跑过机械发布，因此“一分钟内”是设计目标而不是实测值。`status` 的事实（带版本的 `scripts\dsh-superagent.ps1 status`，或控制脚本的 `--home`、profile、按 home 存放的 service/log/control 目录、`stateDir`、bundle 目标、Git revision、监听身份与启动/Job 信息）仍对 agent 回退和人工检查计划有用。
+
+`dsh-superagent-deploy` 任务随后在后台运行它：`wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`。启动器等待部署结束并返回它的退出码，任务和它启动的 node 进程都没有可见窗口。**上线状态（2026-11-09）。** 生产服务已由独立部署任务切到 `0cf6a69`，2026-11-10 00:39 的 `verify --survival-seconds 3` 以 `foreignJob=false` 通过：服务不在外部 Job 中，`recovery=enforce`，管理 API ready。生产配置还没有 `mechanical` 段，因此任务继续使用 agent 回退，直到操作员按上面的步骤准备候选并启用。任务指向带版本的控制脚本与本文的 `requestPath` 仍是操作员步骤；结果写进 `deploy-result.json`。目标关系与剩余阶段见 `docs/zh/references/watchdog-superagent-mutual-assist.md`。
 
 ### 版本化 Watchdog 制品与更新任务
 
-Watchdog 不再通过拉取 superagent 检出更新：仓库构建不可变制品，观察器、agent 包装与 gate 只从同一版本导入。`node scripts/watchdog-artifact.mjs --out <dir> --version <id> --commit <sha>` 把 `scripts/watchdog`、`scripts/watchdog-agent/*` 和稳定启动器复制到制品，并写入包含文件哈希、总摘要、`apiVersion` 与 `minServiceVersion` 的 `manifest.json`。`node scripts/watchdog-smoke.mjs <dir>` 用本地 mock 管理 API 验证制品，不接触生产服务或飞书。
+Watchdog 不再通过拉取 superagent 检出更新：仓库构建不可变制品，观察器、agent 包装与 gate 只从同一版本导入。`node scripts/watchdog-artifact.mjs --out <dir> --version <id> --commit <sha>` 把 `scripts/watchdog`、`scripts/watchdog-agent/*` 和两套稳定启动器（常驻 observer 与一次性 agent）复制到制品，并写入包含文件哈希、总摘要、`apiVersion` 与 `minServiceVersion` 的 `manifest.json`。`node scripts/watchdog-smoke.mjs <dir>` 用本地 mock 管理 API 验证制品，不接触生产服务或飞书。
 
-把制品安装到 `<watchdogHome>\versions\<version>`，用 `<watchdogHome>\current.txt` 表示当前版本；`previous.txt` 是回滚点。计划任务通过 `wscript.exe` 运行 `<watchdogHome>\launch-agent.vbs -Config <agent.json>`；`wscript.exe` 自身没有控制台窗口，因此定时检查不会在桌面上闪出 PowerShell 窗口。VBS 以隐藏窗口启动稳定的 `<watchdogHome>\launch-agent.ps1 -Config <agent.json>` 并等待其退出码；PowerShell 启动器读取 `current.txt` 并启动该版本的 `agent\run.ps1`。切换版本不需要改写任务动作，也从不重启 superagent 服务。agent 配置（服务 URL、chat id、checkout、workspace、DSH home、模型 patch、日志）留在仓库外；`scripts/watchdog-agent/config.example.json` 与 `model.patch.example.yml` 是模板。
+把制品安装到 `<watchdogHome>\versions\<version>`，用 `<watchdogHome>\current.txt` 表示当前版本；`previous.txt` 是回滚点。常驻 observer 由计划任务通过 `wscript.exe` 运行 `<watchdogHome>\launch-observer.vbs -Config <observer.json>`；VBS 以隐藏窗口启动 `launch-observer.ps1`，后者读取 `current.txt`、运行该版本的 `watchdog --config`，非零退出时等待 10 秒重启。一次性或手动检查仍可用 `launch-agent.vbs -Config <agent.json>` 运行 `agent\run.ps1`；它不是监控入口，监控不再使用每 30 分钟的定时 gate。切换版本不需要改写任务动作，也从不重启 superagent 服务。observer 配置（服务 URL、chat id、state/log、agentConfig）与 agent 配置（checkout、workspace、DSH home、模型 patch）留在仓库外；`scripts/watchdog-agent/config.example.json` 与 `model.patch.example.yml` 是 agent 模板。
 
 agent 必须运行在自己的工作区，而不是 checkout。不需要人工填写路径：未设置 `workspace` 时，包装脚本使用 `<配置目录>\workspaces\watchdog_<service profile>` —— 本部署是 `watchdog_superagent`，service profile 为 `sheepdoku` 时是 `watchdog_sheepdoku` —— 因此同一主机上的多个 Watchdog 不会共用工作区。只有想换名字或位置时才需要设置 `workspace`。`run.ps1` 在目录缺失时创建它，拒绝等于 checkout 或位于 checkout 内的路径，并在运行 gate 和完整 agent 前切换进去。提示词用绝对路径引用 checkout，因此 agent 仍能读取部署文档并运行 `node <checkout>\scripts\dsh-superagent ...`。DSH 按工作目录把 Session 归入工作区，因此 Watchdog 的 Session 不再进入 checkout 的 Desktop DSH 工作区；把该工作区目录添加为 DSH 项目即可在自己的工作区下查看，否则它们保持未分组。已有安装必须使用重新构建的制品；superagent 发布不会更新当前本机部署的旧包装脚本。这只隔离工作区，不是安全边界：agent 仍可完全访问 checkout，共享 DSH home 时仍共享其 Session 与工作区存储。
 
-独立的 `dsh-superagent-watchdog-update` 任务通过同一个隐藏启动器运行 `node scripts/watchdog-update.mjs --config <update.json>`：`wscript.exe <checkout>\scripts\launch-hidden.vbs <node> <checkout>\scripts\watchdog-update.mjs --config <update.json>`。主会话或操作员写入 `watchdog-update-request.json`，包含操作者确认、目标版本、制品路径、可选摘要和幂等键。任务校验制品位于 staging 根目录内且与 manifest 一致，做 smoke、安装、切换 `current.txt`、触发计划任务，并等待带新版本的已记录运行。smoke、触发或心跳失败时恢复上一个指针；锁让并发更新被拒绝，重复幂等键返回已记录结果。更新任务不自行启动观察器，也从不备份、重启或替换 superagent。快照的 `lastRun` 与已记录运行携带 Watchdog 的 `version` 和 `commit`，供面板与审计使用。
+独立的 `dsh-superagent-watchdog-update` 任务通过同一个隐藏启动器运行 `node scripts/watchdog-update.mjs --config <update.json>`：`wscript.exe <checkout>\scripts\launch-hidden.vbs <node> <checkout>\scripts\watchdog-update.mjs --config <update.json>`。主会话或操作员写入 `watchdog-update-request.json`，包含操作者确认、目标版本、制品路径、可选摘要和幂等键。任务校验制品位于 staging 根目录内且与 manifest 一致，做 smoke、安装、切换 `current.txt`、停止旧 observer 并按配置启动新版本，再等待带新版本的已记录运行。smoke、启动或心跳失败时恢复上一个指针并重启上一版；锁让并发更新被拒绝，重复幂等键返回已记录结果。更新任务从不备份、重启或替换 superagent。快照的 `lastRun` 与已记录运行携带 Watchdog 的 `version` 和 `commit`，供面板与审计使用。
 
 ```json
 {
-  "watchdogHome": "C:\\Users\\me\\.dsh\\watchdog",
-  "stagingRoot": "C:\\Users\\me\\.dsh\\watchdog\\staging",
-  "requestPath": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-request.json",
+  "watchdogHome": "C:\\Users\\dd\\.dsh\\watchdog-independent",
+  "stagingRoot": "C:\\Users\\dd\\.dsh\\watchdog-independent\\staging",
+  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update-request.json",
   "serviceUrl": "http://127.0.0.1:3083",
-  "triggerCommand": "schtasks /run /tn dsh-superagent-watchdog-agent",
-  "observerStopCommand": "",
-  "observerStartCommand": "",
-  "logFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update.log",
-  "resultFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-result.json",
+  "triggerCommand": "schtasks /run /tn dsh-superagent-watchdog-observer",
+  "observerStopCommand": "schtasks /end /tn dsh-superagent-watchdog-observer",
+  "observerStartCommand": "schtasks /run /tn dsh-superagent-watchdog-observer",
+  "logFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update.log",
+  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update-result.json",
   "heartbeatTimeoutSeconds": 180,
   "pollSeconds": 5,
   "smokeTimeoutSeconds": 30,
@@ -342,9 +412,9 @@ agent 必须运行在自己的工作区，而不是 checkout。不需要人工�
 }
 ```
 
-首次安装是操作员步骤：构建或复制制品到 staging 根目录，安装两个稳定启动器与 agent 配置，把计划任务的 `wscript.exe` 指向 `launch-agent.vbs`，并写入 `current.txt`。执行页现在显示 Superagent 版本、最近一次 Watchdog 记录中的制品版本和该次心跳；没有心跳或心跳过期会显示为警告。部署可用 DSH_SUPERAGENT_VERSION 命名运行版本，未设置时回退到包版本。
+首次安装是操作员步骤：构建或复制制品到 staging 根目录，安装两套稳定启动器、observer 配置与 agent 配置，把计划任务的 `wscript.exe` 指向 `launch-observer.vbs -Config observer.json`，并写入 `current.txt`。该任务应在登录时启动、失败时重启；旧的每 30 分钟 `dsh-superagent-watchdog-agent` 任务应删除，不再作为监控入口。执行页现在显示 Superagent 版本、最近一次 Watchdog 记录中的制品版本和该次心跳；没有心跳或心跳过期会显示为警告。部署可用 DSH_SUPERAGENT_VERSION 命名运行版本，未设置时回退到包版本。
 
-面板还显示已安装的当前与上一版、最近一次请求的候选版本，以及那次更新的时间和结果。安装信息来自 `DSH_SUPERAGENT_WATCHDOG_HOME` 下的 `current.txt`、`previous.txt` 和 `watchdog-update-result.json`（可用 `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT` 覆盖结果路径）；未设置该目录时面板显示未配置安装。若使用持久 observer，在更新配置中设置 `observerStopCommand` 与 `observerStartCommand`：更新任务先停止旧 observer、再切换指针、启动新版本；启动失败时恢复指针并重新启动上一版。未设置这两个命令时仍按原方式触发计划任务 agent。命令会收到 `DSH_WATCHDOG_VERSION` 与 `DSH_WATCHDOG_SERVICE_URL`，并在 superagent 服务之外运行。
+面板还显示已安装的当前与上一版、最近一次请求的候选版本，以及那次更新的时间和结果。安装信息来自 `DSH_SUPERAGENT_WATCHDOG_HOME` 下的 `current.txt`、`previous.txt` 和 `watchdog-update-result.json`（可用 `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT` 覆盖结果路径）；未设置该目录时面板显示未配置安装。本机安装在 `C:\Users\dd\.dsh\watchdog-independent`，因此服务环境应把 `DSH_SUPERAGENT_WATCHDOG_HOME` 指向该目录，否则安装信息为 null。更新配置应设置 `observerStopCommand` 与 `observerStartCommand`：更新任务先停止旧 observer、再切换指针、启动新版本；启动失败时恢复指针并重新启动上一版。命令会收到 `DSH_WATCHDOG_VERSION` 与 `DSH_WATCHDOG_SERVICE_URL`，并在 superagent 服务之外运行。
 
 ### 独立告警与 Session 观测
 
@@ -354,8 +424,8 @@ agent 必须运行在自己的工作区，而不是 checkout。不需要人工�
 {
   "url": "http://127.0.0.1:3083",
   "report": false,
-  "stateDir": "C:\\Users\\me\\.dsh\\watchdog\\state",
-  "alertFile": "C:\\Users\\me\\.dsh\\watchdog\\alerts.jsonl",
+  "stateDir": "C:\\Users\\dd\\.dsh\\watchdog-independent\\observer-state",
+  "alertFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\alerts.jsonl",
   "alertAfterFailures": 2
 }
 ```
@@ -367,7 +437,7 @@ node scripts\dsh-superagent --profile superagent --url http://127.0.0.1:3082 wat
   --ticket <工单 id> --reason "<一句证据>" --snapshot-at "<snapshot.at>"
 ```
 
-服务会重新检查存活的 Session、快照新鲜度（十分钟）、执行器暂停状态和每个 Session 最多一次的恢复上限，写入审计行，并且绝不重启服务。被拒绝或失败的尝试只报告，不得再次 retry；agent 提示词只允许对 `session-missing` 使用这条命令，绝不调用原始 retry/stop。提示词和包装随 Watchdog 制品版本化，修改行为后需重新构建并安装制品。P3 的服务/宿主机检查与独立飞书投递仍待完成。
+服务会重新检查存活的 Session、快照新鲜度（十分钟）、执行器暂停状态和每个 Session 最多一次的恢复上限，写入审计行，并且绝不重启服务。被拒绝或失败的尝试只报告，不得再次 retry；agent 提示词只允许对 `session-missing` 使用这条命令，绝不调用原始 retry/stop。提示词和包装随 Watchdog 制品版本化，修改行为后需重新构建并安装制品。P3 的服务/宿主机检查与独立飞书投递仍待完成；监控由常驻 observer 承担，不再使用 30 分钟定时 gate。
 
 ## 设置
 
@@ -497,7 +567,9 @@ Windows 上使用当前 Windows 版本自带的 `curl.exe`，把 `cli` 设为 `g
 3. 运行 `git pull && pnpm install && pnpm build`。
 4. 运行 `scripts/dsh-superagent restart` 并检查其状态。
 
-Windows 上用 PowerShell 执行同样的步骤；PowerShell 7 支持 `&&`，服务命令是 `node scripts\dsh-superagent restart`。
+Windows 上用 PowerShell 执行同样的步骤；PowerShell 7 支持 `&&`，服务命令是
+`pwsh scripts\dsh-superagent.ps1 restart`。入口只接收动作（以及可选的 `-Config`/`-RespectStop`）；目标信息保存在
+`%USERPROFILE%\.dsh-superagent\service.json`，按 `examples/service.windows.json` 创建。
 
 重启会结束正在运行的派工，并带恢复说明启动替代的派工。团队文本和被覆盖的提示词段落会保留；没有覆盖的段落跟随新的默认内容。升级后检查标记为 **默认内容已更新** 的段落。
 
@@ -522,7 +594,10 @@ Windows 上用 PowerShell 执行同样的步骤；PowerShell 7 支持 `&&`，服
 | 已结束工单的 worktree 仍留在 `<stateDir>/work/…` | 它有未提交或未跟踪改动、提交不在远端、检出了其他分支，或不是链接 worktree。提交并推送，或丢弃这些工作；下次宿主启动时会再次尝试清理 |
 | 找不到 `pwsh`，或准备命令报 PowerShell 错误 | 安装 PowerShell 7 并把 `pwsh` 放到 `PATH` 上；准备命令不使用 Windows PowerShell 5.1 |
 | Windows 上启动时报 `dsh must be on PATH.` | 全局安装 DSH 并打开新的 shell；`start` 会解析 npm 的 `dsh.cmd` |
-| PowerShell 或 `cmd.exe` 无法运行 `scripts\dsh-superagent` | 该脚本在 Windows 上没有 `.cmd` shim；请运行 `node scripts\dsh-superagent <command>` |
+| PowerShell 或 `cmd.exe` 无法运行 `scripts\dsh-superagent` | 该脚本在 Windows 上没有 `.cmd` shim；请运行 `pwsh scripts\dsh-superagent.ps1 <action>`，环境已设置好时也可 `node scripts\dsh-superagent <command>` |
+| `The service configuration does not exist` 或目标不匹配 | 按 `examples/service.windows.json` 创建 `%USERPROFILE%\.dsh-superagent\service.json`；入口拒绝不存在的 checkout 或非回环 URL，启动还要求 profile 目录存在 |
+| `The management URL … is owned by PID …` | 端口被其他进程占用；停止它或改用服务真实的 `url`。入口绝不会杀外部监听者 |
+| `This home's dsh-superagent process … does not listen` | 记录过的进程仍在运行，但没有监听目标 URL。检查并修复其监听，或从独立任务重启；`start` 和显式 `--url` 的 `stop` 会拒绝，零参数 `stop` 会继续发现其他正在运行的实例 |
 | `gh` 或 `glab` 的 `.cmd` 包装脚本丢失或破坏参数 | 使用原生 `gh.exe` 或 `glab.exe` 及其配置目录（见 Windows 凭据）；绝不要让 JSON 或消息文本经过 `cmd.exe` |
 | Windows 主机上飞书来源被拒绝 | 把来源的 **机器人的 lark-cli** 字段指向 `lark-cli`（npm 的 `.cmd` shim）或包的 Node 入口；没有 Node 入口的自定义 `.cmd` 包装会被拒绝 |
 | `git does not read the credential configuration dsh-superagent writes` | 安装 git 2.32 或更高版本 |

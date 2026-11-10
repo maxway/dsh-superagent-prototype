@@ -21,10 +21,10 @@
 | 组件 | 位置 | 当前职责 |
 | --- | --- | --- |
 | 服务控制脚本 | `scripts/dsh-superagent` | `start`/`stop`/`restart`/`status`，profile 级锁、健康检查、`watchdog` 只读快照与动作请求 |
-| 独立 Watchdog 进程 | `scripts/watchdog` | 自有配置/状态/日志/pid，读 `GET /orchestrator/api/watchdog`，记录运行、飞书报告、`--gate` 机械预检 |
-| Watchdog 定时 agent（本机） | `C:\Users\dd\.dsh\watchdog` 的 `run.ps1`、`gate.mjs`、`prompt.md` | 计划任务 `dsh-superagent-watchdog-agent` 每 15 分钟运行；`gate.mjs` 从稳定 checkout 导入 `scripts/watchdog`，风险轮次才启动完整 DSH agent；当前旧包装仍以 checkout 为工作目录，入仓模板已改为独立 `workspace` |
-| Superagent 侧部署入口 | `src/app/deployment.ts`、`orchestrator_deploy` | 主 Session 把操作者的部署原话写入请求文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND` |
-| 独立部署任务（本机） | `C:\Users\dd\.dsh\watchdog\deploy.ps1`，计划任务 `dsh-superagent-deploy` | 启动 headless DSH agent，按 `local-superagent-release` 技能停服、切换、启动、健康检查并报告 |
+| 独立 Watchdog 进程 | `scripts/watchdog` | 常驻 observer：自有配置/状态/日志/pid，用版本化长等待跟随变化（`GET /orchestrator/api/watchdog/wait`），记录运行、飞书日报与独立告警；配置 `agentConfig` 时新风险交给同版本完整 agent，observer 不再重复发机械报告 |
+| Watchdog observer 与风险 agent（本机） | `C:\Users\dd\.dsh\watchdog-independent` 的 `current.txt` 指向的版本化制品（`watchdog`、`agent\run.ps1`、`gate.mjs`、`prompt.md`） | 计划任务 `dsh-superagent-watchdog-observer` 在登录时经 `launch-observer.vbs`/`launch-observer.ps1` 常驻运行 observer；observer 在长连接发现新风险时调用同版本 `agent\run.ps1`，由完整 DSH agent 判定和报告；每 30 分钟的 `dsh-superagent-watchdog-agent` 定时 gate 已删除。2026-11-10 安装 `obs-525e65f`（提交 `525e65f`），常驻 observer 已运行并记录带版本的心跳 |
+| Superagent 侧部署入口 | `src/app/deployment.ts`、`orchestrator_deploy` | 主 Session 把操作者的部署原话写入请求文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND`；请求文件路径必须与部署任务的 `requestPath` 一致 |
+| 独立部署任务（本机） | 仓库 `scripts/deploy.ps1` → `scripts/deploy.mjs` + `C:\Users\dd\.dsh\watchdog-deploy\deploy-config.json`，计划任务 `dsh-superagent-deploy` | 配置了 `mechanical` 时由 `deploy.mjs` 机械停服、备份停机状态、按清单切换、启动并做存活校验，不调用模型；否则回退 headless DSH agent 按 `local-superagent-release` 技能执行。两条路径都归档请求并写结果文件；生产配置尚未启用 `mechanical` |
 
 ### 2.2 事故一：Feishu watch 关闭竞态（已修复，本 MR）
 
@@ -51,7 +51,7 @@
 
 1. **同一源码，两个制品。** Superagent 与 Watchdog 从同一提交构建，但分别安装、分别版本化、分别回滚；Watchdog 不在运行时依赖稳定 checkout 的源码。
 2. **职责分离。** Superagent 负责开发、评审、请求和展示；Watchdog 负责独立执行受控发布与恢复。任何一方都不执行“替换自己”的动作。
-3. **OS 监督者拥有长期进程。** 服务、Watchdog observer、Watchdog 定时 agent、部署执行器都由计划任务/系统服务启动；它们彼此不是父子关系，也不在 DSH 工具 Job 内。
+3. **OS 监督者拥有长期进程。** 服务、Watchdog observer、风险 agent、部署执行器都由计划任务/系统服务启动；它们彼此不是父子关系，也不在 DSH 工具 Job 内。
 4. **控制面是文件/API，不是命令。** 请求携带目标、不可变版本、幂等键、操作者确认、维护窗口；执行器只接受预配置的目标和动作，审计每个阶段。
 5. **失联可见。** 双方都有心跳与版本；一方心跳过期时另一方报告，而不是把没有消息当成正常。
 6. **死 Session 不等于死服务，也不等于工单该停。** 区分进程死亡、Session 缺失/停摆、模型重试、谷价排队、等待人工/评审/投递；恢复动作按证据升级。
@@ -61,7 +61,7 @@
 ```
 Windows Task Scheduler / systemd
 ├── dsh-superagent-service-start   ← 独立启动服务（不在任何 DSH Job 内）
-├── dsh-superagent-watchdog-agent  ← 每 15 分钟机械门控 + 风险轮次完整 agent
+├── dsh-superagent-watchdog-observer ← 常驻 observer（HTTP 长连接；新风险时运行完整 agent）
 ├── dsh-superagent-watchdog        ← 常驻 observer（scripts/watchdog 或安装后的制品）
 ├── dsh-superagent-deploy          ← 受控发布 Superagent
 └── dsh-superagent-watchdog-update ← 独立更新/回滚 Watchdog
@@ -81,7 +81,7 @@ Windows Task Scheduler / systemd
 
 ### 5.1 Superagent → Watchdog：开发、升级、部署 Watchdog
 
-**开发与构建。** Watchdog 的代码（`scripts/watchdog`）和本机 agent 脚本（`run.ps1`、`gate.mjs`、`prompt.md`、模型 patch 模板）都应进入仓库、走 MR 和 CI；路径、账号、chat id 等环境配置留在仓库外的配置目录。当前 `gate.mjs` 从稳定 checkout 导入源码，且 agent 脚本未版本化，是首要的耦合点。
+**开发与构建。** Watchdog 的代码（`scripts/watchdog`）和本机 agent 脚本（`run.ps1`、`gate.mjs`、`prompt.md`、模型 patch 模板）都应进入仓库、走 MR 和 CI；路径、账号、chat id 等环境配置留在仓库外的配置目录。`gate.mjs`、`run.ps1` 与 observer 已随版本化制品发布，不再从 checkout 导入；剩余的环境配置与计划任务安装仍是本机操作员步骤。
 
 **制品。** 构建输出包含 `scripts/watchdog`、agent 模板、配置 schema 与 manifest：`{name, commit, sha256, builtAt, apiVersion, minServiceVersion}`。安装到版本目录（例如 `watchdog/versions/<commit>/`），用 `current` 指针切换，保留上一版用于回滚。Superagent 的源码检出不再作为 Watchdog 的运行时依赖。
 
@@ -146,11 +146,11 @@ Windows Task Scheduler / systemd
 | P3（中期） | 快照增加 Session 观测与信号；enforce 下有界 retry/重启；服务/宿主机检查项（路线图 L）；服务不可用时的独立告警 | 杀死测试 Session 后 Watchdog 能识别并恢复/报告；服务停止期间 Watchdog 仍工作并留下记录 |
 | P4（可选） | 面板部署/更新入口与状态查询；审批与维护窗口配置；自动化边界评估 | 断线可恢复查看；未授权/未配置时不可执行 |
 
-**P1 状态（2026-11-09）。** `scripts/dsh-superagent start` 已改为在调用方位于 Windows Job 中时，通过 WMI 让 `scripts/service-start.ps1` 在 Job 之外启动服务，并由 `status` 报告实时归属与最近启动方式。生产实例已由独立部署任务切换到 `0cf6a69`，`DSH_SUPERAGENT_WATCHDOG_RECOVERY=enforce`，执行器退出后服务继续存活。验收时发现：Node v24（libuv 1.52）会在进程第一次 spawn 非 detached 子进程时，把进程自己加入一个由它创建并持有的 kill-on-close Job（服务的 Feishu 事件消费者即触发），因此 `IsProcessInJob=false` 对运行中的服务永远不成立；全量句柄枚举实测服务只在该自建 Job 内，不在任何外部/DSH Job 中。`status`/`verify` 因此区分 `inJob`（任意归属）与 `foreignJob`（是否位于非自身创建的 Job），验收以 `foreignJob=false` 且执行器退出后同一进程继续存活为准；`scripts/deploy.ps1` 在部署 agent 退出后运行该检查并记录结果。剩余操作：把修正后的控制脚本发布到生产并重跑验收。
+**P1 状态（2026-11-09）。** `scripts/dsh-superagent start` 已改为在调用方位于 Windows Job 中时，通过 WMI 让 `scripts/service-start.ps1` 在 Job 之外启动服务，并由 `status` 报告实时归属与最近启动方式。生产实例已由独立部署任务切换到 `0cf6a69`，`DSH_SUPERAGENT_WATCHDOG_RECOVERY=enforce`，执行器退出后服务继续存活。验收时发现：Node v24（libuv 1.52）会在进程第一次 spawn 非 detached 子进程时，把进程自己加入一个由它创建并持有的 kill-on-close Job（服务的 Feishu 事件消费者即触发），因此 `IsProcessInJob=false` 对运行中的服务永远不成立；全量句柄枚举实测服务只在该自建 Job 内，不在任何外部/DSH Job 中。`status`/`verify` 因此区分 `inJob`（任意归属）与 `foreignJob`（是否位于非自身创建的 Job），验收以 `foreignJob=false` 且执行器退出后同一进程继续存活为准；`scripts/deploy.ps1` 在部署 agent 退出后运行该检查并记录结果。2026-11-10 00:39 的生产 `verify --survival-seconds 3` 已以 `foreignJob=false` 通过，修正后的控制脚本已在生产生效。2026-11-10 新增 `scripts/deploy.mjs`：配置 `mechanical` 时例行部署只做机械预检、停服、停机状态备份、清单切换、启动和存活校验，不调用模型，失败时恢复运行文件并重启上一版；没有 `mechanical` 时保留 headless agent 回退。生产配置尚未启用 `mechanical`，启用步骤见 `docs/zh/006-deployment.md`。
 
-**P2 状态（2026-11-09）。** Watchdog agent 脚本已入仓并模板化；`scripts/watchdog-artifact.mjs` 构建带 manifest/摘要的不可变制品，`watchdog-smoke.mjs` 用本地 mock 验证自包含性；`watchdog-launch.ps1` 作为稳定启动器读取 `current.txt`；`watchdog-update.mjs` 实现请求校验、staging 根校验、smoke、安装、指针切换、锁、幂等、心跳和回滚，更新运行记录携带 `version`/`commit`。agent 包装支持独立 `workspace`，默认按 service profile 生成 `workspaces\watchdog_<profile>`（如 `watchdog_superagent`、`watchdog_sheepdoku`），启动 gate 与完整 agent 前切换进去，并拒绝等于 checkout 或位于其内的路径；提示词改用 checkout 绝对路径，因此 Watchdog 的 Session 不再进入 Desktop 的 checkout 工作区。面板已在执行页显示双方版本、最近心跳，以及 current/候选/上一版与最近更新（缺失/过期/失败显示警告）；更新任务支持可选持久 observer 的停止、切换、启动与失败回滚。生产安装与更新任务尚未执行，当前本机旧包装仍以 checkout 为工作目录；完整 agent 模型路径留待维护窗口验证。P3–P4 保持方案状态，其待决策项见下一节。
+**P2 状态（2026-11-09）。** Watchdog agent 脚本已入仓并模板化；`scripts/watchdog-artifact.mjs` 构建带 manifest/摘要的不可变制品，`watchdog-smoke.mjs` 用本地 mock 验证自包含性；`watchdog-launch.ps1` 作为稳定启动器读取 `current.txt`；`watchdog-update.mjs` 实现请求校验、staging 根校验、smoke、安装、指针切换、锁、幂等、心跳和回滚，更新运行记录携带 `version`/`commit`。agent 包装支持独立 `workspace`，默认按 service profile 生成 `workspaces\watchdog_<profile>`（如 `watchdog_superagent`、`watchdog_sheepdoku`），启动 gate 与完整 agent 前切换进去，并拒绝等于 checkout 或位于其内的路径；提示词改用 checkout 绝对路径，因此 Watchdog 的 Session 不再进入 Desktop 的 checkout 工作区。面板已在执行页显示双方版本、最近心跳，以及 current/候选/上一版与最近更新（缺失/过期/失败显示警告）；更新任务支持持久 observer 的停止、切换、启动与失败回滚。2026-11-10 01:31 生产安装 `obs-525e65f`（提交 `525e65f`），常驻 observer 由登录任务启动、`lastRun` 携带新版本；agent 包装运行于独立 workspace（`watchdog-independent\workspace`）。每 30 分钟的定时 gate 任务已删除。P4 保持方案状态，其待决策项见下一节。
 
-**P3 状态（2026-11-09）。** 已开始：快照新增 `session-missing`；Watchdog 配置 `alertFile`/`alertAfterFailures` 写独立不可达/恢复记录；服务在 `DSH_SUPERAGENT_WATCHDOG_RECOVERY=enforce` 下支持有界恢复（只处理 session-missing、每 Session 最多一次 retry、失败只报告、审计行、不重启服务），默认关闭。尚未实现：服务/宿主机检查项、独立告警的飞书投递与操作员确认；enforce 的生产启用仍由操作员在维护窗口决定。
+**P3 状态（2026-11-09）。** 快照新增 `session-missing`；Watchdog 配置 `alertFile`/`alertAfterFailures` 写独立不可达/恢复记录；服务在 `DSH_SUPERAGENT_WATCHDOG_RECOVERY=enforce` 下支持有界恢复（只处理 session-missing、每 Session 最多一次 retry、失败只报告、审计行、不重启服务）。生产已启用 enforce；常驻 observer 取代了每 30 分钟的门控 agent，并由长连接在出现新风险时触发完整 agent。尚未实现：服务/宿主机检查项、独立告警的飞书投递与操作员确认。
 
 ## 8. 待决策与风险
 

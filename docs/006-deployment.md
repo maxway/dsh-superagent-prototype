@@ -4,7 +4,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 ## Production host for this checkout
 
-The intended production host is native Windows, using the stable checkout at `F:\code\dsh-superagent-prototype` and a DSH home separate from Desktop. A different profile alone does not isolate workspace and session storage. On 2026-11-08 the operator authorized a cutover to `C:\Users\dd\.dsh-superagent`, with `DSH_AGENTS_HOME` set to its `agents` subdirectory. The local `C:\Users\dd\.dsh-superagent\service.ps1` sets these variables for `start`, `stop`, `restart` and `status`; using the generic script without them can start against the shared Desktop home. The existing dedicated state directory remains at `C:\Users\dd\.dsh\state\superagent`, outside the new home. Startup reported runtime and Feishu ready, with GitLab starting; workspace and session recovery and end-to-end behavior were not independently verified after cutover at the operator's request. This separation is not an OS security boundary. The profile links the bundle directly to the F: checkout; do not rename that checkout to match the package name. Use the Windows profile example in `examples/profile.cordis.patch.yml`; the POSIX / WSL example remains in `examples/profile.posix.cordis.patch.yml` for a separately managed deployment. Historical WSL state and worktrees are not Windows worker directories and must not be pruned or resumed on Windows.
+The intended production host is native Windows, using the stable checkout at `F:\code\dsh-superagent-prototype` and a DSH home separate from Desktop. A different profile alone does not isolate workspace and session storage. On 2026-11-08 the operator authorized a cutover to `C:\Users\dd\.dsh-superagent`, with `DSH_AGENTS_HOME` set to its `agents` subdirectory. The versioned entry `scripts\dsh-superagent.ps1` reads a machine configuration from `%USERPROFILE%\.dsh-superagent\service.json` outside the checkout and pins the checkout, DSH home, profile, loopback URL, Node path, optional PATH additions and deployment request/command; a generic invocation without that file can start against the shared Desktop home. `C:\Users\dd\.dsh-superagent\service.ps1` remains the compatibility entry for the operator's existing tools; after cutover it should be reduced to a shim that passes `-Config` to the versioned entry. The existing dedicated state directory remains at `C:\Users\dd\.dsh\state\superagent`, outside the new home. Startup reported runtime and Feishu ready, with GitLab starting; workspace and session recovery and end-to-end behavior were not independently verified after cutover at the operator's request. This separation is not an OS security boundary. The profile links the bundle directly to the F: checkout; do not rename that checkout to match the package name. Use the Windows profile example in `examples/profile.cordis.patch.yml`; the POSIX / WSL example remains in `examples/profile.posix.cordis.patch.yml` for a separately managed deployment. Historical WSL state and worktrees are not Windows worker directories and must not be pruned or resumed on Windows.
 
 A Windows process cannot safely rely on WSL-created dependency links in a shared checkout. Prepare and verify a complete Windows dependency installation at the final path with the production service stopped and other users of that dependency tree quiesced. A pnpm `Already up to date` message is not proof: build and import the actual bundle with Windows Node, then require `GET /orchestrator/api/state` with `x-orchestrator-request: 1` to return 200 and check Source health. A listening web port alone is insufficient. Keep WSL and Windows dependency trees separate when both are needed. When running in the background, also verify the service and Feishu consumer have no visible console and the token-bearing startup log is accessible only to the intended user and administrators.
 
@@ -174,26 +174,73 @@ After the first start, edit machine limits in **Settings → Deployment** or the
 
 ## Start and stop
 
+On Windows the versioned entry is the operator command. It reads a machine configuration outside the checkout, so the
+target cannot drift with the current directory or an unrelated environment variable:
+
+```powershell
+pwsh scripts\dsh-superagent.ps1 status
+pwsh scripts\dsh-superagent.ps1 start
+pwsh scripts\dsh-superagent.ps1 stop
+pwsh scripts\dsh-superagent.ps1 restart
+```
+
+It reads `%USERPROFILE%\.dsh-superagent\service.json` unless `-Config` or `DSH_SUPERAGENT_SERVICE_CONFIG` names another
+file; `examples/service.windows.json` is a template. The file pins `checkout`, `home`, `agentsHome`, `profile`, the
+loopback `url`, the `node` executable, optional `path` additions and the optional `deployRequest`/`deployCommand`, and it
+holds no secret. A start also needs the user-level `LUMOS_API_KEY`, which the wrapper copies from the user environment.
+The entry exposes only the action (plus optional `-Config` and `-RespectStop`); target and timing facts stay in the
+file. It refuses a checkout that does not exist, a non-loopback URL, or (for a start) a missing profile directory.
+
+After cutover, replace the old hard-coded `C:\Users\dd\.dsh-superagent\service.ps1` with a compatibility shim so existing
+tools keep working:
+
+```powershell
+param([ValidateSet('start', 'stop', 'restart', 'status', 'verify')][string]$Action = 'status')
+& 'F:\code\dsh-superagent-prototype\scripts\dsh-superagent.ps1' $Action -Config "$env:USERPROFILE\.dsh-superagent\service.json"
+exit $LASTEXITCODE
+```
+
+The Node script remains the implementation and is available on both platforms when the environment is already set:
+
 ```sh
 scripts/dsh-superagent start
 scripts/dsh-superagent status
 ```
 
-On Windows, run the same script through Node, because the file has no `.cmd` shim:
+On Windows that is `node scripts\dsh-superagent start` and the same actions; `node` is required because the file has no
+`.cmd` shim.
 
-```powershell
-node scripts\dsh-superagent start
-node scripts\dsh-superagent status
-node scripts\dsh-superagent stop
-```
+The process that owns the listening socket of `--url` is authoritative. `status` reports `identity: "listener"`, the
+`listener` PIDs, `unlistening` (processes that match the profile but do not own this URL) and `foreign` (another process
+owns the URL). `start` refuses a foreign listener or a process this home recorded but that no longer listens. On
+Windows, `stop` without `--url` discovers running superagent servers from their management state and stops the only
+one, or the one matching `--profile`, so a matching home or URL is not required; an explicit `--url` is exact. A foreign listener is
+never stopped, and neither action force-kills. When listener lookup is unavailable, `identity: "scan"` says the older
+command-line fallback was used.
 
-`start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script. Each profile uses its own named tmux socket. The pane uses the caller's `DSH_HOME`, `HOME`, and `PATH` (including unset values) and clears `TMUX` and `TMUX_PANE` before starting DSH, so a worker does not inherit the service socket. Setting `TMUX_TMPDIR` alone does not override an inherited `TMUX`; these measures are guardrails, not an OS security boundary.
+`start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits
+up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing
+setup information. It refuses duplicate instances, including ones started outside this script. Each profile uses its own
+named tmux socket. The pane uses the caller's `DSH_HOME`, `HOME`, and `PATH` (including unset values) and clears `TMUX`
+and `TMUX_PANE` before starting DSH, so a worker does not inherit the service socket. Setting `TMUX_TMPDIR` alone does not
+override an inherited `TMUX`; these measures are guardrails, not an OS security boundary.
 
-On Windows, `start` requires `dsh` on `PATH` (the npm `.cmd` shim), spawns `dsh --profile <profile> --no-open` as a detached process with the same log and control files, and waits for the management API; it does not use tmux. `status` lists processes through Windows PowerShell (`powershell.exe`, part of Windows). `stop` asks DSH to exit through `POST /orchestrator/api/service/stop` instead of sending a signal; it waits up to five minutes and never force-kills. The tmux socket and `TMUX` details above apply to POSIX only. The same exit codes, log names and `manually-stopped` marker apply on both.
+On Windows, `start` requires `dsh` on `PATH` (the npm `.cmd` shim), spawns `dsh --profile <profile> --no-open` as a
+detached process with the same log and control files, and waits for the management API; it does not use tmux. When the
+caller is inside a Windows Job, it creates the service outside that Job through `scripts\service-start.ps1`, which also
+receives the same `--home`. `status` lists processes through Windows PowerShell (`powershell.exe`, part of Windows).
+`stop` asks DSH to exit through `POST /orchestrator/api/service/stop` instead of sending a signal; it waits up to five
+minutes and never force-kills. The tmux socket and `TMUX` details above apply to POSIX only. The same exit codes, log
+names and `manually-stopped` marker apply on both.
 
-`stop` and `restart` request a graceful drain and wait up to five minutes for the process to exit. The Executor drain is bounded at ten seconds and DSH's launcher adds a five-second grace, so a stop normally finishes within about fifteen seconds; a worker still in a turn after the drain can be interrupted. On POSIX they never force-kill the process or touch other tmux sessions.
+`stop` and `restart` request a graceful drain and wait up to five minutes for the process to exit. The Executor drain is
+bounded at ten seconds and DSH's launcher adds a five-second grace, so a stop normally finishes within about fifteen
+seconds; a worker still in a turn after the drain can be interrupted. On POSIX they never force-kill the process or
+touch other tmux sessions.
 
-`status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`; in PowerShell, set `$env:DSH_SUPERAGENT_PROFILE` and `$env:DSH_SUPERAGENT_URL`.
+`status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or
+set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`; in PowerShell, set `$env:DSH_SUPERAGENT_PROFILE` and
+`$env:DSH_SUPERAGENT_URL`.
 
 `status`, `start` and `restart` exit with one of four codes:
 
@@ -208,10 +255,18 @@ A Source that is still starting counts as normal operation. So does a Feishu bot
 
 `status` returns failed parts and their details under `errors`, and setup requirements under `setup`. `start` and `restart` print those problems as lines; they exit 1 if the service never comes up. Only an intentional `stop` pauses automatic recovery.
 
-Each profile stores logs and control files under `.artifacts/`:
+Each DSH home stores its service's logs and control files under `service/`, so a dirty or shared checkout is not runtime
+state:
 
-- Startup logs: `dsh-superagent-<profile>-<date>-<time>-<pid>.log`, where the pid belongs to the script. The newest 20 are kept.
-- Control files: `control/profiles/<profile>/`, containing the stop marker, lock and process id.
+- Startup logs: `<DSH home>\service\logs\dsh-superagent-<profile>-<date>-<time>-<pid>.log`, where the pid belongs to the
+  script. The newest 20 are kept.
+- Control files: `<DSH home>\service\control\profiles\<profile>\`, containing the stop marker, lock, process id and the
+  newest start facts.
+
+This build still reads the old `<checkout>\.artifacts\control\profiles\<profile>\` stop marker, recorded PID and start
+facts so an intentional stop and the current start survive the upgrade. A normal start writes nothing there, but
+stopping a service still recorded there writes its stop marker back so the recovery check sees it. Archive that
+directory after the new entry is deployed and no old invocation remains.
 
 Open the URL printed in the log, then choose **Superagent** in the sidebar.
 
@@ -220,10 +275,10 @@ Open the URL printed in the log, then choose **Superagent** in the sidebar.
 Create the hourly check in the DeepSeek Harness profile you normally use, not in `superagent`. It must keep running when the agent service is down. Ask an agent in that profile to create an hourly schedule using this prompt, with the checkout path filled in:
 
 ```text
-Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest .artifacts/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
+Check dsh-superagent: run `scripts/dsh-superagent --profile superagent --home <DSH home> status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --home <DSH home> --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest <DSH home>/service/logs/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
 ```
 
-`--respect-stop` preserves an intentional stop. Only `stop` writes the marker; `start` clears it. `restart` writes no marker, so the check can recover a restart whose shutdown timed out. On Windows, use the same prompt with `node scripts\dsh-superagent ...` as the command.
+`--respect-stop` preserves an intentional stop. Only `stop` writes the marker; `start` clears it. `restart` writes no marker, so the check can recover a restart whose shutdown timed out. On Windows, use `pwsh scripts\dsh-superagent.ps1 status` and `pwsh scripts\dsh-superagent.ps1 restart -RespectStop` instead, and read the same log under the configured DSH home.
 
 ### Task-level check (Watchdog)
 
@@ -241,7 +296,7 @@ Record each observation run with `scripts/dsh-superagent --profile superagent --
 
 ### Independent Watchdog process
 
-`scripts/watchdog` reads the same read-only snapshot, records each observation as a run, reports changed mechanical findings to Feishu, and keeps its own configuration, state and log; it needs neither DSH nor the operator's profile, and it is where host and deployment checks live. Create `watchdog.json`; its relative paths resolve against the file's folder:
+`scripts/watchdog` is the standing observer: it reads the same read-only snapshot, records each observation as a run, and keeps its own configuration, state and log; it needs neither DSH nor the operator's profile. With `agentConfig`, new mechanical risk goes to the full DSH agent from the same artifact, which judges and reports, so the observer no longer duplicates a mechanical findings report and monitoring is driven by the HTTP long connection rather than a 30-minute timed gate. Host and deployment checks live here too. Create `watchdog.json`; its relative paths resolve against the file's folder:
 
 ```json
 {
@@ -251,13 +306,16 @@ Record each observation run with `scripts/dsh-superagent --profile superagent --
   "intervalSeconds": 900,
   "staleMinutes": 30,
   "dailyReport": { "hour": 9, "timezone": "Asia/Shanghai" },
-  "stateDir": "watchdog-state"
+  "stateDir": "observer-state",
+  "alertFile": "observer-alerts.jsonl",
+  "agentConfig": "agent.json",
+  "agentTimeoutSeconds": 900
 }
 ```
 
-Run `node scripts/watchdog --config watchdog.json` in the foreground or under a process manager, or run `--once` from a scheduled task every 15 to 30 minutes. `--status` prints the last recorded state; the process writes `state.json` and `watchdog.log` under `stateDir` and holds `watchdog.pid` while it runs. It records a run every cycle, so `GET watchdog`'s `lastRun` and `watchdog runs` show that it is alive, and it reports when the mechanical finding set changes. A long-running process holds one versioned wait request instead of sleeping for `intervalSeconds`; the wait returns on a Ticket, health, pause or setup change, at the next silence or review deadline, or at the API's 240-second cap. A change or a deadline runs the full cycle at once; a cap only reconnects the wait, and the process runs a fallback cycle once `intervalSeconds` has passed, so `intervalSeconds` is the maximum gap between cycles. With `dailyReport`, it also sends one quiet report in the morning when nothing is wrong, so a healthy deployment still proves it is checked; the report is sent once per local date (within the fallback gap), and a findings report is not suppressed by it. It has no model judgement: it reports Ticket signals, unhealthy service parts and setup problems, and a full worker load or a paused service explains the signals it leaves out. While the service is down it logs the failure and keeps checking, but it cannot send a Feishu report because the bot belongs to the service.
+The standing observer runs at logon under a scheduled task, or in the foreground under a process manager: `node scripts/watchdog --config watchdog.json`. `--status` prints the last recorded state; the process writes `state.json` and `watchdog.log` under `stateDir` and holds `watchdog.pid` while it runs. It records a run every cycle, so `GET watchdog`'s `lastRun` and `watchdog runs` show that it is alive. A long-running process holds one versioned wait request instead of sleeping for `intervalSeconds`; the wait returns on a Ticket, health, pause or setup change, at the next silence or review deadline, or at the API's 240-second cap. A change or a deadline runs the full cycle at once; a cap only reconnects the wait, and the process runs a fallback cycle once `intervalSeconds` has passed, so `intervalSeconds` is the maximum gap between cycles. With `agentConfig`, new mechanical risk (a Ticket signal, a part in error, incomplete setup, a ready result waiting more than a day, or two failed attempts) runs the full DSH agent from the same artifact; the observer records an `agentFingerprint`, so an unchanged finding spends no second model call, a cleared risk re-arms it, and a failed agent is reported once without retrying. Without `agentConfig` it stays purely mechanical. With `dailyReport`, it also sends one quiet report in the morning when nothing is wrong; the report is sent once per local date (within the fallback gap). While the service is down it logs the failure and writes the independent alert file, but it cannot send a Feishu report because the bot belongs to the service.
 
-To keep the model cost out of ordinary cycles, run the process as a gate with `--gate` on the same interval when a scheduled one-shot is used. A gate cycle reads the snapshot, records the observation, and exits 0 when nothing is risky; it exits 2 when a mechanical finding needs judgement: a Ticket signal, a part in error, incomplete setup, a ready result waiting more than a day, or repeated failed attempts. Run a full DSH agent only when the gate exits 2; the agent records its own observation and reports, so the LLM is paid for only on those cycles. The gate sends only the configured quiet daily report, never a findings report, and changes nothing else; `--status`, the state file and the log show its exit reason. Host checks, bounded recovery and deployment supervision (roadmap workflows K and L) belong in this process later.
+`--once` and `--gate` remain diagnostic/one-shot entries: `--once` runs one cycle and exits; `--gate` only performs the mechanical gate (0 quiet, 2 risk after recording, 1 unreachable) and is no longer a timed monitor. The standing observer does not depend on a 30-minute gate; the model runs only when the long connection sees new risk. Host checks, bounded recovery and deployment supervision (roadmap workflows K and L) belong in this process later.
 
 ### Starting the service outside a Windows Job
 
@@ -265,7 +323,7 @@ A tool command run by DSH belongs to a Windows Job with `JOB_OBJECT_LIMIT_KILL_O
 
 Node puts a long-running service into its own kill-on-close Job the first time it spawns a child (the Feishu event consumer is one), so plain `inJob` is also true for a healthy service. The service holds that Job, and it closes only when the service exits, so it cannot kill the service from outside; `foreignJob` is the fact the checks gate on. A Job the service merely inherited from its launch chain still fails them.
 
-The operator's `service.ps1` remains the service entry point: it sets the production home and calls the control script, so the service keeps its own profile home and credentials while its process is outside the Job. `scripts/service-start.ps1` can also run directly from an independent scheduled task; start that task through `wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\service-start.ps1 ...` so the wrapper and the node control script it runs stay windowless.
+The versioned `scripts\dsh-superagent.ps1` is the service entry point: it validates the machine configuration and calls the control script, so the service keeps its own profile home and credentials while its process is outside the Job. The operator's `C:\Users\dd\.dsh-superagent\service.ps1` remains the compatibility entry for existing tools; after cutover it should be reduced to a shim to that entry. `scripts/service-start.ps1` can also run directly from an independent scheduled task; it receives the same `-DshHome` as the parent. Start that task through `wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\service-start.ps1 ...` so the wrapper and the node control script it runs stay windowless.
 
 A scheduled task has no console to inherit, so Windows gives the first console program it starts (`node` or `pwsh`) a visible console window. Every non-interactive entry point therefore goes through `scripts/launch-hidden.vbs`: `wscript.exe` itself has no console, the launcher starts the command in a hidden window, waits for it and returns its exit code, and all console children of that command share the hidden console. This covers the deployment, Watchdog update, service-start and scheduled one-shot `scripts/watchdog --once`/`--gate` tasks; the Watchdog agent launcher (`launch-agent.vbs`) follows the same pattern. Run a command directly only when a person is watching it interactively. The control script also hides its own PowerShell, `git` and Windows ACL helper processes, so a background `status`, `start` or `stop` never flashes them either.
 
@@ -273,68 +331,116 @@ A scheduled task has no console to inherit, so Windows gives the first console p
 
 ### Deploying the latest superagent
 
-The main Session can send the operator's explicit deployment request to the independent Watchdog instead of releasing anything itself. The `orchestrator_deploy` tool writes the request to the file named by `DSH_SUPERAGENT_DEPLOY_REQUEST` and starts the command in `DSH_SUPERAGENT_DEPLOY_COMMAND` (for example `schtasks /run /tn dsh-superagent-deploy`); unset values disable the tool. The independent deployment task reads the request, verifies the operator's words, and releases the latest commit in its own process, so the main instance only stops; the outer task starts and verifies it after the agent exits. The tool is used when the operator explicitly asks to deploy superagent ("部署superagent"); ordinary requests never deploy, and the main Session never backs up, releases or restarts itself.
+The main Session can send the operator's explicit deployment request to the independent Watchdog instead of releasing anything itself. The `orchestrator_deploy` tool writes the request to the file named by `DSH_SUPERAGENT_DEPLOY_REQUEST` and starts the command in `DSH_SUPERAGENT_DEPLOY_COMMAND` (for example `schtasks /run /tn dsh-superagent-deploy`); unset values disable the tool. The independent deployment task reads the request, verifies the operator's words, and releases the latest commit in its own process, so the main instance only stops; the outer task starts and verifies it after the executor exits. The request path must match the deployment task's configured `requestPath`, otherwise the task exits normally with `no deploy request` and nothing is released; this deployment uses `C:\Users\dd\.dsh\watchdog-deploy\deploy-request.json`. The tool is used when the operator explicitly asks to deploy superagent ("部署superagent"); ordinary requests never deploy, and the main Session never backs up, releases or restarts itself.
 
-The deployment keeps to the minimum. A first deployment, before a candidate is staged, follows the full controlled release (candidate build and validation, a consistent backup, the start check and the rollback path) and is slower. In the stable period the Watchdog pre-builds and pre-validates the latest commit, and a deployment only stops the service, switches the built `lib` and `prompts` plus any other changed runtime file such as `scripts/watchdog` or `locale/`, starts it and runs a basic health check, keeping the previous build for rollback and targeting under a minute. The repository checks and the external maintenance channel cover code quality, so the deployment skips repeated test runs and broad checks. The Watchdog reports the result. The first deployment, which installs this command itself, is started by the operator or the Watchdog directly with the operator's confirmation; once the running superagent has the tool and the two environment values, the main Session sends later requests.
+`scripts/deploy.ps1` is the scheduled task's entry point: a thin Windows shim over `scripts/deploy.mjs`, which owns both deployment paths. It reads and archives the request, pauses and restarts the independent observer only when those commands are configured, and it never retries blindly.
 
-#### Deployment retrospective and a faster preflight
+- **Routine mechanical release (no model call).** With a `mechanical` block in the configuration, `deploy.mjs` runs a read-only preflight, stops the service, backs up the stopped SQLite state, switches an explicit runtime manifest, starts the service outside every foreign Windows Job, verifies it, and rolls the runtime files back and restarts the previous build when verification fails. The candidate is built and checked before the maintenance window. This is the normal path in the stable period: it starts no DSH Session and calls no model.
+- **Agent fallback.** Without `mechanical`, or with `-Agent`, `deploy.ps1` runs the headless DSH agent with the operator's prompt and then runs the same survival check. This keeps the first deployment (which installs the command) and a request that needs judgement working, but it is not the routine path.
 
-The 2026-11-09 deployment history in `C:\Users\dd\.dsh\watchdog\watchdog-deploy.log` shows where the time went. Two deployments each took about ten minutes end to end: the 08:46:58 run ended at 08:56:53, and the 10:33:47 run ended at 10:43:09. In the second run the service was stopped at about 10:40:56 and was ready at about 10:41:50, so the actual switch took about 54 seconds; almost all the remaining time was preflight, not release. The preflight repeated work the deployment already knew: which DSH home and profile directory the running service used, where its state directory and bundle link were, whether a candidate build already matched the target tree, and which watchdog writers had to pause. The request was also ambiguous ("deploy !43 and set two environment variables"), so the supervisor had to reconstruct the intent before it could start.
+`deploy.ps1` passes `-Validate`, `-Plan` and `-Agent` through. `-Validate` prints the resolved paths and starts nothing. `-Plan` performs the same read-only preflight as a release and prints the plan, including the target revision, the candidate, the paths that would be replaced, the database backup that would be made and the survival window; it does not stop, switch or archive the request. Run it once after staging a candidate and before the maintenance window.
 
-Use these facts to keep the next preflight short:
+#### What the mechanical preflight keeps and drops
 
-1. From the stable checkout, run `node scripts/dsh-superagent status --profile superagent --url <panel URL> --home <DSH home>` once. `status` reports the profile directory, `service.ps1`, the configured `stateDir`, the bundle link and target, the checkout revision and branch, the built `lib`, the service's Windows Job membership (`inJob` and `foreignJob`) and how the newest start began; read those instead of rediscovering them.
-2. Keep one candidate per target revision and record its revision, artifact hashes and test evidence. If `git rev-parse HEAD^{tree}` of the candidate worktree equals the target tree and the built files match, reuse it; do not rebuild or rerun the full suite during the maintenance window.
-3. Confirm the service is idle with the same `status` output and record open and queued Ticket counts. Pause the independent Watchdog writers before the consistent backup, then restore and verify them after the service is ready.
-4. Stop at the switched, stopped state. `scripts/dsh-superagent start` detects a Windows Job and creates the service outside it through `service-start.ps1`, so do not start a raw detached child from the agent's shell tool. After the DSH agent exits, the outer deployment task runs `verify --survival-seconds 30`; only a service that is alive, in no Job it did not create, and answering ready counts as success.
-5. Write the measured stop, start and ready times into the deployment log. The log is the retrospective: a slow run can be compared with the previous one, and the switch target stays under a minute.
-6. After deploying a change to `scripts/watchdog`, add `dailyReport` to the independent watchdog's `watchdog.json` and restart that process; if its scheduled gate still runs the old `gate.mjs`, point it at `scripts/watchdog --gate` so the quiet daily report uses the deployed version.
+The preflight is deliberately the set a switch actually needs:
 
-The release supervisor still owns identity checks, the backup, rollback readiness and the maintenance window; these facts shorten discovery, they do not replace those steps. The summarized timing record is in [the deployment-speed evidence](evidence/deployment-speed/).
+- the operator's non-empty confirmation is present, and the request is archived only when a release starts;
+- exactly one process serves the profile, the runtime reports ready, setup has no problem, the service is not manually stopped, and `load.running` is zero (rechecked after the observer pause, immediately before the stop);
+- the running bundle link resolves inside the runtime root, so the files being replaced are the files the service loads;
+- the candidate worktree is at the requested revision (the fetched `origin/main`, a full commit, or `mechanical.targetRevision`) and has no uncommitted files;
+- the candidate `pnpm-lock.yaml` matches the runtime checkout, because this path swaps runtime files but not `node_modules`; a dependency change uses the agent fallback or a deliberate install first;
+- the manifest is explicit, relative and inside the candidate and runtime roots, includes the built `lib`, and names only runtime paths;
+- the state directory contains a SQLite database; the stopped-state copy is hashed and kept under the backup root;
+- after start, `verify` proves one process, a usable management API, the same PID after the survival window and no foreign Windows Job;
+- a failed switch, start or verify restores every replaced path and starts the previous build.
 
-The independent task runs `scripts/deploy.ps1` from this repository with a JSON configuration outside it. The script reads and archives the request, runs the headless DSH agent, and after that agent exits runs `verify` with a survival window; it records the agent's exit code and the survival result in the result file, and it never starts the observer or retries blindly. `-Validate` prints the resolved paths without running anything. The deployment-specific paths, prompt and model patch stay outside the repository:
+The executor proves the candidate worktree revision, not that the built `lib` came from it: the pre-window build process must build that revision, and keeping one candidate directory per revision is what makes that check meaningful.
+
+It does not repeat repository tests or builds during the window (CI owns code quality), does not block on unrelated health parts such as `evals`, does not require Feishu setup, does not re-hash the whole checkout or audit ACLs, hardlinks or Git index flags, and does not ask a model to judge a deterministic request. The survival window defaults to 3 seconds for the mechanical path because `start` already waited for readiness; `survivalSeconds` can raise it, and the agent path keeps 30.
+
+#### Configuration and manifest
+
+The deployment-specific paths stay outside the repository. The agent fallback keeps `promptPath`, `modelPatch`, `workdir` and `dsh`; the mechanical path needs `candidateRoot`, `manifestPath`, `backupRoot` and usually `runtimeRoot`:
 
 ```json
 {
-  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-request.json",
-  "promptPath": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-prompt.md",
-  "modelPatch": "C:\\Users\\dd\\.dsh\\watchdog\\model.patch.yml",
+  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-request.json",
+  "promptPath": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-prompt.md",
+  "modelPatch": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\model.patch.yml",
   "workdir": "F:\\code\\superagent-ops",
   "node": "D:\\Program Files\\nodejs\\node.exe",
   "dsh": "C:\\Users\\dd\\.local\\opt\\dsh-0.2.2-rc.1\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
   "home": "C:\\Users\\dd\\.dsh",
+  "serviceHome": "C:\\Users\\dd\\.dsh-superagent",
+  "serviceAgentsHome": "C:\\Users\\dd\\.dsh-superagent\\agents",
+  "serviceScript": "F:\\code\\dsh-superagent-prototype\\scripts\\dsh-superagent.ps1",
   "agentProfile": "headless",
   "serviceProfile": "superagent",
   "url": "http://127.0.0.1:3083",
-  "logFile": "C:\\Users\\dd\\.dsh\\watchdog\\watchdog-deploy.log",
-  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog\\deploy-result.json",
-  "survivalSeconds": 30
+  "logFile": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy.log",
+  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\deploy-result.json",
+  "survivalSeconds": 3,
+  "mechanical": {
+    "candidateRoot": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\candidates\\<revision>",
+    "manifestPath": "C:\\Users\\dd\\.dsh\\watchdog-deploy\\release-manifest.json",
+    "backupRoot": "C:\\Users\\dd\\.dsh\\state\\superagent-backups",
+    "runtimeRoot": "F:\\code\\dsh-superagent-prototype",
+    "stateDir": "C:\\Users\\dd\\.dsh\\state\\superagent",
+    "observerStopCommand": "schtasks /end /tn dsh-superagent-watchdog-observer",
+    "observerStartCommand": "schtasks /run /tn dsh-superagent-watchdog-observer"
+  }
 }
 ```
 
-The `dsh-superagent-deploy` task then runs it in the background: `wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`. The launcher waits for the deployment and returns its exit code, and neither the task nor the node processes it starts has a visible window. **Rollout note (2026-11-09).** Moving a production service from the Desktop DSH Job to this path needs an operator maintenance window: pull the merged commit, point the task at the versioned script, and restart the current production instance once from outside DSH so its process is no longer in that Job. See `docs/zh/references/watchdog-superagent-mutual-assist.md` (in Chinese) for the target relationship and the remaining phases.
+`home` is the deployment agent's DSH home; `serviceHome` is the running service's DSH home and defaults to `home` when omitted, so a host whose service uses its own home must set it. `serviceScript` is the service entry wrapper — the versioned `scripts\dsh-superagent.ps1`, or the operator's `service.ps1` compatibility shim — and must accept `start` and `stop`; when set, start and stop go through it, so its pinned home, profile and URL must match `serviceHome`, `serviceProfile` and `url`. `runtimeRoot` defaults to the `checkout` field or the checkout containing the task script; `stateDir` defaults to `status.deployment.stateDir`; `control` defaults to `<checkout>\scripts\dsh-superagent`, and a top-level `control` can point at a versioned control script. The manifest lists only paths the release actually changes; `lib` is required, and `prompts`, `locale`, `skills`, `cordis.patch.yml` or the control scripts are added when they change:
+
+```json
+{ "entries": [
+  { "source": "lib", "target": "lib" },
+  { "source": "prompts", "target": "prompts" },
+  { "source": "scripts/dsh-superagent", "target": "scripts/dsh-superagent" }
+] }
+```
+
+Each replaced path is renamed beside itself as `<name>.previous-<revision>-<token>`; the state database and WAL files are copied to `<backupRoot>\deploy-<revision>-<timestamp>\state` after the service has stopped. The executor never restores a database; a rollback restores only runtime files and starts the previous build. A database migration that the previous build cannot read therefore needs manual recovery, and the executor reports it as a manual intervention instead of claiming the rollback succeeded. The result file records the phase (`verified`, `rolled_back`, ...), the revision, timings, backup paths and any manual intervention; a failed rollback or a service that could not be restarted keeps the deployment lock for a person and sets `manualIntervention`.
+
+#### Preparing and activating a mechanical release
+
+Activation is an operator step and does not change the scheduled task:
+
+1. Build the target commit in a separate worktree, never in the running stable checkout: `git -C <clone> worktree add <candidate> <revision>`, then install and build there with Windows Node. Keep the worktree clean; `lib` is ignored, so build output does not make it dirty.
+2. Write the manifest for the runtime paths that differ from the running build. When installing this change itself, the manifest must include `scripts/deploy.mjs` and `scripts/deploy.ps1`; the task entry point cannot start without the executor file.
+3. Point `mechanical` at the candidate, the manifest and an existing backup root, set `serviceHome` and `serviceScript` to the running service's home and wrapper, and set `survivalSeconds` to 3 unless a longer window is wanted.
+4. Run `deploy.ps1 -Config <configuration> -Plan` and check the revision, entries, databases and backup directory.
+5. Leave the production task unchanged; the next request takes the mechanical path. Until this is done, the existing agent path continues to work.
+
+The first deployment that installs this executor still uses the agent fallback; a candidate built from the commit that contains `deploy.mjs` makes later requests mechanical.
+
+**Measured baseline.** The 2026-11-09 history in `C:\Users\dd\.dsh\watchdog-archive-20261109-2234\watchdog-deploy.log` shows two deployments of about ten minutes each: 08:46:58 to 08:56:53, and 10:33:47 to 10:43:09. In the second, the service was stopped at about 10:40:56 and ready at about 10:41:50, so the switch took about 54 seconds; almost all of the rest was the agent rediscovering the service identity, the candidate and the writers to pause. The mechanical path removes that discovery and judgement from the window: after a staged candidate the measured work is the stop, the stopped backup, the file copy, the start and the 3-second survival check. The timing record is in [the deployment-speed evidence](evidence/deployment-speed/); production has not yet run a mechanical release, so the under-one-minute target is a design target, not a measurement. The `status` facts (the versioned `scripts\dsh-superagent.ps1 status` or the control script's `--home`, profile, home-scoped service/log/control directories, `stateDir`, bundle target, Git revision, listener identity and start/job facts) remain useful for the agent fallback and for a person inspecting a plan.
+
+The `dsh-superagent-deploy` task runs it in the background: `wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>`. The launcher waits for the deployment and returns its exit code, and neither the task nor the node processes it starts has a visible window. **Rollout status (2026-11-09).** The production service has been switched to `0cf6a69` by the independent deployment task, and `verify --survival-seconds 3` passed on 2026-11-10 00:39 with `foreignJob=false`: the service is outside any external Job, `recovery=enforce`, and the management API is ready. The production configuration still has no `mechanical` block, so the task keeps using the agent fallback until the operator stages a candidate and activates it as described above. Pointing the task at the versioned control script and this document's `requestPath` remains an operator step; the result is recorded in `deploy-result.json`. See `docs/zh/references/watchdog-superagent-mutual-assist.md` (in Chinese) for the target relationship and the remaining phases.
 
 ### Versioned Watchdog artifact and update task
 
-The Watchdog is not updated by pulling the superagent checkout: the repository builds an immutable artifact whose observer, agent wrapper and gate import only from the same version. `node scripts/watchdog-artifact.mjs --out <dir> --version <id> --commit <sha>` copies `scripts/watchdog`, `scripts/watchdog-agent/*` and the stable launchers into the artifact and writes `manifest.json` with the file hashes, one combined digest, `apiVersion` and `minServiceVersion`. `node scripts/watchdog-smoke.mjs <dir>` proves the artifact against a local mock management API, without the production service or Feishu.
+The Watchdog is not updated by pulling the superagent checkout: the repository builds an immutable artifact whose observer, agent wrapper and gate import only from the same version. `node scripts/watchdog-artifact.mjs --out <dir> --version <id> --commit <sha>` copies `scripts/watchdog`, `scripts/watchdog-agent/*` and both stable launchers (standing observer and one-shot agent) into the artifact and writes `manifest.json` with the file hashes, one combined digest, `apiVersion` and `minServiceVersion`. `node scripts/watchdog-smoke.mjs <dir>` proves the artifact against a local mock management API, without the production service or Feishu.
 
-Install the artifact under `<watchdogHome>\versions\<version>` and keep `<watchdogHome>\current.txt` as the active version; `previous.txt` is the rollback point. The scheduled task runs `<watchdogHome>\launch-agent.vbs -Config <agent.json>` through `wscript.exe`, whose own process has no console window, so a timer-driven check never flashes a PowerShell window on the desktop. The VBS starts the stable `<watchdogHome>\launch-agent.ps1 -Config <agent.json>` hidden and waits for its exit code; the PowerShell launcher reads `current.txt` and starts that version's `agent\run.ps1`. Changing the version never rewrites the task action and never restarts the superagent service. The agent configuration (service URL, chat id, checkout, workspace, DSH home, model patch, log) stays outside the repository; `scripts/watchdog-agent/config.example.json` and `model.patch.example.yml` are templates.
+Install the artifact under `<watchdogHome>\versions\<version>` and keep `<watchdogHome>\current.txt` as the active version; `previous.txt` is the rollback point. The standing observer runs through `wscript.exe` as `<watchdogHome>\launch-observer.vbs -Config <observer.json>`; the VBS starts `launch-observer.ps1` hidden, which reads `current.txt`, runs that version's `watchdog --config` and restarts it after ten seconds on a non-zero exit. A one-shot or manual check can still use `launch-agent.vbs -Config <agent.json>` to run `agent\run.ps1`; it is not the monitoring entry, and monitoring no longer uses a 30-minute timed gate. Changing the version never rewrites the task action and never restarts the superagent service. The observer configuration (service URL, chat id, state/log, agentConfig) and the agent configuration (checkout, workspace, DSH home, model patch) stay outside the repository; `scripts/watchdog-agent/config.example.json` and `model.patch.example.yml` are agent templates.
 
 The agent must run in its own workspace, never the checkout. No manual path is needed: without `workspace`, the wrapper uses `<config directory>\workspaces\watchdog_<service profile>` — `watchdog_superagent` for this deployment, or `watchdog_sheepdoku` for a `sheepdoku` service profile — so Watchdogs on one host do not share a workspace. Set `workspace` only to choose another name or location. `run.ps1` creates the directory when missing, refuses one that is the checkout or inside it, and changes into it before running the gate and the full agent. The prompt addresses the checkout with absolute paths, so the agent still reads the deployment document and runs `node <checkout>\scripts\dsh-superagent ...`. DSH groups a Session under the workspace of its working directory, so the Watchdog's Sessions no longer join the checkout's Desktop DSH workspace; add the workspace directory as a DSH project to see them under their own workspace, otherwise they stay ungrouped. Existing installs must use a rebuilt artifact; the currently deployed local wrapper is not updated by a superagent release. This is workspace separation, not an isolation boundary: the agent still has full access to the checkout, and a shared DSH home still shares its session and workspace storage.
 
-The independent `dsh-superagent-watchdog-update` task runs `node scripts/watchdog-update.mjs --config <update.json>` through the same hidden launcher: `wscript.exe <checkout>\scripts\launch-hidden.vbs <node> <checkout>\scripts\watchdog-update.mjs --config <update.json>`. The main Session or operator writes `watchdog-update-request.json` with the operator's confirmation, target version, artifact path, optional digest and an idempotency key. The task validates that the artifact is inside the staging root and matches its manifest, smokes it, installs it, switches `current.txt`, triggers the scheduled agent and waits for a recorded run carrying the new version. A failed smoke, trigger or heartbeat restores the previous pointer; a lock makes concurrent updates refuse, and a repeated idempotency key returns the recorded result. The update task does not start the observer itself and never backs up, restarts or replaces superagent. The snapshot's `lastRun` and the recorded runs carry the Watchdog `version` and `commit` for the panel and audit.
+The independent `dsh-superagent-watchdog-update` task runs `node scripts/watchdog-update.mjs --config <update.json>` through the same hidden launcher: `wscript.exe <checkout>\scripts\launch-hidden.vbs <node> <checkout>\scripts\watchdog-update.mjs --config <update.json>`. The main Session or operator writes `watchdog-update-request.json` with the operator's confirmation, target version, artifact path, optional digest and an idempotency key. The task validates that the artifact is inside the staging root and matches its manifest, smokes it, installs it, switches `current.txt`, stops the old observer and starts the new version, then waits for a recorded run carrying the new version. A failed smoke, start or heartbeat restores the previous pointer and starts the previous version again; a lock makes concurrent updates refuse, and a repeated idempotency key returns the recorded result. The update task never backs up, restarts or replaces superagent. The snapshot's `lastRun` and the recorded runs carry the Watchdog `version` and `commit` for the panel and audit.
 
 ```json
 {
-  "watchdogHome": "C:\\Users\\me\\.dsh\\watchdog",
-  "stagingRoot": "C:\\Users\\me\\.dsh\\watchdog\\staging",
-  "requestPath": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-request.json",
+  "watchdogHome": "C:\\Users\\dd\\.dsh\\watchdog-independent",
+  "stagingRoot": "C:\\Users\\dd\\.dsh\\watchdog-independent\\staging",
+  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update-request.json",
   "serviceUrl": "http://127.0.0.1:3083",
-  "triggerCommand": "schtasks /run /tn dsh-superagent-watchdog-agent",
-  "observerStopCommand": "",
-  "observerStartCommand": "",
-  "logFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update.log",
-  "resultFile": "C:\\Users\\me\\.dsh\\watchdog\\watchdog-update-result.json",
+  "triggerCommand": "schtasks /run /tn dsh-superagent-watchdog-observer",
+  "observerStopCommand": "schtasks /end /tn dsh-superagent-watchdog-observer",
+  "observerStartCommand": "schtasks /run /tn dsh-superagent-watchdog-observer",
+  "logFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update.log",
+  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update-result.json",
   "heartbeatTimeoutSeconds": 180,
   "pollSeconds": 5,
   "smokeTimeoutSeconds": 30,
@@ -342,9 +448,9 @@ The independent `dsh-superagent-watchdog-update` task runs `node scripts/watchdo
 }
 ```
 
-The first installation is an operator step: build or copy the artifact into the staging root, install both stable launchers and the agent configuration, point the scheduled task's `wscript.exe` at `launch-agent.vbs`, and write `current.txt`. The Execution page now shows the Superagent version, the Watchdog artifact version from its latest recorded run, and that run's heartbeat; a missing or stale heartbeat is shown as a warning. The deployment can name the running build with DSH_SUPERAGENT_VERSION; the package version is the fallback.
+The first installation is an operator step: build or copy the artifact into the staging root, install both stable launchers, the observer configuration and the agent configuration, point the scheduled task's `wscript.exe` at `launch-observer.vbs -Config observer.json`, and write `current.txt`. The task should start at logon and restart on failure; the old 30-minute `dsh-superagent-watchdog-agent` task should be deleted and is not a monitoring entry. The Execution page now shows the Superagent version, the Watchdog artifact version from its latest recorded run, and that run's heartbeat; a missing or stale heartbeat is shown as a warning. The deployment can name the running build with DSH_SUPERAGENT_VERSION; the package version is the fallback.
 
-The panel also shows the installed current and previous versions, the candidate from the last update request, and that update's time and result. The install facts come from `DSH_SUPERAGENT_WATCHDOG_HOME` and its `current.txt`, `previous.txt` and `watchdog-update-result.json` (override the result with `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT`); without the home the panel says the install is not configured. For a persistent observer, set `observerStopCommand` and `observerStartCommand` in the update configuration: the updater stops the old observer before switching the pointer, starts the new version, and on a failed start restores the pointer and starts the previous version again. Without these commands the scheduled Watchdog agent task is triggered, as before. The commands receive `DSH_WATCHDOG_VERSION` and `DSH_WATCHDOG_SERVICE_URL`, and run outside the superagent service.
+The panel also shows the installed current and previous versions, the candidate from the last update request, and that update's time and result. The install facts come from `DSH_SUPERAGENT_WATCHDOG_HOME` and its `current.txt`, `previous.txt` and `watchdog-update-result.json` (override the result with `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT`); without the home the panel says the install is not configured. This host installs under `C:\Users\dd\.dsh\watchdog-independent`, so the service environment should point `DSH_SUPERAGENT_WATCHDOG_HOME` there; otherwise the install facts are null. Set `observerStopCommand` and `observerStartCommand` in the update configuration: the updater stops the old observer before switching the pointer, starts the new version, and on a failed start restores the pointer and starts the previous version again. The commands receive `DSH_WATCHDOG_VERSION` and `DSH_WATCHDOG_SERVICE_URL`, and run outside the superagent service.
 
 ### Independent alerts and Session observation
 
@@ -354,8 +460,8 @@ The independent observer can leave a local alert when the management API stays u
 {
   "url": "http://127.0.0.1:3083",
   "report": false,
-  "stateDir": "C:\\Users\\me\\.dsh\\watchdog\\state",
-  "alertFile": "C:\\Users\\me\\.dsh\\watchdog\\alerts.jsonl",
+  "stateDir": "C:\\Users\\dd\\.dsh\\watchdog-independent\\observer-state",
+  "alertFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\alerts.jsonl",
   "alertAfterFailures": 2
 }
 ```
@@ -367,7 +473,7 @@ node scripts\dsh-superagent --profile superagent --url http://127.0.0.1:3082 wat
   --ticket <ticket id> --reason "<one-sentence evidence>" --snapshot-at "<snapshot.at>"
 ```
 
-The server rechecks the live Session registry, the snapshot freshness (ten minutes), the executor pause and the per-Session ceiling of one retry, records an audit row, and never restarts the service. A refused or failed attempt is reported and must not be retried; the agent prompt allows exactly this command for `session-missing`, never the raw retry/stop API. The prompt and wrapper are versioned in the Watchdog artifact, so rebuild and install the artifact after changing this behavior. P3's service/host checks and independent Feishu delivery are still open.
+The server rechecks the live Session registry, the snapshot freshness (ten minutes), the executor pause and the per-Session ceiling of one retry, records an audit row, and never restarts the service. A refused or failed attempt is reported and must not be retried; the agent prompt allows exactly this command for `session-missing`, never the raw retry/stop API. The prompt and wrapper are versioned in the Watchdog artifact, so rebuild and install the artifact after changing this behavior. P3's service/host checks and independent Feishu delivery are still open; monitoring runs from the standing observer, not a 30-minute gate task.
 
 ## Settings
 
@@ -497,7 +603,9 @@ The steps below apply only to deployments where an in-place upgrade has been exp
 3. Run `git pull && pnpm install && pnpm build`.
 4. Run `scripts/dsh-superagent restart` and inspect its status.
 
-On Windows, run the same steps in PowerShell; `&&` works in PowerShell 7, and the service command is `node scripts\dsh-superagent restart`.
+On Windows, run the same steps in PowerShell; `&&` works in PowerShell 7, and the service command is
+`pwsh scripts\dsh-superagent.ps1 restart`. The entry takes only the action (and an optional `-Config`/`-RespectStop`);
+target facts stay in `%USERPROFILE%\.dsh-superagent\service.json`, created from `examples/service.windows.json`.
 
 A restart ends running Assignments and starts replacements with recovery notes. Team text and overridden prompt parts are retained; parts without overrides follow the new defaults. Review parts marked **Default updated** after upgrading.
 
@@ -522,7 +630,10 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | A finished Ticket's worktree stays at `<stateDir>/work/…` | It has uncommitted or untracked changes, commits not on a remote, another checked-out branch, or is not a linked worktree. Commit and push or discard the work; the next host start tries the cleanup again |
 | `pwsh` is not found, or the prepare command fails with a PowerShell error | Install PowerShell 7 and put `pwsh` on `PATH`; Windows PowerShell 5.1 is not used for the prepare command |
 | `dsh must be on PATH.` when starting on Windows | Install DSH globally and open a new shell; `start` resolves the npm `dsh.cmd` |
-| PowerShell or `cmd.exe` cannot run `scripts\dsh-superagent` | The script has no `.cmd` shim on Windows; run `node scripts\dsh-superagent <command>` |
+| PowerShell or `cmd.exe` cannot run `scripts\dsh-superagent` | The script has no `.cmd` shim on Windows; run `pwsh scripts\dsh-superagent.ps1 <action>`, or `node scripts\dsh-superagent <command>` when the environment is already set |
+| `The service configuration does not exist` or a target mismatch | Create `%USERPROFILE%\.dsh-superagent\service.json` from `examples/service.windows.json`; the entry refuses a checkout or non-loopback URL, and a start also needs the profile directory |
+| `The management URL … is owned by PID …` | Another process owns the port; stop it or choose the service's real `url`. The entry never kills a foreign listener |
+| `This home's dsh-superagent process … does not listen` | The recorded process is running but not serving the target URL. Inspect it, fix its listener, or restart it from an independent task; `start` and an explicit-URL `stop` refuse, while a zero-parameter `stop` discovers another running server |
 | A `.cmd` wrapper for `gh` or `glab` drops or corrupts an argument | Use the native `gh.exe` or `glab.exe` with its configuration directory (see Windows credentials); never pass JSON or message text through `cmd.exe` |
 | The Feishu Source is refused on a Windows host | Point the Source's **Bot lark-cli** field at `lark-cli` (the npm `.cmd` shim) or at the package's Node entry; a custom `.cmd` wrapper without a Node entry is refused |
 | `git does not read the credential configuration dsh-superagent writes` | Install git 2.32 or later |
