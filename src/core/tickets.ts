@@ -198,8 +198,9 @@ export class Tickets extends EnginePart {
     for (const input of old.inputs) {
       const trigger = input.kind === 'trigger' ? this.repo.triggers.get(input.triggerId) : undefined
       const unresolved = trigger && this.owners(trigger).includes(old.id) && !this.takenUp(old, trigger)
-      const pending = old.undelivered.includes(input.id) || input.kind === 'trigger'
-        && (input.readAt === null || !readBefore(input, until) || unresolved)
+      const pending = input.kind === 'trigger'
+        ? old.undelivered.includes(input.id) || input.readAt === null || !readBefore(input, until) || unresolved
+        : !input.readAt && (old.undelivered.includes(input.id) || input.readAt === null)
       if (!pending) continue
       if (input.kind === 'trigger') {
         const disposition = this.repo.triggers.disposition(input.triggerId)
@@ -212,7 +213,8 @@ export class Tickets extends EnginePart {
             ...(disposition.context?.includes(old.id) ? { context: [...new Set([...disposition.context, id])] } : {}) })
         }
       } else {
-        const transferred = { ...input, id: key('input', id, 'handoff', input.id) }
+        const { deliveredTo, deliveredAt, readAt, ...waiting } = input
+        const transferred = { ...waiting, id: key('input', id, 'handoff', input.id) }
         ticket.inputs.push(transferred); ticket.undelivered.push(transferred.id)
       }
     }

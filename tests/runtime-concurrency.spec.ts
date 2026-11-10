@@ -656,6 +656,14 @@ describe('what a worker read', () => {
     h.claim(one.sessionId); await h.runtime.idle(); await later()
     expect(input().readAt).toBe(null)
   })
+  it('records when a worker step reads a delivered note', async () => {
+    const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
+    h.runtime.engine.note(one.ticket.id, 'Ticket B changes the same page.'); await h.runtime.idle()
+    const input = () => h.runtime.store.tickets.get(one.ticket.id)!.inputs.find(item => item.kind === 'note')!
+    await vi.waitFor(() => expect(input().readAt).toBeNull())
+    h.step(one.sessionId)
+    await vi.waitFor(() => expect(input().readAt).toEqual(expect.any(String)))
+  })
   it('keeps a note waiting in a worker\'s Session across an in-process restart, for the next Assignment\'s first step', async () => {
     const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
     h.runtime.engine.note(one.ticket.id, 'Ticket B changes the same page.'); await h.runtime.idle()

@@ -111,6 +111,50 @@ describe('low to high handoff', () => {
     expect(h.repo.triggers.disposition('4')?.fanout).toEqual([result.id])
     expect(h.repo.threads.get('feishu:oc:om')?.pending).not.toContain('2')
   })
+  it('routes an answer to the successor when the ticket id is omitted', () => {
+    const h = harness({}, { prepareTicket: prepare }), id = low(h)
+    const successor = h.engine.handoff(id, 'needs deeper analysis')
+    h.settle()
+    expect(() => h.engine.reply({ purpose: 'answer', triggerId: '1', text: 'Answer' })).toThrow(new UserError('noAnswer'))
+    h.engine.report(successor.id, { state: 'ready', summary: 'Answer', answers: '1' })
+    expect(h.engine.reply({ purpose: 'answer', triggerId: '1', text: 'Answer' })).toMatchObject({ status: 'pending' })
+    expect(h.outbox.at(-1)).toMatchObject({ ticketId: successor.id, text: 'Answer', kind: 'reply' })
+    expect(h.repo.tickets.get(successor.id)?.answers).toEqual([])
+  })
+  it('transfers unread non-trigger inputs without replaying read or legacy inputs', () => {
+    const h = harness({}, { prepareTicket: prepare }), id = low(h)
+    const assignmentId = runningAssignment(h.repo.tickets.get(id)!)!.id
+    h.engine.note(id, 'unread note'); h.settle()
+    h.engine.note(id, 'read note'); h.settle()
+    const ticket = h.repo.tickets.get(id)!
+    const unread = ticket.inputs.find(input => input.kind === 'note' && input.text === 'unread note')!
+    const read = ticket.inputs.find(input => input.kind === 'note' && input.text === 'read note')!
+    h.engine.inputsRead(id, [read.id])
+    const current = h.repo.tickets.get(id)!
+    current.inputs.push({ id: 'legacy', kind: 'text', text: 'legacy', at: current.updatedAt },
+      { id: 'early-read', kind: 'text', text: 'early read', at: current.updatedAt },
+      { id: 'pending-policy', kind: 'policy-changed', from: 'v1', to: 'v2', at: current.updatedAt })
+    current.undelivered.push('early-read', 'pending-policy')
+    h.repo.tickets.save(current)
+    h.engine.inputsRead(id, ['early-read'])
+    h.engine.inputsDelivered(id, assignmentId, ['pending-policy'])
+    const successor = h.engine.handoff(id, 'summary')
+    expect(h.repo.tickets.get(id)?.inputs.find(input => input.id === unread.id)?.readAt).toBeNull()
+    expect(successor.inputs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'note', text: 'unread note' }),
+      expect.objectContaining({ kind: 'policy-changed', from: 'v1', to: 'v2' }),
+    ]))
+    expect(successor.inputs).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'note', text: 'read note' }),
+      expect.objectContaining({ kind: 'text', text: 'legacy' }),
+      expect.objectContaining({ kind: 'text', text: 'early read' }),
+    ]))
+    const transferred = successor.inputs.find(input => input.kind === 'note' && input.text === 'unread note')!
+    expect(transferred.readAt).toBeUndefined()
+    expect(transferred.deliveredTo).toBeUndefined()
+    expect(successor.undelivered).toContain(transferred.id)
+    expect(h.engine.handoff(id, 'retry').id).toBe(successor.id)
+  })
   it('rolls back when preparation fails and rejects revoked or unsafe handoffs', () => {
     let fail = false
     const h = harness({}, { prepareTicket: ticket => { if (fail) throw new Error('prepare failed'); return prepare(ticket) } })

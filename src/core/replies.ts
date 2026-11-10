@@ -64,8 +64,13 @@ export class Replies extends EnginePart {
   private answer(request: Exclude<ReplyRequest, { purpose: 'acknowledgement' }>): Reply {
     const trigger = request.triggerId ? this.repo.triggers.get(request.triggerId) : undefined
     if (request.triggerId && !trigger) throw new UserError('unknownTrigger')
-    const ticket = request.ticketId ? this.require(request.ticketId)
+    let ticket = request.ticketId ? this.require(request.ticketId)
       : trigger ? this.repo.tickets.list().find(item => this.reaches(item, trigger)) : undefined
+    while (!request.ticketId && trigger && ticket?.handoffTo) {
+      const successor = this.repo.tickets.get(ticket.handoffTo)
+      if (!successor || !this.reaches(successor, trigger)) break
+      ticket = successor
+    }
     if (request.purpose === 'result') {
       const outcome = ticket && ticketOutcome(ticket)
       const reported = !!ticket && liveTicket(ticket) && latestAssignment(ticket)?.report?.state === 'ready'

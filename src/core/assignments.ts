@@ -51,7 +51,7 @@ export class Assignments extends EnginePart {
     ticket.undelivered = ticket.undelivered.filter(id => !inputIds.includes(id)); ticket.updatedAt = this.now()
     runningAssignment(ticket)!.deliveredAt = ticket.updatedAt
     for (const input of ticket.inputs) {
-      if (input.kind === 'trigger' && inputIds.includes(input.id)) { input.readAt ??= null; input.deliveredTo = assignmentId }
+      if (input.kind !== 'reopen' && inputIds.includes(input.id)) { input.readAt ??= null; input.deliveredTo = assignmentId }
     }
     delete ticket.delivery
     this.repo.tickets.save(ticket)
@@ -60,7 +60,7 @@ export class Assignments extends EnginePart {
   read(ticketId: string, inputIds: string[]): void {
     const ticket = this.require(ticketId)
     if (!liveTicket(ticket)) return
-    for (const input of ticket.inputs) if (input.kind === 'trigger' && inputIds.includes(input.id)) input.readAt ||= this.now()
+    for (const input of ticket.inputs) if (inputIds.includes(input.id)) input.readAt ||= this.now()
     this.repo.tickets.save(ticket)
   }
   turnEnded(ticketId: string, assignmentId: string): void {

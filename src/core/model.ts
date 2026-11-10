@@ -243,20 +243,18 @@ export interface Assignment {
   idleAt?: string
 }
 
-export type TicketInput =
+export type TicketInput = {
+  /** When its message entered a worker step; null while waiting, absent for inputs delivered before reads were recorded. */
+  readAt?: string | null
+  /** The Assignment it was last delivered to. */
+  deliveredTo?: string
+  /** When an earlier version handed it to the worker. */
+  deliveredAt?: string
+} & (
   /** A Trigger on one of its Threads, or attached to it; `human` when a person wrote it. */
   | { id: string; kind: 'trigger'; triggerId: string; at: string; note?: string; human?: true
     /** It reached the ticket only on a Thread its Executor follows for context. */
-    context?: true
-    /**
-     * When the worker's Session took the message that carried it into a step, from which its model reads it; `null` while
-     * it waits in the Session. One delivered before reads were recorded has none, and counts as read from `deliveredAt`.
-     */
-    readAt?: string | null
-    /** The Assignment it was last delivered to. */
-    deliveredTo?: string
-    /** When an earlier version handed it to the worker. */
-    deliveredAt?: string }
+    context?: true }
   /** The Policy changed in a way that bears on the ticket, as `effect` says; Inputs written before effects have none. */
   | { id: string; kind: 'policy-changed'; from: string; to: string; at: string; effect?: PolicyEffect }
   /** A Decision reopened the ticket; written before ended tickets resumed on their own. */
@@ -266,6 +264,7 @@ export type TicketInput =
   | { id: string; kind: 'text'; text: string; at: string }
   /** A fact the main Session gave the ticket from other work: context, which asks for nothing and grants nothing. */
   | { id: string; kind: 'note'; text: string; at: string }
+)
 
 /**
  * How a Policy change bears on a ticket: the rules it was accepted under that changed, with their instruction now, or no

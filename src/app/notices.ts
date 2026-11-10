@@ -59,6 +59,11 @@ export function eventNotice(event: DomainEvent, ticket: (id: string) => Ticket |
   if (event.type === 'thread.unsubscribed' && event.data.by === 'person') return subscriptionNotice(event.data.threadKey, at)
   if (event.type === 'thread.unsubscribed') {
     const { ticketId, threadKey: thread, reason } = event.data
+    if (reason === 'handoff') {
+      const successor = ticket(ticketId)?.handoffTo
+      return receiptNotice({ thread_handoff: { ticket_id: ticketId, thread, ...(successor ? { successor_ticket_id: successor } : {}) }, at },
+        `Ticket ${ticketId} handed thread ${thread} to ${successor ?? 'its successor'}`)
+    }
     const note = 'Its Executor found this thread unrelated after reading it; attach later triggers there to this ticket only when they '
       + 'point at it explicitly.'
     return receiptNotice({ thread_unrelated: { ticket_id: ticketId, thread, reason }, at, note },

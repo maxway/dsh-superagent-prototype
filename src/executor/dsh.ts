@@ -578,7 +578,7 @@ export class DshExecutor implements Executor {
       if (event.type !== 'user/message' || ticketId === undefined || event.data.source.kind !== 'dsh-superagent' || this.host.closing()) return
       const message = event.data
       void this.background(Promise.resolve().then(() => {
-        const read = this.host.store.tickets.get(ticketId)?.inputs.filter(input => input.kind === 'trigger' && !input.readAt
+        const read = this.host.store.tickets.get(ticketId)?.inputs.filter(input => !input.readAt
           && this.host.sessions.promptedId(input.id) === message.id).map(input => input.id) ?? []
         if (read.length) this.host.engine.inputsRead(ticketId, read)
       }))
