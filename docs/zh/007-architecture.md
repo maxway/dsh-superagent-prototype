@@ -450,6 +450,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/commands.spec.ts` | 以部署账号执行的 CLI 调用、渠道的回答，以及限定在仓库范围内的 GitHub 调用 |
 | `tests/deploy-command.spec.ts` | 主 Session 的部署请求：从环境读取配置、原子写请求文件、启动独立任务，以及命令失败 |
 | `tests/deploy-executor.spec.ts` | 机械部署执行器：配置映射、只读计划、请求归档、失败时保留请求，以及拒绝旧版本目标和 agent 模式 |
+| `tests/restart-superagent.spec.ts` | Windows 机械重启和崩溃恢复：目标校验、停服、更新、启动和失败处理 |
 | `tests/commands-window.spec.ts` | 后台 CLI 命令运行时隐藏窗口 |
 | `tests/github-read.spec.ts` | GitHub 读取 |
 | `tests/admission-context.spec.ts` | 研判的线程窗口 |
@@ -477,6 +478,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/views.spec.ts` | 管理视图从 Store 推导出的内容，例如被丢弃的消息属于哪个线程 |
 | `tests/watchdog.spec.ts` | Watchdog 视图及其飞书观察汇总：阶段、最近报告、静默时长、故障、谷价与评审等待、来自输入的活跃度、缺失的 worker Session，以及渲染出的报告 |
 | `tests/watchdog-process.spec.ts` | 独立 Watchdog 进程：配置校验、机械发现及其稳定标识、运行记录、报告去重、安静日报、服务不可达时的独立告警与恢复、带版本等待与状态命令；gate 的 quiet/risk/unreachable 出口 |
+| `tests/watchdog-deployment.spec.ts` | 异步部署轮询：轮询器竞争、请求去重、分离执行和失败处理 |
 | `tests/watchdog-gate.spec.ts` | 制品 gate：真实快照形状（`person` + `review`）下等待评审超过一天的结果与连续失败会被升级，安静轮次不调用模型并记录观测，风险轮次先记录机械风险再交给完整 agent |
 | `tests/watchdog-artifact.spec.ts` | 版本化 Watchdog 制品：文件集与 manifest、稳定摘要、自包含观察器/gate 冒烟与篡改检测 |
 | `tests/watchdog-agent.spec.ts` | Watchdog agent 包装：完整 agent 在配置的独立工作区启动并使用 checkout 绝对路径命令、checkout 内的工作区被拒绝、未配置时按 service profile 使用 `watchdog_superagent`/`watchdog_sheepdoku` 等工作区 |

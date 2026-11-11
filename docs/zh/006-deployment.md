@@ -307,6 +307,8 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 主 Session 的 `orchestrator_deploy` 可把操作者明确的部署请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST`；`DSH_SUPERAGENT_DEPLOY_COMMAND` 是可选的独立任务唤醒命令。独立执行器由 `deploy.mjs` 校验非空确认与 `latest` 目标后调用同一机械重启脚本，不经模型。请求路径必须与部署配置的 `requestPath` 一致。工具返回成功只表示请求已排队，不表示 Watchdog 在线或部署已完成；以独立 `resultFile` 为准。执行后保留请求文件；成功时另存归档并记录请求摘要，重复消费同一成功请求不会再次部署。新的请求可安全覆盖原文件。
 
+#### 配置
+
 部署配置至少指定 `requestPath` 和 `resultFile`，可指定 `checkout`、`serviceConfig`、`serviceHome`、`serviceAgentsHome`、`serviceProfile`、`url`、`node`、`restartScript` 和 `logFile`；服务配置可提供其余机器参数。`deploy.ps1 -Validate` 只打印解析的路径；`-Plan` 校验请求和脚本并打印最新代码部署计划，不执行或归档请求。`-Agent` 被明确拒绝。独立任务可使用 `wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>` 隐藏窗口；任务是否已安装须由操作员核实。
 
 **历史记录（2026-11-09 至 2026-11-10）。** 2026-11-09 两次旧式部署分别从 08:46:58 到 08:56:53、从 10:33:47 到 10:43:09；第二次服务约 10:40:56 停止、约 10:41:50 就绪。详情见 [部署提速证据](../evidence/deployment-speed/) 和 `C:\Users\dd\.dsh\watchdog-archive-20261109-2234\watchdog-deploy.log`。当时独立部署任务切到 `0cf6a69`，2026-11-10 00:39 的 `verify --survival-seconds 3` 报告 `foreignJob=false`、`recovery=enforce`、管理 API ready。历史结果不证明当前部署状态或现行流程已在生产运行。

@@ -359,8 +359,9 @@ Some generic modules still need provider-specific behavior:
 | `src/app/watchdog-recovery.ts` | The bounded enforce-mode recovery: rechecks an absent worker Session, snapshot freshness, pause and the per-Session retry ceiling, then retries once and writes an audit row; never restarts the service |
 | `scripts/dsh-superagent` | The cross-platform service control script: start, stop, restart, status, verify and Watchdog commands; the listening owner of `--url` is authoritative, on Windows a stop without `--url` discovers the running superagent from its management state, logs and control files live under `<DSH home>/service/`, and it starts outside a Windows Job when needed |
 | `scripts/dsh-superagent.ps1` | The Windows operator entry: normal start and restart update and build latest; `-UseInstalled` is reserved for the internal start and dedicated crash recovery |
-| `scripts/restart-superagent.ps1` | Mechanical latest-code deployment: stop the configured server, pull, install, build and start; never controls Watchdog or calls a model |
+| `scripts/restart-superagent.ps1`, `scripts/update-superagent.ps1` | Mechanical latest-code deployment: stop the configured server, pull, install, build and start; never controls Watchdog or calls a model |
 | `scripts/recover-superagent.ps1` | Dedicated server-crash recovery: start the installed version while respecting an intentional stop |
+| `scripts/deploy.mjs`, `scripts/deploy.ps1` | Independent deployment task: validates requests, invokes the mechanical restart and archives successful unchanged requests without model fallback |
 | `scripts/watchdog` | Standing independent observer: follows the snapshot, records runs and local alerts, and optionally checks for service crashes and consumes deployment requests without a model; `agentConfig` handles separate task-risk judgment |
 | `scripts/watchdog-deployment.mjs` | Asynchronously consumes configured Superagent deployment requests and deduplicates attempts without blocking the observer heartbeat |
 | `scripts/watchdog-agent/` | The agent wrapper, mechanical gate, prompt and configuration/model templates, versioned with the observer: a quiet gate records a run and exits; a risky cycle starts the full DSH agent from the same artifact in its own workspace, never the checkout; the standing observer invokes it on new risk |
@@ -447,6 +448,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/deploy-command.spec.ts` | The main Session's deploy request: the configuration from the environment, the atomic request file, starting the independent task and a failing command |
 | `tests/deploy-executor.spec.ts` | The mechanical deployment entry: latest-only request, service configuration mapping, mock restart, request archival and failure reporting without model fallback |
+| `tests/restart-superagent.spec.ts` | Windows mechanical restart and crash recovery: target validation, stop, update, startup and failure handling |
 | `tests/commands-window.spec.ts` | The hidden window of a background CLI command |
 | `tests/github-read.spec.ts` | GitHub reads |
 | `tests/admission-context.spec.ts` | The Thread window of assessments |
@@ -474,6 +476,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/watchdog.spec.ts` | The Watchdog view and its Feishu observation summary: stages, latest reports, silence, faults, off-peak and review waits, activity from Inputs, a missing worker Session, and the rendered report |
 | `tests/watchdog-process.spec.ts` | The independent Watchdog process: configuration validation, mechanical findings and their stable identity, run recording, report dedupe, the quiet daily report, an unreachable service's independent alert and recovery, the versioned wait and the status command; the gate's quiet, risk and unreachable exits |
+| `tests/watchdog-deployment.spec.ts` | Asynchronous deployment polling: competing pollers, request deduplication, detached execution and failure handling |
 | `tests/watchdog-gate.spec.ts` | The artifact gate: a result waiting for review for more than a day in the real snapshot shape (`person` + `review`) and repeated failed attempts escalate, a quiet cycle records a run without a model, and the mechanical risk is recorded before the full agent runs |
 | `tests/watchdog-artifact.spec.ts` | The versioned Watchdog artifact: its file set and manifest, a stable digest, a self-contained observer/gate smoke and tamper detection |
 | `tests/watchdog-agent.spec.ts` | The Watchdog agent wrapper: the full agent starts in its own configured workspace with absolute checkout commands, a workspace inside the checkout is refused, and an unset workspace is named after its service profile (`watchdog_superagent`, `watchdog_sheepdoku`) |
