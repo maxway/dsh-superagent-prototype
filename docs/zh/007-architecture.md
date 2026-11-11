@@ -478,6 +478,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/watchdog-recovery.spec.ts` | 有界 Watchdog 恢复：默认关闭；只对“运行中 Assignment 没有存活 Session”做一次审计 retry；幂等重放；每 Session 上限；Session 存在、快照过期或 Assignment 未运行均拒绝 |
 | `tests/watchdog-observer-agent.spec.ts` | 常驻 observer 的事件驱动交接：新风险只运行一次完整 agent，同一发现不重复消耗模型调用，风险消除后重新武装，失败只报告一次且不重试，并校验 agent 配置 |
 | `tests/watchdog-launch.spec.ts` | 无窗口 observer 启动器：VBS 与其 PowerShell 启动器读取当前版本、使用任务参数并保留退出码 |
+| `tests/watchdog-diagnostics.spec.ts` | Windows 事件诊断：任务筛选、已禁用日志状态和访问失败 |
 | `tests/watchdog-control.spec.ts` | 机械生命周期：选项与计划任务命令、制品准备、启动器安装，以及不经过模型把部署请求交给更新器 |
 | `tests/watchdog-update.spec.ts` | 独立 Watchdog 更新：制品校验、smoke、安装与指针切换、已记录运行心跳、幂等、回滚与 staging 根拒绝 |
 | `tests/timeline.spec.ts` | 线程的页面，以及触发按时间再按 id 排序的邻近项，每个已接收触发的时间都采用同一种形式 |
