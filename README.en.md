@@ -37,7 +37,7 @@ Runs the service directly on a native Windows host, without WSL, tmux or Python.
 
 Schedules Tickets into the model's off-peak billing window by source, lowering the cost of long tasks.
 
-- The official prototype has no such scheduling; this fork can mark Tickets as `offPeak`, and their Executor starts each new Assignment only inside the daily window in the Execution settings. Feishu requests default to immediate execution unless clearly deferrable; GitLab and GitHub requests default to the window unless clearly urgent.
+- The official prototype has no such scheduling; this fork can mark Tickets as `offPeak`, and their Executor starts each new Assignment only inside the daily window in the Execution settings. For models known to have peak/off-peak pricing (currently `deepseek-v4.1-flash`), Feishu requests default to immediate execution and GitLab and GitHub requests to the window. Other or unknown models default to immediate execution; an explicit choice can defer or expedite any model.
 - The window is off by default, configurable by start time, end time and IANA time zone, and may cross midnight; the default `22:00`–`08:00` (`Asia/Shanghai`) matches the off-peak billing period in Beijing time.
 
 #### Task-level Watchdog check
