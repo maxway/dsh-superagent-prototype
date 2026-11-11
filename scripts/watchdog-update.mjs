@@ -7,7 +7,7 @@
  * A failed start or heartbeat leaves the candidate and pointer in place for investigation. It never
  * restarts or reconfigures the superagent service and never asks a model to decide anything.
  */
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -362,6 +362,28 @@ function validateLatestRequest(request) {
   return { ...request, idempotencyKey }
 }
 
+export function claimLatestRequest(requestPath, archive) {
+  const claimed = `${requestPath}.${randomUUID()}.claimed`
+  try { renameSync(requestPath, claimed) } catch (error) {
+    if (error.code === 'ENOENT') return undefined
+    throw error
+  }
+  let request
+  try {
+    request = validateLatestRequest(readJson(claimed, 'Watchdog update request'))
+  } catch (error) {
+    try {
+      linkSync(claimed, requestPath)
+      rmSync(claimed)
+    } catch (restoreError) {
+      throw new Error(`${error.message}; request retained at ${claimed}: ${restoreError.message}`)
+    }
+    throw error
+  }
+  renameSync(claimed, archive)
+  return request
+}
+
 async function updateLatest(config, request) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
   const stagingRelative = relative(root, config.stagingRoot)
@@ -393,19 +415,14 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         process.stdout.write(`${JSON.stringify(config, null, 2)}\n`)
         process.exitCode = 0
       } else {
-        const requestPath = options.request || config.requestPath
-        if (!existsSync(requestPath)) {
+        const requestPath = options.request ? resolve(options.request) : config.requestPath
+        const request = requestPath === config.requestPath
+          ? claimLatestRequest(requestPath, join(dirname(config.requestPath), 'watchdog-update-request.last.json'))
+          : validateLatestRequest(readJson(requestPath, 'Watchdog update request'))
+        if (!request) {
           log(config, 'no Watchdog update request; nothing to do')
           process.exitCode = 0
         } else {
-          const request = validateLatestRequest(readJson(requestPath, 'Watchdog update request'))
-          // An invalid request stays in place so the operator can correct it; only a validated task request is archived.
-          const archive = join(dirname(config.requestPath), 'watchdog-update-request.last.json')
-          if (requestPath === config.requestPath) {
-            const temporary = `${config.requestPath}.${process.pid}.tmp`
-            writeFileSync(temporary, `${JSON.stringify(request, null, 2)}\n`)
-            renameSync(temporary, archive)
-          }
           updateLatest(config, request).then(result => { process.exitCode = result.ok ? 0 : 1 })
             .catch(error => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1 })
         }

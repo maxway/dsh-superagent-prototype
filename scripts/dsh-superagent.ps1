@@ -142,7 +142,7 @@ if ($urlConfigured -or $Action -ne 'stop') { $arguments += @('--url', $Url) }
 if ($Action -in @('start', 'restart')) { $arguments += @('--timeout', [string]$Timeout, '--use-installed') }
 if ($Action -in @('stop', 'restart')) { $arguments += @('--stop-timeout', [string]$StopTimeout) }
 if ($Action -eq 'verify') { $arguments += @('--survival-seconds', [string]$SurvivalSeconds) }
-if ($RespectStop) { $arguments = @('--respect-stop') + $arguments }
+if ($RespectStop) { $arguments += '--respect-stop' }
 
 & $node @arguments
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

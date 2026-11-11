@@ -72,12 +72,13 @@ function pidAlive(pid) {
 }
 
 /** Kill the task's launcher processes too: a surviving launcher loop would restart the observer from its old path. */
-function stopLauncherProcesses(home) {
+export function stopLauncherProcesses(home, execute = spawnSync) {
   const escaped = home.replace(/'/g, "''")
-  const script = `$home='${escaped}'; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains($home) -and ($_.CommandLine.Contains('launch-observer.ps1') -or $_.CommandLine.Contains('launch-observer.vbs')) } | ForEach-Object { taskkill /PID $_.ProcessId /T /F }`
-  const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+  const script = `$ErrorActionPreference='Stop'; $watchdogHome='${escaped}'; $launchers=@((Join-Path $watchdogHome 'launch-observer.ps1'), (Join-Path $watchdogHome 'launch-observer.vbs')); Get-CimInstance Win32_Process | Where-Object { $line=$_.CommandLine; $_.ProcessId -ne $PID -and $line -and @($launchers | Where-Object { $line.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 }).Count -gt 0 } | ForEach-Object { taskkill /PID $_.ProcessId /T /F; if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue)) { throw "taskkill failed with exit $LASTEXITCODE" } }`
+  const result = execute('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
     { encoding: 'utf8', timeout: 30_000, windowsHide: true })
   if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(`Stopping Watchdog launchers failed (exit ${result.status}): ${(result.stderr ?? '').trim()}`)
 }
 
 function readObserverUrl(home) {

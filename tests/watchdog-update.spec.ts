@@ -1,6 +1,6 @@
 /** The independent Watchdog update installs and switches an artifact without touching the superagent service. */
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -235,8 +235,11 @@ writeFileSync(${JSON.stringify(join(home, 'observer-state', 'heartbeat.json'))},
   writeFileSync(configPath, JSON.stringify({ watchdogHome: home, stagingRoot: staging, requestPath,
     serviceUrl: 'http://127.0.0.1:1', observerStopCommand: 'unused', observerStartCommand: `"${process.execPath}" "${start}"`,
     logFile: join(root, 'update.log'), resultFile: resultPath }))
-  const result = await applyCli(join(checkout, 'scripts', 'watchdog-update.mjs'), configPath)
-  expect(result).toMatchObject({ code: 0 })
+  const results = await Promise.all([
+    applyCli(join(checkout, 'scripts', 'watchdog-update.mjs'), configPath),
+    applyCli(join(checkout, 'scripts', 'watchdog-update.mjs'), configPath),
+  ])
+  expect(results.map(result => result.code)).toEqual([0, 0])
   for (const name of ['launch-observer.ps1', 'launch-observer.vbs', 'watchdog-bootstrap.mjs', 'watchdog-control.mjs',
     'watchdog-update.mjs', 'watchdog-artifact.mjs', 'watchdog-smoke.mjs']) {
     expect(readFileSync(join(home, name), 'utf8').length).toBeGreaterThan(0)
@@ -246,6 +249,10 @@ writeFileSync(${JSON.stringify(join(home, 'observer-state', 'heartbeat.json'))},
     request: { target: { version }, idempotencyKey: `old-request:${commit}` } })
   expect(readFileSync(starts, 'utf8').trim()).toBe('start')
   expect(readFileSync(join(home, 'current.txt'), 'utf8').trim()).toBe(version)
+  expect(existsSync(requestPath)).toBe(false)
+  const firstResult = readFileSync(resultPath, 'utf8')
+  expect(await applyCli(join(checkout, 'scripts', 'watchdog-update.mjs'), configPath)).toMatchObject({ code: 0 })
+  expect(readFileSync(resultPath, 'utf8')).toBe(firstResult)
   writeFileSync(requestPath, JSON.stringify({ confirmation: 'update' }))
   expect(await applyCli(join(checkout, 'scripts', 'watchdog-update.mjs'), configPath)).toMatchObject({ code: 0 })
   const minimal = JSON.parse(readFileSync(resultPath, 'utf8'))
@@ -257,10 +264,13 @@ writeFileSync(${JSON.stringify(join(home, 'observer-state', 'heartbeat.json'))},
   expect(readFileSync(starts, 'utf8').trim()).toBe('start')
   writeFileSync(requestPath, JSON.stringify({ confirmation: '' }))
   expect(await applyCli(join(checkout, 'scripts', 'watchdog-update.mjs'), configPath)).toMatchObject({ code: 2 })
+  expect(JSON.parse(readFileSync(requestPath, 'utf8'))).toEqual({ confirmation: '' })
   writeFileSync(requestPath, JSON.stringify({ confirmation: 'update' }))
   git('remote', 'set-url', 'origin', join(root, 'missing-remote'))
   const unavailable = await applyCli(join(checkout, 'scripts', 'watchdog-update.mjs'), configPath)
   expect(unavailable.code).not.toBe(0)
+  expect(existsSync(requestPath)).toBe(false)
+  expect(await applyCli(join(checkout, 'scripts', 'watchdog-update.mjs'), configPath)).toMatchObject({ code: 0 })
   expect(readFileSync(join(home, 'current.txt'), 'utf8').trim()).toBe(version)
 }, 120_000)
 

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 // @ts-expect-error The mechanical lifecycle scripts are plain .mjs and are not part of the TypeScript build.
-import { buildFromRepo, controlConfig, deployArtifact, parseArgv } from '../scripts/watchdog-control.mjs'
+import { buildFromRepo, controlConfig, deployArtifact, parseArgv, stopLauncherProcesses } from '../scripts/watchdog-control.mjs'
 
 const root = join(import.meta.dirname, '..')
 let directory: string | undefined
@@ -53,6 +53,23 @@ it('accepts permission-denied owner probes but rejects a missing owner', async (
   expect(ownerAlive(42, error('EACCES'))).toBe(true)
   expect(ownerAlive(42, error('ESRCH'))).toBe(false)
   expect(() => ownerAlive(42, error('EIO'))).toThrow('EIO')
+})
+
+it.runIf(process.platform === 'win32')('targets only the configured launcher home and reports errors', () => {
+  const home = "C:\\test\\watchdog's home"
+  let output = ''
+  stopLauncherProcesses(home, (command: string, args: string[], options: object) => {
+    const mock = `function Get-CimInstance { @([pscustomobject]@{ ProcessId = 111; CommandLine = "C:\\test\\watchdog's home\\launch-observer.ps1" }, [pscustomobject]@{ ProcessId = 222; CommandLine = "C:\\Users\\other\\launch-observer.ps1" }, [pscustomobject]@{ ProcessId = 333; CommandLine = "C:\\test\\watchdog's home-other\\launch-observer.ps1" }) }; function taskkill { Write-Output $args[1]; $global:LASTEXITCODE = 0 }; `
+    const result = spawnSync(command, [...args.slice(0, -1), mock + args.at(-1)], options)
+    output = String(result.stdout).trim()
+    return result
+  })
+  expect(output).toBe('111')
+  expect(() => stopLauncherProcesses(home, () => ({ status: 1, stderr: 'failure' }))).toThrow('failure')
+  stopLauncherProcesses(home, (command: string, args: string[], options: object) => {
+    const mock = `function Get-CimInstance { [pscustomobject]@{ ProcessId = 99999999; CommandLine = "C:\\test\\watchdog's home\\launch-observer.ps1" } }; function taskkill { $global:LASTEXITCODE = 1 }; `
+    return spawnSync(command, [...args.slice(0, -1), mock + args.at(-1)], options)
+  })
 })
 
 it('parses lifecycle options and creates scheduler commands', () => {

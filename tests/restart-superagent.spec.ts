@@ -26,6 +26,7 @@ async function fixture(status: number, superagent = true) {
   const calls = join(directory, 'calls.txt')
   const update = join(directory, 'update.ps1')
   const requests: string[] = []
+  const stopped = join(directory, 'stopped')
   server = createServer((request, response) => {
     requests.push(`${request.method} ${request.url} ${request.headers['x-orchestrator-request']}`)
     if (request.method === 'GET') {
@@ -34,12 +35,12 @@ async function fixture(status: number, superagent = true) {
       return
     }
     response.writeHead(status, { connection: 'close' }).end()
-    if (status === 200) server?.close()
+    if (status === 200) { writeFileSync(stopped, 'stopped'); server?.close() }
   })
   await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
   const port = (server.address() as AddressInfo).port
   writeFileSync(config, JSON.stringify({ url: `http://127.0.0.1:${port}`, checkout: directory, home: directory }))
-  writeFileSync(mock, `param($Action, $Config, [switch]$UseInstalled)\nAdd-Content -LiteralPath '${calls.replaceAll("'", "''")}' -Value "$Action|$Config|$UseInstalled"\nexit 0\n`)
+  writeFileSync(mock, `param($Action, $Config, [switch]$UseInstalled)\nif ($Action -eq 'status') {\n  if (Test-Path -LiteralPath '${stopped.replaceAll("'", "''")}') { '{"identity":"listener","home_matches":true,"listener":[],"pids":[],"foreign":[],"unlistening":[]}' }\n  else { '{"identity":"listener","home_matches":true,"listener":[1234],"pids":[1234],"foreign":[],"unlistening":[],"start":{"pid":1234}}' }\n  exit 0\n}\nAdd-Content -LiteralPath '${calls.replaceAll("'", "''")}' -Value "$Action|$Config|$UseInstalled"\nexit 0\n`)
   writeFileSync(update, `param($Checkout)\nAdd-Content -LiteralPath '${calls.replaceAll("'", "''")}' -Value "update|$Checkout"\nexit 0\n`)
   return { config, mock, update, calls, requests }
 }
@@ -78,6 +79,22 @@ it.skipIf(process.platform !== 'win32')('does not start when updating fails', as
   expect(() => readFileSync(value.calls, 'utf8')).toThrow()
   const port = new URL(JSON.parse(readFileSync(value.config, 'utf8')).url).port
   expect(existsSync(join(directory!, 'service', 'control', 'lifecycle', `${port}.maintenance`))).toBe(true)
+}, 30000)
+
+it.skipIf(process.platform !== 'win32')('refuses a different profile listener or an unlistening service before stopping', async () => {
+  const value = await fixture(200)
+  for (const status of [
+    { identity: 'listener', home_matches: true, listener: [1234], pids: [], foreign: [{ pid: 1234 }], unlistening: [] },
+    { identity: 'listener', home_matches: true, listener: [1234], pids: [1234], foreign: [], unlistening: [5678] },
+    { identity: 'listener', home_matches: false, listener: [1234], pids: [1234], foreign: [], unlistening: [] },
+    { identity: 'listener', home_matches: true, listener: [1234], pids: [1234], foreign: [], unlistening: [] },
+    { identity: 'listener', home_matches: true, listener: [1234], pids: [1234], foreign: [], unlistening: [], start: { pid: 5678 } },
+  ]) {
+    writeFileSync(value.mock, `param($Action, $Config)\n'${JSON.stringify(status)}'\n`)
+    expect(await run(value.config, value.mock, value.update)).not.toBe(0)
+    expect(value.requests).toEqual([])
+    expect(existsSync(value.calls)).toBe(false)
+  }
 }, 30000)
 
 it.skipIf(process.platform !== 'win32')('does not stop another service listening on the configured port', async () => {
@@ -143,6 +160,20 @@ it.skipIf(process.platform !== 'win32')('does not build when pulling latest fail
   const result = spawnSync('pwsh', ['-NoProfile', '-File', updateScript, '-Checkout', directory], { env })
   expect(result.status).toBe(7)
   expect(() => readFileSync(calls, 'utf8')).toThrow()
+})
+
+it.skipIf(process.platform !== 'win32')('passes the recovery flag to the control script rather than Node', () => {
+  directory = mkdtempSync(join(tmpdir(), 'recovery-arguments-'))
+  const scripts = join(directory, 'scripts')
+  const calls = join(directory, 'arguments.json')
+  const config = join(directory, 'config.json')
+  mkdirSync(scripts)
+  writeFileSync(join(scripts, 'dsh-superagent'), `require('node:fs').writeFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)))`)
+  writeFileSync(config, JSON.stringify({ checkout: directory, home: directory, profile: 'recovery-test', node: process.execPath, url: 'http://127.0.0.1:19382' }))
+  const wrapper = join(import.meta.dirname, '..', 'scripts', 'dsh-superagent.ps1')
+  const result = spawnSync('pwsh', ['-NoProfile', '-File', wrapper, 'start', '-Config', config, '-UseInstalled', '-RespectStop'], { encoding: 'utf8' })
+  expect(result.status, result.stderr).toBe(0)
+  expect(JSON.parse(readFileSync(calls, 'utf8'))).toContain('--respect-stop')
 })
 
 it.skipIf(process.platform !== 'win32')('crash recovery starts the installed version without updating', () => {

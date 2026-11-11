@@ -43,7 +43,24 @@ function Listening([int]$Port) {
   return $false
 }
 
+function ServiceStatus {
+  $output = & pwsh -NoLogo -NoProfile -NonInteractive -File $ServiceScript status -Config $Config
+  try { $status = $output | ConvertFrom-Json } catch { throw 'Cannot establish service process status.' }
+  if ($null -eq $status -or $status.identity -ne 'listener' -or $status.home_matches -ne $true -or
+      $null -eq $status.listener -or $null -eq $status.pids -or $null -eq $status.foreign -or $null -eq $status.unlistening -or
+      @($status.foreign).Count -or @($status.unlistening).Count -or @($status.listener).Count -ne @($status.pids).Count -or
+      @($status.pids).Count -gt 1) {
+    throw 'Cannot identify the configured service safely; refusing to stop or update.'
+  }
+  if (@($status.pids).Count -and (-not $status.start.pid -or $status.start.pid -ne $status.pids[0])) {
+    throw 'The listening process does not match the recorded service; refusing to stop or update.'
+  }
+  return $status
+}
+
+$status = ServiceStatus
 if (Listening $url.Port) {
+  if (@($status.pids).Count -ne 1) { throw 'The configured listener is not the expected service.' }
   $state = Invoke-RestMethod -Method Get -Uri "$($url.AbsoluteUri.TrimEnd('/'))/orchestrator/api/state" -Headers @{ 'x-orchestrator-request' = '1' } -TimeoutSec 10
   if (-not $state.health.runtime -or -not ($state.health.assessment -or $state.health.delivery -or $state.health.reply)) {
     throw 'The configured URL is not a Superagent server.'
@@ -56,6 +73,8 @@ if (Listening $url.Port) {
   } while ($listening -and (Get-Date) -lt $deadline)
   if ($listening) { throw "Service is still listening on port $($url.Port)." }
 }
+$status = ServiceStatus
+if (@($status.pids).Count -or @($status.listener).Count) { throw 'The service may still be running; refusing to update the checkout.' }
 
 $checkout = [string]$settings.checkout
 if (-not $checkout) { throw 'The service configuration must specify the checkout.' }
