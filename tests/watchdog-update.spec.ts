@@ -1,11 +1,11 @@
 /** The independent Watchdog update installs, switches and rolls back an artifact without touching the superagent service. */
-import { execFile, execFileSync } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 
 const artifact = join(import.meta.dirname, '..', 'scripts', 'watchdog-artifact.mjs')
 const updater = join(import.meta.dirname, '..', 'scripts', 'watchdog-update.mjs')
@@ -69,7 +69,10 @@ it('installs a new artifact, proves its heartbeat, is idempotent and rolls back 
   const serviceUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 
   const trigger = join(root, 'trigger.mjs')
-  writeFileSync(trigger, `const version = process.env.DSH_WATCHDOG_VERSION
+  mkdirSync(join(home, 'observer-state'), { recursive: true })
+  writeFileSync(trigger, `import { writeFileSync } from 'node:fs'
+writeFileSync(${JSON.stringify(join(home, 'observer-state', 'heartbeat.json'))}, JSON.stringify({ pid: ${process.pid}, at: new Date().toISOString() }))
+const version = process.env.DSH_WATCHDOG_VERSION
 const response = await fetch(process.env.DSH_WATCHDOG_SERVICE_URL + '/orchestrator/api/watchdog/runs', {
   method: 'POST', headers: { 'x-orchestrator-request': '1', 'content-type': 'application/json' },
   body: JSON.stringify({ idempotencyKey: 'fake-' + version, note: 'fake agent', version }),
@@ -84,7 +87,7 @@ if (!response.ok) process.exit(1)
   const config = (startCommand: string, heartbeatTimeoutSeconds = 10) => writeFileSync(configPath, JSON.stringify({
     watchdogHome: home, stagingRoot: join(root, 'staging'), requestPath, serviceUrl,
     observerStopCommand: `"${process.execPath}" "${noop}"`, observerStartCommand: startCommand,
-    logFile: join(root, 'update.log'), resultFile: resultPath, heartbeatTimeoutSeconds, pollSeconds: 1, lockStaleSeconds: 60 }))
+    logFile: join(root, 'update.log'), resultFile: resultPath, heartbeatTimeoutSeconds, survivalSeconds: 1, pollSeconds: 1, lockStaleSeconds: 60 }))
   const request = (version: string, key: string, artifactPath: string) => writeFileSync(requestPath, JSON.stringify({
     at: new Date().toISOString(), requestedBy: 'operator', confirmation: '更新 watchdog', idempotencyKey: key,
     target: { version, artifactPath, sha256: version === 'v2' ? two.sha256 : one.sha256 } }))
@@ -111,6 +114,20 @@ if (!response.ok) process.exit(1)
   expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({ ok: false, phase: 'rolled-back', version: 'v2', previousVersion: 'v1' })
   expect(readFileSync(join(home, 'current.txt'), 'utf8').trim()).toBe('v1')
 
+  writeFileSync(join(home, 'current.txt'), 'v1\n')
+  const deadTrigger = join(root, 'dead-trigger.mjs')
+  writeFileSync(deadTrigger, `import { writeFileSync } from 'node:fs'
+writeFileSync(${JSON.stringify(join(home, 'observer-state', 'heartbeat.json'))}, JSON.stringify({ pid: 99999999, at: new Date().toISOString() }))
+await fetch(process.env.DSH_WATCHDOG_SERVICE_URL + '/orchestrator/api/watchdog/runs', {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ version: 'v2' }),
+})`)
+  config(`"${process.execPath}" "${deadTrigger}"`, 2)
+  request('v2', 'update-dead-observer', join(root, 'staging', 'v2'))
+  expect(await apply(configPath)).toMatchObject({ code: 1 })
+  expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({ ok: false, phase: 'survival-unverified', manualIntervention: true })
+  expect(readFileSync(join(home, 'current.txt'), 'utf8').trim()).toBe('v2')
+
   // An artifact outside the staging root is refused before the request is archived.
   config(`"${process.execPath}" "${trigger}"`)
   request('v2', 'update-3', home)
@@ -121,12 +138,13 @@ if (!response.ok) process.exit(1)
   writeFileSync(join(home, 'current.txt'), 'v1\n')
   const order = join(root, 'observer-order.log')
   const observer = join(root, 'observer.mjs')
-  writeFileSync(observer, `import { appendFileSync, readFileSync } from 'node:fs'
+  writeFileSync(observer, `import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 const action = process.argv[2]
 const home = process.argv[3]
 const current = readFileSync(home + '/current.txt', 'utf8').trim()
 appendFileSync(process.argv[4], action + ' ' + current + '\\n')
 if (action === 'start') {
+  writeFileSync(${JSON.stringify(join(home, 'observer-state', 'heartbeat.json'))}, JSON.stringify({ pid: ${process.pid}, at: new Date().toISOString() }))
   const response = await fetch(process.env.DSH_WATCHDOG_SERVICE_URL + '/orchestrator/api/watchdog/runs', {
     method: 'POST', headers: { 'x-orchestrator-request': '1', 'content-type': 'application/json' },
     body: JSON.stringify({ idempotencyKey: 'observer-' + current, note: 'observer', version: current }),
@@ -138,7 +156,7 @@ if (action === 'start') {
   writeFileSync(observerConfig, JSON.stringify({ watchdogHome: home, stagingRoot: join(root, 'staging'), requestPath,
     serviceUrl, observerStopCommand: `"${process.execPath}" "${observer}" stop "${home}" "${order}"`,
     observerStartCommand: `"${process.execPath}" "${observer}" start "${home}" "${order}"`,
-    logFile: join(root, 'update.log'), resultFile: resultPath, heartbeatTimeoutSeconds: 10, pollSeconds: 1,
+    logFile: join(root, 'update.log'), resultFile: resultPath, heartbeatTimeoutSeconds: 10, survivalSeconds: 1, pollSeconds: 1,
     lockStaleSeconds: 60 }))
   request('v2', 'update-observer', join(root, 'staging', 'v2'))
   expect(await apply(observerConfig)).toMatchObject({ code: 0 })
@@ -147,3 +165,42 @@ if (action === 'start') {
   expect(readFileSync(order, 'utf8').trim().split(/\r?\n/)).toEqual(['stop v1', 'start v2'])
   expect(readFileSync(join(home, 'current.txt'), 'utf8').trim()).toBe('v2')
 }, 60_000)
+
+it('does not accept an observer that exits after its first heartbeat', async () => {
+  directory = mkdtempSync(join(tmpdir(), 'watchdog-survival-'))
+  const state = join(directory, 'observer-state')
+  mkdirSync(state, { recursive: true })
+  const module = await import(updater) as {
+    verifyObserverSurvival: (config: Record<string, unknown>, since: number) => Promise<unknown>
+  }
+  const observer = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 500)'], { stdio: 'ignore' })
+  const since = Date.now()
+  writeFileSync(join(state, 'heartbeat.json'), JSON.stringify({ pid: observer.pid, at: new Date().toISOString() }))
+  try {
+    await expect(module.verifyObserverSurvival({ watchdogHome: directory, heartbeatTimeoutSeconds: 2, survivalSeconds: 2 }, since))
+      .rejects.toThrow(/exited during the survival window/)
+  } finally {
+    if (observer.exitCode === null) observer.kill()
+    if (observer.exitCode === null) await new Promise<void>(resolve => observer.once('exit', () => resolve()))
+  }
+}, 10_000)
+
+it('rejects a live process whose heartbeat stops advancing', async () => {
+  directory = mkdtempSync(join(tmpdir(), 'watchdog-stale-heartbeat-'))
+  const state = join(directory, 'observer-state')
+  mkdirSync(state, { recursive: true })
+  const module = await import(updater) as {
+    verifyObserverSurvival: (config: Record<string, unknown>, since: number) => Promise<unknown>
+  }
+  vi.useFakeTimers()
+  try {
+    const since = Date.now()
+    writeFileSync(join(state, 'heartbeat.json'), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }))
+    const checked = module.verifyObserverSurvival({ watchdogHome: directory, heartbeatTimeoutSeconds: 2, survivalSeconds: 75 }, since)
+    const rejection = expect(checked).rejects.toThrow(/stopped updating its heartbeat/)
+    await vi.advanceTimersByTimeAsync(42_000)
+    await rejection
+  } finally {
+    vi.useRealTimers()
+  }
+})

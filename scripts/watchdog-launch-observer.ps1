@@ -16,7 +16,7 @@ $logFile = Join-Path $WatchdogHome 'launch-observer.log'
 
 function Fail([string]$message) {
   try { "$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')) $message" | Add-Content -LiteralPath $logFile -Encoding utf8 } catch { /* The task result carries the error. */ }
-  Write-Error $message
+  Write-Error $message -ErrorAction Continue
   exit 2
 }
 function Log([string]$message) {
@@ -36,17 +36,19 @@ function CurrentObserver {
 try {
   if (-not (Test-Path -LiteralPath $Config)) { Fail "The Watchdog observer configuration does not exist: $Config" }
   $node = (Get-Command node -ErrorAction Stop).Source
-  Log "observer launcher start config=$Config node=$node"
+  $session = try { (Get-Process -Id $PID -ErrorAction Stop).SessionId } catch { 'unknown' }
+  Log "observer launcher start pid=$PID session=$session config=$Config node=$node"
   while ($true) {
     # Re-read the pointer on every restart: a switch performed while the old observer was stopped must start the new version.
     $target = CurrentObserver
     Log "observer start version=$($target.Version)"
-    & $node $target.Observer --config $Config
+    & $node $target.Observer --config $Config 2>&1 | ForEach-Object { Log "observer output version=$($target.Version) $_" }
     $code = $LASTEXITCODE
     Log "observer exit=$code version=$($target.Version)"
     if ($code -eq 0) { exit 0 }
     Start-Sleep -Seconds 10
   }
 } catch {
-  Fail $_.Exception.Message
+  $details = $_ | Out-String
+  Fail "$details$($_.ScriptStackTrace)"
 }

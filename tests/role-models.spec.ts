@@ -55,11 +55,12 @@ it('inherits the host when unset and fails unavailable routes before recording a
 })
 it('uses tier models independently of category while retaining legacy fallback', () => {
   const settings = SettingsSchema.parse({ executor: { model: { provider: 'p', model: 'default' },
-    models: { query: { provider: 'p', model: 'legacy' } }, tierModels: { low: { provider: 'p', model: 'luna' }, high: { provider: 'p', model: 'terra' } } } })
+    models: { query: { provider: 'p', model: 'legacy' } }, tierModels: { low: { provider: 'p', model: 'luna' }, high: { provider: 'p', model: 'terra' }, expert: { provider: 'p', model: 'expert-model' } } } })
   const ticket = (category: Ticket['category'], tier?: Ticket['tier']) => ({ category, tier, mandate: { strength: 'explicit' as const } as Ticket['mandate'] })
   expect(workerModel(settings, ticket('development', 'low'))?.model).toBe('luna')
   expect(workerModel(settings, ticket('research', 'high'))?.model).toBe('terra')
   expect(workerModel(settings, ticket('query', 'high'))?.model).toBe('terra')
+  expect(workerModel(settings, ticket('development', 'expert'))?.model).toBe('expert-model')
   expect(workerModel(settings, ticket('query'))?.model).toBe('legacy')
   settings.executor.tierModels.low = null
   expect(workerModel(settings, ticket('query', 'low'))?.model).toBe('default')

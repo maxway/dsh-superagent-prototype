@@ -17,8 +17,13 @@ Lets this fork work directly with GitLab, including self-managed instances, with
 - The official prototype only connects to GitHub; this fork adds a GitLab Source. Each deployment has exactly one active Git Source; with both Git plugins installed in the profile, the Sources page can switch the active host.
 - A switch is one action: it verifies the target account and repository and restarts once; when the old host still has open Tickets, the switch lists them and asks you to stop them first or confirm explicitly. A Ticket records the host it was accepted under and cannot resume on another one; switch back to continue it.
 - The GitLab Source polls project issues, merge requests, notes and pipelines, replies in the original note, binds merge requests to Tickets, and returns CI status to the Executor.
-- An optional GitLab webhook: the Source creates or updates the project webhook automatically and starts a sync as soon as an event arrives; without it the Source falls back to polling, which suits deployments with a fixed IP.
+- An optional GitLab webhook: the Source creates or updates the project webhook automatically and starts a sync as soon as an event arrives; it requires a stable address reachable by GitLab; without it the Source continues polling.
 - Self-managed GitLab is supported, including instances served over HTTP. Commits, pushes, merge requests, review replies and CI fixes go through `glab`.
+
+#### Ticket categories, model tiers and handoff
+
+- Tickets use `query`, `research` or `development` to define authorization, independently of the `low` / `high` capability tier used for model selection. Queries default to `low`, other work to `high`. An unset tier model falls back to the category model, the Executor default, then the host default; settings changes do not change an existing Session's model.
+- When the same authorized task needs greater capability, an eligible Feishu-origin `low` Ticket can hand off to a new `high` Ticket without expanding its authorization. The successor uses a summary and a new workspace; complete context and duplicate-free switching are not guaranteed. See [003 Execution](docs/003-execution.md#ticket-categories-and-models) for conditions and configuration.
 
 #### Native Windows deployment
 
@@ -32,7 +37,7 @@ Runs the service directly on a native Windows host, without WSL, tmux or Python.
 
 Schedules Tickets into the model's off-peak billing window by source, lowering the cost of long tasks.
 
-- The official prototype has no such scheduling; this fork can mark Tickets as `offPeak`, and their Executor starts each new Assignment only inside the daily window in the Execution settings. Feishu requests default to immediate execution unless clearly deferrable; GitLab and GitHub requests default to the window unless clearly urgent.
+- The official prototype has no such scheduling; this fork can mark Tickets as `offPeak`, and their Executor starts each new Assignment only inside the daily window in the Execution settings. For models known to have peak/off-peak pricing (currently `deepseek-v4.1-flash`), Feishu requests default to immediate execution and GitLab and GitHub requests to the window. Other or unknown models default to immediate execution; an explicit choice can defer or expedite any model.
 - The window is off by default, configurable by start time, end time and IANA time zone, and may cross midnight; the default `22:00`–`08:00` (`Asia/Shanghai`) matches the off-peak billing period in Beijing time.
 
 #### Task-level Watchdog check
@@ -71,8 +76,10 @@ This fork follows the official setup flow and adds the GitLab and Windows steps.
 
 ## Documentation
 
-The general design and development documents match the official project; start from the [official README](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/README.md). This fork additionally provides:
+For general background, see the [official README](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/README.md); use this repository's documentation for the fork's current behavior:
 
+- [003 Execution](docs/003-execution.md): Ticket categories, model selection, handoff and recovery.
+- [012 Worker handoff design](docs/012-worker-handoff.md): a broader proposal, not implemented; distinct from the existing capability handoff.
 - [009 Windows deployment](docs/009-windows-deployment.md): necessity, adaptation plan, staged implementation and verification record.
 - [010 Session retention](docs/010-session-retention.md): measuring the growth of sessions, workspaces and the database, the implemented workspace and branch reclamation, and a cleanup proposal for the rest.
 - [011 Multiple Git Sources](docs/011-multi-git-sources.md): the current state, feasibility assessment and staged recommendation for several Git sources or projects in one deployment.

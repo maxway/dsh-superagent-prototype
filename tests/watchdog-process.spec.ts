@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -163,6 +163,22 @@ it('waits on one versioned request and returns the version to resume from', asyn
   expect(changed).toMatchObject({ version: 'version-2', changed: true, reason: 'change' })
   expect(service.calls.at(-1)?.url).toBe('/orchestrator/api/watchdog/wait?timeout=1&stale_minutes=30&since=version-1')
 })
+
+it('writes a local heartbeat even when the service is unreachable', async () => {
+  const config = configure('http://127.0.0.1:1', { report: false })
+  const child = spawn(process.execPath, [script, '--config', config], { stdio: 'ignore' })
+  const heartbeat = join(directory!, 'state', 'heartbeat.json')
+  try {
+    const deadline = Date.now() + 10_000
+    while (!existsSync(heartbeat) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+    const value = JSON.parse(readFileSync(heartbeat, 'utf8'))
+    expect(value.pid).toBe(child.pid)
+    expect(Date.parse(value.at)).toBeGreaterThan(Date.now() - 10_000)
+  } finally {
+    child.kill()
+    await new Promise<void>(resolve => child.once('exit', () => resolve()))
+  }
+}, 15_000)
 
 it('records every observation and reports a finding only when it changes', async () => {
   const answers: unknown[] = []

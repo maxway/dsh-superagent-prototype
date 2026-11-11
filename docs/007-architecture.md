@@ -433,6 +433,7 @@ Some generic modules still need provider-specific behavior:
 | --- | --- |
 | `tests/core-engine.spec.ts` | Domain rules on in-memory repositories: receiving, Eval, fan-out, resume and stop, interrupted Assignments, the pause, Policy changes, reports and outcomes, attaching, replies, failed deliveries and dismissed problems |
 | `tests/executor-handoff-tool.spec.ts` | Low-to-high handoff tool validation and tier-specific worker instructions |
+| `tests/notices-handoff.spec.ts` | Handoff notifications distinguish transferred subscriptions from unrelated Threads |
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
@@ -475,6 +476,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/watchdog-recovery.spec.ts` | Bounded Watchdog recovery: off by default, one audited retry only for a running Assignment with no live Session, idempotent replay, a per-Session ceiling, and refusals for a present Session, stale snapshot or non-running Assignment |
 | `tests/watchdog-observer-agent.spec.ts` | The standing observer's event-driven handover: new risk runs the full agent once, the same finding spends no second model call, a cleared risk re-arms it, a failed agent is reported once without retrying, and the agent configuration is validated |
 | `tests/watchdog-launch.spec.ts` | The windowless observer launcher: the VBS and its PowerShell launcher start the current version with the task's arguments and keep the exit code |
+| `tests/watchdog-diagnostics.spec.ts` | Windows event diagnostics: task filtering, disabled-channel status and access failures |
 | `tests/watchdog-control.spec.ts` | The mechanical lifecycle: option parsing and scheduler commands, artifact preparation, launcher installation, and a deploy request handed to the updater without a model |
 | `tests/watchdog-update.spec.ts` | The independent Watchdog update: artifact validation, smoke, install and pointer switch, recorded-run heartbeat, idempotency, rollback and staging-root refusal |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |

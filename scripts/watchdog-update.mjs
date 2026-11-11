@@ -59,6 +59,7 @@ export function loadConfig(path) {
     logFile: required('logFile'),
     resultFile: required('resultFile'),
     heartbeatTimeoutSeconds: number('heartbeatTimeoutSeconds', 180),
+    survivalSeconds: number('survivalSeconds', 75),
     pollSeconds: number('pollSeconds', 5),
     smokeTimeoutSeconds: number('smokeTimeoutSeconds', 30),
     lockStaleSeconds: number('lockStaleSeconds', 900),
@@ -230,6 +231,39 @@ async function waitForHeartbeat(config, version, since) {
   throw new Error(`No recorded run from Watchdog ${version} within ${config.heartbeatTimeoutSeconds}s`)
 }
 
+export async function verifyObserverSurvival(config, since) {
+  const heartbeatPath = join(config.watchdogHome, 'observer-state', 'heartbeat.json')
+  const deadline = Date.now() + config.heartbeatTimeoutSeconds * 1000
+  let heartbeat
+  while (Date.now() < deadline) {
+    try {
+      const value = readJson(heartbeatPath, 'observer heartbeat')
+      const at = Date.parse(value.at)
+      if (Number.isInteger(value.pid) && value.pid > 0 && at >= since && at <= Date.now() + 5000 && pidAlive(value.pid)) {
+        heartbeat = { pid: value.pid, at }
+        break
+      }
+    } catch {}
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 1000))
+  }
+  if (!heartbeat) throw new Error('No fresh live observer heartbeat after the start request')
+  const until = Date.now() + (config.survivalSeconds ?? 75) * 1000
+  while (Date.now() < until) {
+    await new Promise(resolvePromise => setTimeout(resolvePromise, Math.min(1000, until - Date.now())))
+    if (!pidAlive(heartbeat.pid)) throw new Error(`Observer pid ${heartbeat.pid} exited during the survival window`)
+    try {
+      const value = readJson(heartbeatPath, 'observer heartbeat')
+      const at = Date.parse(value.at)
+      if (value.pid !== heartbeat.pid && at >= since) throw new Error(`Observer pid changed from ${heartbeat.pid} to ${value.pid}`)
+      if (value.pid === heartbeat.pid && at >= heartbeat.at && at <= Date.now() + 5000) heartbeat.at = at
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Observer pid changed')) throw error
+    }
+    if (Date.now() - heartbeat.at > 40_000) throw new Error(`Observer pid ${heartbeat.pid} stopped updating its heartbeat`)
+  }
+  return { pid: heartbeat.pid, lastHeartbeat: new Date(heartbeat.at).toISOString(), survivalSeconds: config.survivalSeconds ?? 75 }
+}
+
 async function report(config, note, idempotencyKey) {
   if (!config.reportChat || !config.serviceUrl) return false
   try {
@@ -328,8 +362,16 @@ export async function update(config, rawRequest, dependencies = {}) {
       heartbeat = 'unreachable'
       logLine('the management API is unreachable; installed the artifact without a recorded-run proof')
     }
+    let survival
+    try {
+      survival = await (dependencies.verifyObserverSurvival ?? verifyObserverSurvival)(config, triggerAt)
+    } catch (error) {
+      return finish({ at: now().toISOString(), ok: false, phase: 'survival-unverified', version: artifact.version,
+        previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence, stop: stopped, trigger: triggerEvidence, heartbeat,
+        manualIntervention: true, error: error instanceof Error ? error.message : String(error) })
+    }
     const result = finish({ at: now().toISOString(), ok: true, phase: 'updated', version: artifact.version, commit: artifact.commit,
-      previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence, stop: stopped, trigger: triggerEvidence, heartbeat })
+      previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence, stop: stopped, trigger: triggerEvidence, heartbeat, survival })
     if (config.reportChat) {
       const note = `Watchdog 已更新到 ${artifact.version}${current ? `（上一版 ${current}）` : ''}；服务未重启；心跳 ${heartbeat === 'recorded' ? '已记录' : '未验证'}。`
       if (!(await report(config, note, `watchdog-update-${request.idempotencyKey}`))) logLine('the update report could not be sent')

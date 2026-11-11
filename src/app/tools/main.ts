@@ -5,17 +5,15 @@ import { z } from 'zod'
 import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
   from '../../core/index.ts'
 import { deploymentConfig, requestDeployment } from '../deployment.ts'
-import { offPeakByDefault } from '../../offpeak.ts'
 import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
-import { TierSchema } from '../../policy.ts'
 import { ticketCard } from '../cards.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
 import { readResource, type MainResourceHost, type ResourceHost } from '../resources.ts'
 import type { Sessions } from '../sessions.ts'
 import type { Settings } from '../settings.ts'
 import type { Store } from '../store.ts'
-import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
+import { AcceptanceAcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
 
 const RoutingNoteSchema = z.string().trim()
   .refine(text => wordCount(text) <= NOTE_WORDS, `Routing note must not exceed ${NOTE_WORDS} words (Chinese uses word segmentation). Shorten it; do not split it across deliveries.`)
@@ -52,11 +50,11 @@ const RouteItemSchema = z.object({
   trigger_id: z.string().describe('The candidate card\'s trigger_id; deciding it decides its batch.'),
   ticket_id: z.string().nullish().describe('attach and stop: the ticket.'),
   title: z.string().nullish().describe('accept: a short label of at most 200 characters describing the original request; no added requirements or implementation advice.'),
-  tier: TierSchema.nullish().describe('accept: low for clearly simple work, high by default; expert only when the explicit human request contains a standalone tier=expert line and no Markdown code fence.'),
+  tier: z.enum(['low', 'high']).nullish().describe('accept: low for clearly simple work, high by default for complex or unclear work. The host honors a human expert instruction separately.'),
   worktree_name: z.string().nullish().describe(`accept: ${WorktreeNameSchema.description ?? ''}`),
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It may ask the one question that must be answered before the work starts. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
-  off_peak: z.boolean().nullish().describe('accept: whether the Ticket waits for the configured off-peak window. Omit it to follow the source default: a Feishu request is not deferred unless the work is clearly deferrable (long and multi-step, with no incident, outage, deadline or person waiting now); a GitLab or GitHub request is deferred unless it is clearly urgent (an incident, outage, deadline or person waiting now). true or false overrides that default. Its Executor starts each new Assignment only inside the window.'),
+  off_peak: z.boolean().nullish().describe('accept: whether the Ticket waits for the configured off-peak window. Omit to defer GitLab or GitHub work only when the configured worker model is known to have off-peak pricing; other work starts immediately. Explicit true or false overrides the default for any model. Its Executor starts each new Assignment only inside the window.'),
   reason: z.string().nullish().describe('ignore and stop: why, at most 500 characters; an ignore needs it.'),
 }).strict()
 type RouteItem = z.infer<typeof RouteItemSchema>
@@ -66,9 +64,9 @@ type Field = Exclude<keyof RouteItem, 'kind' | 'trigger_id'>
 const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Kind[]; needs: readonly Kind[] }> = {
   ticket_id: { check: z.string(), reads: ['attach', 'stop'], needs: ['attach', 'stop'] },
   title: { check: z.string().max(200), reads: ['accept'], needs: ['accept'] },
-  tier: { check: TierSchema, reads: ['accept'], needs: [] },
+  tier: { check: z.enum(['low', 'high']), reads: ['accept'], needs: [] },
   worktree_name: { check: WorktreeNameSchema, reads: ['accept'], needs: ['accept'] },
-  acknowledgement: { check: AcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
+  acknowledgement: { check: AcceptanceAcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
   note: { check: RoutingNoteSchema, reads: ['accept', 'attach'], needs: [] },
   off_peak: { check: z.boolean(), reads: ['accept'], needs: [] },
   reason: { check: z.string().max(500), reads: ['ignore', 'stop'], needs: ['ignore'] },
@@ -101,13 +99,11 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
   switch (item.kind) {
     case 'accept': {
       const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
-      const source = host.store.triggers.get(item.trigger_id)?.source
-      const offPeak = item.off_peak ?? (source !== undefined && offPeakByDefault(source))
       // A reply-only candidate becomes a read-only ticket that answers its question and may not execute.
       const reply = host.engine.candidate(item.trigger_id)?.strength === 'reply'
       const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: reply ? 'replyRouted' : 'explicitRouted' },
         acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...(item.tier ? { tier: item.tier } : {}),
-        ...(offPeak ? { offPeak: true as const } : {}), ...note })
+        ...(item.off_peak === true ? { offPeak: true as const } : item.off_peak == null ? { offPeakSourceDefault: true as const } : {}), ...note })
       // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
       if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }
       if (decision.id === before) {
@@ -137,7 +133,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
 function routeTool(host: MainToolsHost): Tool {
   return tool({
     name: 'orchestrator_route',
-    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, accept a read-only reply question as a reply-only ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. An accept follows the source\'s off-peak default unless an explicit off_peak overrides it. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
+    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, accept a read-only reply question as a reply-only ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. An accept follows the model and source off-peak default unless an explicit off_peak overrides it. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
     schema: z.object({ decisions: z.array(RouteItemSchema).min(1).max(20) }).strict(),
     execute: async ({ decisions }) => {
       const decided = new Map<string, string>()

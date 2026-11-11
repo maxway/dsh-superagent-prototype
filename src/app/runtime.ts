@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { lockSync } from 'proper-lockfile'
 import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
 import { allowedSender, settingsPolicy } from '../policy.ts'
+import { offPeakByDefault } from '../offpeak.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
@@ -40,6 +41,7 @@ import { Passes } from './passes.ts'
 import { Setup } from './setup.ts'
 import { health, type Health, type SourceContext, type SourceHost } from '../sources/host.ts'
 import { Sessions } from './sessions.ts'
+import { workerModel } from './role-models.ts'
 import { Settings } from './settings.ts'
 import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
 import type { ResourceHost } from './resources.ts'
@@ -138,7 +140,9 @@ export class Runtime extends Service implements SourceHost {
       const policy = () => settingsPolicy(store.settings(), sources)
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
         outbox, prepareTicket: (ticket, outcome) => {
-          const prepared = executor.prepare(ticket, outcome)
+          const source = store.triggers.get(ticket.origin.triggerId)?.source
+          const deferred = outcome.offPeakSourceDefault && source && offPeakByDefault(source, workerModel(store.settings(), ticket)?.model)
+          const prepared = executor.prepare(deferred ? { ...ticket, offPeak: true } : ticket, outcome)
           // Bind the Ticket to the host it is accepted under, so a later switch cannot resume it there.
           return setup.configured() ? { ...prepared, git: { provider: setup.deployment.git.provider } } : prepared
         }, emit: event => {

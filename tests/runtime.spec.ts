@@ -264,7 +264,7 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
   expect(runtime.store.threads.get(`feishu:${CHAT}:om_1`)?.subscriptions).toEqual([ticket.id])
   expect(runtime.store.replyStatus(key('ack', trigger.id))).toBe('sent')
   const larkCalls = vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args)
-  expect(larkCalls.find(args => args[1] === '+messages-reply')).toEqual(expect.arrayContaining(['--message-id', 'om_1', '--markdown', '收到，修复回归。']))
+  expect(larkCalls.find(args => args[1] === '+messages-reply')).toEqual(expect.arrayContaining(['--message-id', 'om_1', '--markdown', '收到，修复回归。 Worker: high.']))
   // The first message holds the source request; an explicit ticket has no routing note beyond it.
   const first = relays(sessionId)[0]!
   expect(first).toEqual({ ticket_id: ticket.id, title: '修复回归',
@@ -281,6 +281,14 @@ it('defaults to high and records a low tier for simple work without a category',
   expect(low.ticket).not.toHaveProperty('category')
   expect(high.ticket).not.toHaveProperty('category')
   expect(sections.get(high.sessionId)!.text({})).toContain('investigation alone does not authorize changes')
+})
+
+it('selects expert from a human request and announces the resulting tier', async () => {
+  const { ticket } = await acceptedTicket(feishu('35', '@bot 调查问题\n档位: expert'), 'low')
+  expect(ticket.tier).toBe('expert')
+  expect(ticket).not.toHaveProperty('category')
+  const calls = vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args)
+  expect(calls.find(args => args.includes('om_35'))).toEqual(expect.arrayContaining(['--markdown', expect.stringContaining('Worker: expert.')]))
 })
 
 it('fans a person\'s later thread message out to the live worker as context and tells the orchestrator, without an Eval', async () => {
@@ -1551,6 +1559,19 @@ it('relays the status-request hint when a worker\'s turn ends with no text and n
   ;(runtime as unknown as { ctx: Context }).ctx.emit('agent/status', { agent, status: 'idle' } as never)
   await vi.waitFor(() => expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'waiting' }))
   expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_report', ticket: { ticket_id: ticket.id }, state: 'waiting',
+    summary: expect.stringContaining('orchestrator_ticket_request_status') })
+})
+
+it('requests a final status when a worker goes quiet after reporting progress', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'MR opened' })
+  const relayed = relays(runtime.masterId).length
+  const agent = agents.get(sessionId)! as { status: string }
+  agent.status = 'idle'
+  ;(runtime as unknown as { ctx: Context }).ctx.emit('agent/status', { agent, status: 'idle' } as never)
+  await vi.waitFor(() => expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'waiting', summary: 'MR opened' }))
+  expect(relays(runtime.masterId)).toHaveLength(relayed + 1)
+  expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_report', state: 'waiting',
     summary: expect.stringContaining('orchestrator_ticket_request_status') })
 })
 

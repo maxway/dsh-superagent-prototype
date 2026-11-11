@@ -61,10 +61,12 @@ it('never holds a launch while the window is disabled', () => {
 })
 
 it('defers GitLab and GitHub work by default and leaves Feishu work immediate unless marked', () => {
-  expect(offPeakByDefault('feishu')).toBe(false)
-  expect(offPeakByDefault('github')).toBe(true)
-  expect(offPeakByDefault('gitlab')).toBe(true)
-  expect(offPeakByDefault('other')).toBe(false)
+  expect(offPeakByDefault('feishu', 'deepseek-v4.1-flash')).toBe(false)
+  expect(offPeakByDefault('github', 'deepseek-v4.1-flash')).toBe(true)
+  expect(offPeakByDefault('gitlab', 'deepseek-v4.1-flash')).toBe(true)
+  expect(offPeakByDefault('github', 'other-model')).toBe(false)
+  expect(offPeakByDefault('github', undefined)).toBe(false)
+  expect(offPeakByDefault('other', 'deepseek-v4.1-flash')).toBe(false)
 })
 
 it('rejects a malformed clock, an empty or 24-hour window, an unknown time zone, and unknown fields', () => {

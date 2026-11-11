@@ -19,6 +19,17 @@ export const automatic = (input: TicketInput | undefined): boolean => input?.kin
 const readBefore = (input: Extract<TicketInput, { kind: 'trigger' }>, until: string): boolean => input.readAt === undefined
   ? (input.deliveredAt && input.deliveredAt > input.at ? input.deliveredAt : input.at) <= until : !!input.readAt && input.readAt < until
 const STATUS_REQUEST = 'Report the current ticket status with orchestrator_report. This is a status-only request: do not resume implementation or perform external actions.'
+const expertRequested = (text: string): boolean => {
+  let fence: string | undefined
+  for (const line of text.split(/\r?\n/)) {
+    const marker = /^[\t ]*(`{3,}|~{3,})/.exec(line)?.[1]
+    if (marker) {
+      if (!fence) fence = marker
+      else if (marker[0] === fence[0] && marker.length >= fence.length) fence = undefined
+    } else if (!fence && /^[\t ]*(?:tier|档位)[\t ]*[:：=][\t ]*expert[\t ]*$/i.test(line)) return true
+  }
+  return false
+}
 
 /**
  * Manages each ticket's lifecycle: creates the ticket for an accept decision with its Mandate, Subscriptions, and first
@@ -40,9 +51,8 @@ export class Tickets extends EnginePart {
     // Fall back to the last trigger for Evals recorded before `primary` existed.
     const primary = this.repo.triggers.get(evaluation.primary ?? triggerIds.at(-1)!)
     const origin = { triggerId: primary?.id ?? triggerIds[0]!, triggerIds }
-    const expertRequested = mandate.strength === 'explicit' && primary?.human
-      && !/`{3,}|~{3,}/.test(primary.text) && /^[ \t]*tier[ \t]*=[ \t]*expert[ \t]*\r?$/im.test(primary.text)
-    const tier = outcome.tier === 'expert' && !expertRequested ? 'high' : outcome.tier ?? 'high'
+    const expert = mandate.strength === 'explicit' && primary?.human && expertRequested(primary.text)
+    const tier = expert ? 'expert' : outcome.tier === 'expert' ? 'high' : outcome.tier ?? 'high'
     let ticket: Ticket = { id, title: outcome.title, decisionId, tier, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
       createdAt: at, updatedAt: at, origin, ...(outcome.offPeak ? { offPeak: true } : {}) }
     for (const triggerId of triggerIds) {
@@ -53,7 +63,7 @@ export class Tickets extends EnginePart {
     const assignment = this.newAssignment(ticket)
     this.repo.tickets.save(ticket)
     for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
-    if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, outcome.acknowledgement)
+    if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, `${outcome.acknowledgement} Worker: ${tier}.`)
     this.options.executor.start(this.require(id), assignment)
     this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength, tier })
   }
@@ -165,13 +175,21 @@ export class Tickets extends EnginePart {
     this.end(ticketId, 'human', 'stopped', this.now(), reason)
     return this.require(ticketId)
   }
-  handoff(ticketId: string, summary: string): Ticket {
+  handoff(ticketId: string, summary: string, expertTriggerId?: string): Ticket {
     const old = this.require(ticketId)
     if (old.handoffTo) return this.require(old.handoffTo)
     if (typeof summary !== 'string' || !summary.trim() || summary.length > 8000) throw new Error('A handoff requires a non-empty summary of at most 8000 characters')
     const source = this.source(old), origin = source?.threads[0]
     const subscribed = origin && this.repo.threads.get(threadKey(origin))
-    if (!liveTicket(old) || old.tier !== 'low' || old.attention || waitsForPerson(old)
+    const approval = expertTriggerId ? this.repo.triggers.get(expertTriggerId) : undefined
+    const disposition = approval && this.repo.triggers.disposition(approval.id)
+    if (expertTriggerId && (!approval?.human || !this.reaches(old, approval, false) || !expertRequested(approval.text)
+      || !disposition?.fanout.includes(old.id) || disposition.context?.includes(old.id) || disposition.requeued
+      || disposition.handbacks?.some(item => item.ticketId === old.id))) {
+      throw new Error('Expert handoff requires a human tier: expert instruction on this ticket')
+    }
+    const tier = expertTriggerId ? 'expert' : 'high'
+    if (!liveTicket(old) || (tier === 'expert' ? old.tier !== 'low' && old.tier !== 'high' : old.tier !== 'low') || old.attention || waitsForPerson(old)
       || old.follows?.some(follow => !follow.closed) || source?.source !== 'feishu' || origin?.source !== 'feishu'
       || !subscribed?.subscriptions.includes(old.id) || subscribed.context?.includes(old.id)
       || !old.channels.some(channel => channel.source === 'feishu')) throw new Error('This ticket cannot be handed off in its current state')
@@ -181,9 +199,9 @@ export class Tickets extends EnginePart {
     const text = `Before doing any work, read the complete handoff summary in the full assignment using assignment_read if truncated.\nHandoff from ticket ${old.id}.${old.execution?.directory
       ? ` Previous workspace (may no longer exist): ${old.execution.directory}` : ''}\n${summary.trim()}`
     const outcome: Extract<AssessmentOutcome, { kind: 'accept' }> = { kind: 'accept', title: old.title, scope: old.mandate.scope,
-      reason: 'handoff', tier: 'high', note: text, ...(old.offPeak ? { offPeak: true } : {}) }
+      reason: 'handoff', tier, note: text, ...(old.offPeak ? { offPeak: true } : {}) }
     const marker: TicketInput = { id: key('input', id, 'handoff'), kind: 'text', text, at }
-    let ticket: Ticket = { id, title: old.title, decisionId: old.decisionId, ...(old.category ? { category: old.category } : {}), tier: 'high', mandate: old.mandate,
+    let ticket: Ticket = { id, title: old.title, decisionId: old.decisionId, ...(old.category ? { category: old.category } : {}), tier, mandate: old.mandate,
       channels: old.channels, origin: old.origin, handoffFrom: old.id, assignments: [], inputs: [marker], undelivered: [marker.id],
       createdAt: at, updatedAt: at, ...(old.offPeak ? { offPeak: true } : {}), ...(old.git ? { git: old.git } : {}),
       ...(old.follows?.length ? { follows: old.follows } : {}) }
@@ -233,8 +251,10 @@ export class Tickets extends EnginePart {
       this.emit('thread.subscribed', { threadKey: thread.key, ticketId: id })
     }
     this.emit('ticket.ended', { ticketId: old.id, by: 'executor', outcome: 'stopped', reason: 'handoff' })
-    this.emit('ticket.created', { ticketId: id, decisionId: old.decisionId, strength: old.mandate.strength, tier: 'high' })
+    this.emit('ticket.created', { ticketId: id, decisionId: old.decisionId, strength: old.mandate.strength, tier })
     for (const item of stopping) this.options.executor.stop(old, item, 'handoff')
+    const channel = approval?.channel ?? source?.channel ?? old.channels.find(item => item.source === 'feishu')
+    if (channel) this.options.outbox.send({ id: key('handoff-tier', id), channel, text: `Worker: ${tier}.`, kind: 'notice', ticketId: id })
     this.options.executor.start(ticket, assignment)
     return ticket
   }

@@ -15,6 +15,8 @@ export const tool = <S extends z.ZodType>(definition: Tool<S>): Tool => definiti
 /** Human-facing acknowledgement text, constrained to `IM_WORDS` regardless of which channel it is posted to. */
 export const AcknowledgementSchema = z.string().trim().min(1)
   .refine(text => wordCount(text) <= IM_WORDS, `An acknowledgement has at most ${IM_WORDS} words (Chinese uses word segmentation); write one short sentence.`)
+export const AcceptanceAcknowledgementSchema = AcknowledgementSchema.refine(text => wordCount(`${text} Worker: expert.`) <= IM_WORDS,
+  `Leave room for the worker tier within ${IM_WORDS} words.`)
 /**
  * Builds the `orchestrator_read` tool, scoping allowed resource patterns to the main Session or to an
  * Executor Session (which may read only its own ticket and messages that reached it).

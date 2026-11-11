@@ -102,18 +102,20 @@ const DROPPED = 'If work goes beyond the authorized request, stop and report dro
 /** Returns worker instructions preserving the original mandate and historical read-only restrictions. */
 export function mandateInstructions(ticket: Pick<Mandate, 'strength'> & { category?: Category; tier?: Tier; handoffFrom?: string }): string {
   const escalation = ticket.tier === 'low' ? ' If this task needs greater capability, use orchestrator_ticket_handoff. Summarize what you have done, what remains unfinished, and risks or important constraints. The high-tier successor inherits the original authorization only; do not expand its scope. After a successful handoff, stop work immediately; your session may be cancelled before the tool result arrives.'
-    : ticket.handoffFrom ? ' Before executing the original request, read the complete assignment and its handoff summary; if truncated, follow assignment_read and pagination to read it in full.' : ''
+    : ''
+  const expertHandoff = ticket.tier === 'low' || ticket.tier === 'high' ? ' When a person explicitly selects expert with a standalone line `tier: expert` or `档位: expert` in a message on this ticket, use orchestrator_ticket_handoff with that message trigger ID. Never hand off to expert without this explicit human instruction.' : ''
+  const inherited = ticket.handoffFrom ? ' Before executing the original request, read the complete assignment and its handoff summary; if truncated, follow assignment_read and pagination to read it in full.' : ''
   if (ticket.strength === 'reply') return 'This is a read-only reply ticket: investigate the question with read-only means and answer it. '
     + 'Do not modify, create or delete files, commit, push, open, merge or close a change request, or change settings or accounts, and keep any subagents read-only. '
     + 'Answer with orchestrator_report: set reply_to_trigger_id to the question\'s trigger_id and put the concise answer in summary. '
     + 'Report ready when the answer is complete; report dropped when the question needs no investigation or cannot be answered read-only, '
-    + 'and hand back or state plainly anything that would need an execution request from a sender allowed to make one. ' + HANDOFF + escalation
+    + 'and hand back or state plainly anything that would need an execution request from a sender allowed to make one. ' + HANDOFF + escalation + expertHandoff + inherited
   const legacyReadOnly = ticket.category === 'query' || ticket.category === 'research'
     ? 'This historical ticket is limited to read-only investigation. Do not modify, create or delete files, commit, push, open, merge or close a change request, or change settings or accounts, and keep any subagents read-only. ' : ''
   const limited = ticket.strength === 'inferred' ? 'This ticket has limited proactive authorization. Independently verify that it is a small change '
     + 'internal to one module within the accepted rule scope. If it requires public-interface or behavior changes, new interaction, product '
     + 'decisions or clarification, stop and report dropped; do not expand scope. ' : ''
-  return `Investigate and implement as needed within the authorized request; investigation alone does not authorize changes. ${legacyReadOnly}${limited}${ticket.strength === 'inferred' ? DROPPED : HANDOFF}${escalation}`
+  return `Investigate and implement as needed within the authorized request; investigation alone does not authorize changes. ${legacyReadOnly}${limited}${ticket.strength === 'inferred' ? DROPPED : HANDOFF}${escalation}${expertHandoff}${inherited}`
 }
 /** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
@@ -785,10 +787,9 @@ export class DshExecutor implements Executor {
     this.host.store.atomic(() => {
       const before = latestReport(current)?.summary ?? ''
       const updated = this.host.engine.report(ticket.id, { state: 'waiting', summary: said || before })
-      // A quiet final after orchestrator_report is not a new status or an empty handoff.
       if (said) this.relay(resultRelay(updated, 'waiting', said))
-      else if (!before.trim()) {
-        this.relay(resultRelay(updated, 'waiting', 'Worker ended without a status report. Use orchestrator_ticket_request_status to request one.'))
+      else {
+        this.relay(resultRelay(updated, 'waiting', 'Worker ended without a final status report. Use orchestrator_ticket_request_status to request one.'))
       }
     })
   }
