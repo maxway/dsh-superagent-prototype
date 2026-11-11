@@ -2,10 +2,10 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 // @ts-expect-error The mechanical lifecycle scripts are plain .mjs and are not part of the TypeScript build.
-import { buildFromRepo, controlConfig, deployArtifact, parseArgv, stopLauncherProcesses } from '../scripts/watchdog-control.mjs'
+import { buildFromRepo, controlConfig, deployArtifact, observerStatus, parseArgv, stopLauncherProcesses, stopObserver } from '../scripts/watchdog-control.mjs'
 
 const root = join(import.meta.dirname, '..')
 let directory: string | undefined
@@ -80,6 +80,24 @@ it('parses lifecycle options and creates scheduler commands', () => {
   expect(config.observerStartCommand).toBe('schtasks /run /tn "watchdog-task"')
   expect(config.heartbeatTimeoutSeconds).toBe(180)
   expect(config.serviceUrl).toBe('http://127.0.0.1:3083')
+})
+
+it('reports the PID from the configured observer state directory', async () => {
+  directory = mkdtempSync(join(tmpdir(), 'watchdog-control-state-'))
+  const home = join(directory, 'home')
+  mkdirSync(join(home, 'observer-state'), { recursive: true })
+  writeFileSync(join(home, 'observer-state', 'watchdog.pid'), '99999999')
+  for (const stateDir of [undefined, 'nested/state', join(directory, 'absolute-state')]) {
+    const actual = resolve(home, stateDir ?? '.watchdog')
+    mkdirSync(actual, { recursive: true })
+    writeFileSync(join(home, 'observer.json'), JSON.stringify({ stateDir, url: 'http://127.0.0.1:1' }))
+    writeFileSync(join(actual, 'watchdog.pid'), String(process.pid))
+    const status = await observerStatus(parseArgv(['status', '--home', home, '--task', 'watchdog-isolated-test-not-installed', '--url', 'http://[invalid']))
+    expect(status).toMatchObject({ pid: process.pid, pidAlive: true })
+  }
+  writeFileSync(join(home, 'observer.json'), '{')
+  await expect(stopObserver(parseArgv(['stop', '--home', home]))).rejects.toThrow('not JSON')
+  expect(readFileSync(join(home, 'observer-state', 'watchdog.pid'), 'utf8')).toBe('99999999')
 })
 
 it('builds the latest origin/main in a temporary clone', () => {

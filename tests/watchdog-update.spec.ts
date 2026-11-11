@@ -4,7 +4,7 @@ import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSyn
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 
 const artifact = join(import.meta.dirname, '..', 'scripts', 'watchdog-artifact.mjs')
@@ -346,6 +346,48 @@ it('starts the prepared version while the updater holds its lock', async () => {
   expect(failure).toMatchObject({ ok: false, phase: 'start-failed', manualIntervention: true })
   expect(starts).toBe(1)
   expect(readFileSync(join(failedHome, 'current.txt'), 'utf8').trim()).toBe('v2')
+})
+
+it('uses observer configuration for PID and heartbeat checks', async () => {
+  directory = mkdtempSync(join(tmpdir(), 'watchdog-update-state-'))
+  const home = join(directory, 'home')
+  const manifest = build(directory, 'v2')
+  cpSync(join(directory, 'staging', 'v2'), join(home, 'versions', 'v2'), { recursive: true })
+  writeFileSync(join(home, 'current.txt'), 'v2')
+  mkdirSync(join(home, 'observer-state'), { recursive: true })
+  writeFileSync(join(home, 'observer-state', 'watchdog.pid'), '99999999')
+  const module = await import(updater)
+  const config = { watchdogHome: home, stagingRoot: join(directory, 'staging'), serviceUrl: 'http://127.0.0.1:1',
+    logFile: join(directory, 'update.log'), resultFile: join(directory, 'result.json'), lockStaleSeconds: 60,
+    heartbeatTimeoutSeconds: 1 }
+  for (const [index, stateDir] of [undefined, 'nested/state', join(directory, 'absolute-state')].entries()) {
+    const state = resolve(home, stateDir ?? '.watchdog')
+    mkdirSync(state, { recursive: true })
+    writeFileSync(join(home, 'observer.json'), JSON.stringify({ stateDir }))
+    writeFileSync(join(state, 'watchdog.pid'), String(process.pid))
+    const since = Date.now()
+    writeFileSync(join(state, 'heartbeat.json'), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }))
+    await expect(module.verifyObserverHeartbeat(config, since)).resolves.toMatchObject({ pid: process.pid })
+    const result = await module.update(config, { confirmation: 'test', idempotencyKey: `state-${index}`,
+      target: { version: 'v2', artifactPath: join(directory, 'staging', 'v2'), sha256: manifest.sha256 } }, {
+      trigger: () => { throw new Error('must not restart a running observer') },
+    })
+    expect(result).toMatchObject({ ok: true, phase: 'already-current' })
+  }
+  const customState = join(home, 'nested', 'state')
+  writeFileSync(join(home, 'observer.json'), JSON.stringify({ stateDir: 'nested/state' }))
+  writeFileSync(join(customState, 'watchdog.pid'), '99999999')
+  writeFileSync(join(home, 'current.txt'), 'old')
+  const noop = join(directory, 'noop.mjs')
+  writeFileSync(noop, '')
+  const switched = await module.update({ ...config, observerStopCommand: `"${process.execPath}" "${noop}"` },
+    { confirmation: 'test', idempotencyKey: 'switch', target: { version: 'v2', artifactPath: join(directory, 'staging', 'v2') } },
+    { trigger: () => ({}), verifyObserverHeartbeat: async () => ({ pid: process.pid }) })
+  expect(switched).toMatchObject({ ok: true, phase: 'updated' })
+  expect(existsSync(join(customState, 'watchdog.pid'))).toBe(false)
+  writeFileSync(join(home, 'observer.json'), '{')
+  await expect(module.verifyObserverHeartbeat(config, Date.now())).rejects.toThrow('not JSON')
+  expect(readFileSync(join(home, 'observer-state', 'watchdog.pid'), 'utf8')).toBe('99999999')
 })
 
 it('accepts a fresh heartbeat without a fixed survival wait', async () => {

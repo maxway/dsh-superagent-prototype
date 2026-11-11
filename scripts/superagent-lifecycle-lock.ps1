@@ -16,7 +16,6 @@ if ($Payload) {
   try {
     try { $locked = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $locked = $true }
     if (-not $locked) { throw 'Another deployment or recovery is already in progress.' }
-    $marker = Join-Path $request.home "service\control\profiles\$($request.profile)\deployment.maintenance"
     if (@($request.arguments) -contains '--respect-stop' -and $request.update) {
       $legacy = Join-Path (Split-Path -Parent (Split-Path -Parent $request.script)) ".artifacts\control\profiles\$($request.profile)\manually-stopped"
       $stopped = Join-Path $request.home "service\control\profiles\$($request.profile)\manually-stopped"
@@ -25,15 +24,9 @@ if ($Payload) {
         exit 0
       }
     }
-    if ($request.update) {
-      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $marker) | Out-Null
-      Set-Content -LiteralPath $marker -Value "Deployment started $(Get-Date -Format o); retry deployment after failure."
-    }
     $env:DSH_SUPERAGENT_LIFECYCLE_LOCKED = '1'
     & $request.node $request.script @($request.arguments)
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    if ($request.update) { Remove-Item -LiteralPath $marker -Force }
-    exit 0
+    exit $LASTEXITCODE
   } finally {
     if ($locked) { $mutex.ReleaseMutex() }
     $mutex.Dispose()

@@ -283,7 +283,7 @@ Watchdog 有要报告的事时，`scripts/dsh-superagent --profile superagent --
 
 上例中的 `deployConfig` 和 `crashRecovery` 均为可选项，未配置时对应功能关闭。常驻 observer 每 5 秒检查一次部署请求，异步调用独立部署执行器，不阻塞心跳；执行器拉取并构建最新代码，不调用模型。失败的同一请求不会被 observer 无限重试，结果写入部署配置的 `resultFile`；重新提交不同内容的请求可再次尝试，旧计划任务自身的手动重试不受此去重约束。启动执行器前或锁竞争期间若 observer 恰好退出，可能遗留 `<resultFile>.watchdog-<请求 SHA-256>.attempt`，须确认没有执行器运行后删除，或重新提交不同的请求。claim 可能含部署错误输出，应按敏感日志处理。
 
-启用 `crashRecovery` 后，服务不可达时按 `retrySeconds`（默认 30 秒）检查：只有上次记录的服务进程确已消失、没有其他监听或目标进程且未主动停机，才调用恢复脚本启动已安装版本；普通 API 故障不会直接触发启动。部署和恢复共用按 DSH home 与 profile 区分的生命周期互斥，部署失败会保留 `<DSH home>\service\control\profiles\<profile>\deployment.maintenance`，防止恢复半更新版本；成功重做部署后清除。PowerShell 入口还保留端口级维护标记。人工持久停服请用 `dsh-superagent.ps1 stop`，直接调用 HTTP 停服不设置主动停止标记。恢复和部署均无需模型或管理员权限。
+启用 `crashRecovery` 后，服务不可达时按 `retrySeconds`（默认 30 秒）检查：只有上次记录的服务进程确已消失、没有其他监听或目标进程且未主动停机，才调用恢复脚本启动已安装版本；普通 API 故障不会直接触发启动。部署和恢复共用按 DSH home 与 profile 区分的生命周期互斥，不再使用持久部署维护标记，旧标记文件也会被忽略。更新失败或部署中断后，后续崩溃恢复可能启动尚未完整更新的安装版本；应调查失败原因和安装状态，不能假定版本完整。人工持久停服请用 `dsh-superagent.ps1 stop`，直接调用 HTTP 停服不设置主动停止标记。恢复和部署均无需模型或管理员权限。
 
 `--once` 保留为无恢复和部署副作用的诊断入口：跑一轮并退出。日常运维用 `node scripts/watchdog-control.mjs status|start|stop|deploy`；这里的 `deploy` 更新的是 Watchdog 自身，不是 Superagent。两个功能须配置并安装新 Watchdog 制品后才生效。
 
@@ -301,9 +301,9 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 普通启动、重启或部署都以最新代码为目标。从独立于服务 worker 的环境运行 `pwsh scripts\restart-superagent.ps1`：它在停止前检查本机监听者是否匹配配置的 profile 和已记录的服务 PID，并拒绝其他监听者或同 profile 的其他进程；停止后再次确认目标进程和监听均已消失，然后在配置的 checkout 执行 `git pull --ff-only origin main`、`pnpm install --frozen-lockfile` 和 `pnpm build`，最后启动已安装版本。整个流程机械执行，不调用 LLM 做停启或发布决策，不要求管理员权限，也不操作 Watchdog。普通 `pwsh scripts\dsh-superagent.ps1 start` 和 `restart` 同样先更新构建再启动；`start` 在无法确认服务已停止时拒绝更新，`restart` 先停服。
 
-该原地流程不做备份或自动回滚：拉取、安装、构建或启动失败可能使服务保持停机，应如实报告失败阶段和服务状态。停机期间飞书消息可能丢失。需要备份时由操作员事先独立取得一致且经验证的备份；在线复制单个 SQLite 文件不是一致备份。
+该原地流程不做备份或自动回滚：拉取、安装、构建或启动失败可能使服务保持停机，应如实报告失败阶段和服务状态。部署执行器不再使用持久文件锁，并忽略旧的 `<resultFile>.lock`。服务生命周期互斥仍会阻止停服、更新和启动同时进行，但多个执行器可能在结果记录或请求去重时发生竞态。停机期间飞书消息可能丢失。需要备份时由操作员事先独立取得一致且经验证的备份；在线复制单个 SQLite 文件不是一致备份。
 
-只有 Watchdog 专用的服务器崩溃恢复使用 `pwsh scripts\recover-superagent.ps1`：它尊重主动停机和部署维护标记，启动已安装版本，不拉取或构建。配置上述 `crashRecovery` 后，常驻 observer 在确认崩溃时调用它；单独存在该脚本并不表示自动恢复已启用。普通启动、重启和部署不要使用它。
+只有 Watchdog 专用的服务器崩溃恢复使用 `pwsh scripts\recover-superagent.ps1`：它尊重主动停机标记，启动已安装版本，不拉取或构建。配置上述 `crashRecovery` 后，常驻 observer 在确认崩溃时调用它；单独存在该脚本并不表示自动恢复已启用。普通启动、重启和部署不要使用它。
 
 主 Session 的 `orchestrator_deploy` 可把操作者明确的部署请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST`；`DSH_SUPERAGENT_DEPLOY_COMMAND` 是可选的独立任务唤醒命令。独立执行器由 `deploy.mjs` 校验非空确认与 `latest` 目标后调用同一机械重启脚本，不经模型。请求路径必须与部署配置的 `requestPath` 一致。工具返回成功只表示请求已排队，不表示 Watchdog 在线或部署已完成；以独立 `resultFile` 为准。执行后保留请求文件；成功时另存归档并记录请求摘要，重复消费同一成功请求不会再次部署。新的请求可安全覆盖原文件。
 
@@ -321,7 +321,7 @@ Watchdog 不修改 superagent 检出来更新：观察器、agent 包装与 gate
 
 agent 必须运行在自己的工作区，而不是 checkout。不需要人工填写路径：未设置 `workspace` 时，包装脚本使用 `<配置目录>\workspaces\watchdog_<service profile>` —— 本部署是 `watchdog_superagent`，service profile 为 `sheepdoku` 时是 `watchdog_sheepdoku` —— 因此同一主机上的多个 Watchdog 不会共用工作区。只有想换名字或位置时才需要设置 `workspace`。`run.ps1` 在目录缺失时创建它，拒绝等于 checkout 或位于 checkout 内的路径，并在运行 gate 和完整 agent 前切换进去。提示词用绝对路径引用 checkout，因此 agent 仍能读取部署文档并运行 `node <checkout>\scripts\dsh-superagent ...`。DSH 按工作目录把 Session 归入工作区，因此 Watchdog 的 Session 不再进入 checkout 的 Desktop DSH 工作区；把该工作区目录添加为 DSH 项目即可在自己的工作区下查看，否则它们保持未分组。已有安装必须使用重新构建的制品；superagent 发布不会更新当前本机部署的旧包装脚本。这只隔离工作区，不是安全边界：agent 仍可完全访问 checkout，共享 DSH home 时仍共享其 Session 与工作区存储。
 
-独立的 `dsh-superagent-watchdog-update` 任务通过同一个隐藏启动器运行 `node scripts/watchdog-update.mjs --config <update.json>`：`wscript.exe <checkout>\scripts\launch-hidden.vbs <node> <checkout>\scripts\watchdog-update.mjs --config <update.json>`。主会话或操作员写入 `watchdog-update-request.json`，至少包含操作者确认；幂等键可选。命令行任务从 `origin/main` 重新构建并使用新制品，不需要目标版本或旧制品路径。任务安装新制品、停止旧 observer、切换 `current.txt` 并启动新版本；不执行额外 smoke 或固定 75 秒等待。启动后只检查本地新鲜心跳；启动或心跳失败会保留新指针并报告，不自动重启旧版。锁让并发更新被拒绝。更新任务从不备份、重启或替换 superagent，也不调用模型。日常单次部署优先用 `watchdog-control deploy`，它固定同一套机械步骤，不需要手写请求文件。配置的请求在构建前原子领取并归档，失败后需重新提交请求；无效请求恢复原位，如果已有新请求则保留 `.claimed` 文件供人工处理，进程中断也可能遗留该文件。显式 `--request` 指向其他路径时不归档，可重复使用。快照的 `lastRun` 与已记录运行携带 Watchdog 的 `version` 和 `commit`，供面板与审计使用。
+控制和更新脚本从 `<watchdogHome>/observer.json` 读取 `stateDir`，相对该配置文件解析，缺省为 `.watchdog`；配置文件不存在时兼容原来的 `observer-state`，无法读取或配置损坏时停止操作。独立的 `dsh-superagent-watchdog-update` 任务通过同一个隐藏启动器运行 `node scripts/watchdog-update.mjs --config <update.json>`：`wscript.exe <checkout>\scripts\launch-hidden.vbs <node> <checkout>\scripts\watchdog-update.mjs --config <update.json>`。主会话或操作员写入 `watchdog-update-request.json`，至少包含操作者确认；幂等键可选。命令行任务从 `origin/main` 重新构建并使用新制品，不需要目标版本或旧制品路径。任务安装新制品、停止旧 observer、切换 `current.txt` 并启动新版本；不执行额外 smoke 或固定 75 秒等待。启动后只检查本地新鲜心跳；启动或心跳失败会保留新指针并报告，不自动重启旧版。锁让并发更新被拒绝。更新任务从不备份、重启或替换 superagent，也不调用模型。日常单次部署优先用 `watchdog-control deploy`，它固定同一套机械步骤，不需要手写请求文件。配置的请求在构建前原子领取并归档，失败后需重新提交请求；无效请求恢复原位，如果已有新请求则保留 `.claimed` 文件供人工处理，进程中断也可能遗留该文件。显式 `--request` 指向其他路径时不归档，可重复使用。快照的 `lastRun` 与已记录运行携带 Watchdog 的 `version` 和 `commit`，供面板与审计使用。
 
 ```json
 {

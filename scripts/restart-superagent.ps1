@@ -27,13 +27,6 @@ $locked = $false
 try {
   try { $locked = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $locked = $true }
   if (-not $locked) { throw 'Another deployment or recovery is already in progress.' }
-  $markers = @((Join-Path $serviceHome "service\control\lifecycle\$($url.Port).maintenance"),
-    (Join-Path $serviceHome "service\control\profiles\$profile\deployment.maintenance"))
-  foreach ($marker in $markers) {
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $marker) | Out-Null
-    Set-Content -LiteralPath $marker -Value "Deployment started $(Get-Date -Format o); retry deployment after failure."
-  }
-
 function Listening([int]$Port) {
   $output = & netstat -ano -p tcp
   if ($LASTEXITCODE -ne 0) { throw 'Cannot list TCP listeners.' }
@@ -83,9 +76,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $env:DSH_SUPERAGENT_LIFECYCLE_LOCKED = '1'
 & pwsh -NoLogo -NoProfile -NonInteractive -File $ServiceScript start -Config $Config -UseInstalled
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-foreach ($marker in $markers) { Remove-Item -LiteralPath $marker -Force }
-exit 0
+exit $LASTEXITCODE
 } finally {
   if ($locked) { $mutex.ReleaseMutex() }
   $mutex.Dispose()

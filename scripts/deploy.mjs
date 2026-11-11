@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -96,12 +96,6 @@ export async function main(argv = process.argv.slice(2)) {
     return 0
   }
   mkdirSync(dirname(config.resultFile), { recursive: true })
-  const lockPath = `${config.resultFile}.lock`
-  let lock
-  try { lock = openSync(lockPath, 'wx') } catch (error) {
-    if (error.code === 'EEXIST') throw new Error(`deploy_locked: ${lockPath}`)
-    throw error
-  }
   let temporary
   try {
     selected = requestFor(config, selected.text === undefined ? options.confirmation : '')
@@ -114,8 +108,8 @@ export async function main(argv = process.argv.slice(2)) {
       process.stdout.write('Deploy request changed; nothing to do.\n')
       return 0
     }
-    const lockedTarget = String(selected.request.target ?? 'latest').trim()
-    if (lockedTarget && lockedTarget !== 'latest') throw new Error('invalid_target: normal deployment only supports latest')
+    const currentTarget = String(selected.request.target ?? 'latest').trim()
+    if (currentTarget && currentTarget !== 'latest') throw new Error('invalid_target: normal deployment only supports latest')
     const requestDigest = selected.text === undefined ? undefined : createHash('sha256').update(selected.text).digest('hex')
     if (requestDigest && existsSync(config.resultFile)) {
       try {
@@ -142,7 +136,8 @@ export async function main(argv = process.argv.slice(2)) {
       } catch {}
     }
     const ok = execution.status === 0
-    const result = { at: new Date().toISOString(), ok, phase: ok ? 'completed' : 'restart_failed', mode: 'mechanical',
+    const phase = ok ? 'completed' : [2, 3].includes(execution.status) ? 'started_needs_attention' : 'restart_failed'
+    const result = { at: new Date().toISOString(), ok, phase, mode: 'mechanical',
       request: selected.request, ...(requestDigest ? { requestDigest } : {}), checkout: config.checkout, exitCode: execution.status,
       ...(execution.error ? { error: execution.error.message } : {}), stdout, stderr }
     writeFileSync(config.resultFile, JSON.stringify(result, null, 2) + '\n')
@@ -152,8 +147,6 @@ export async function main(argv = process.argv.slice(2)) {
     return ok ? 0 : 1
   } finally {
     if (temporary) rmSync(temporary, { recursive: true, force: true })
-    closeSync(lock)
-    unlinkSync(lockPath)
   }
 }
 

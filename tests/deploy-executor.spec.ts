@@ -97,6 +97,13 @@ it('preserves the request and reports failure if the restart fails', async () =>
   expect(existsSync(value.request)).toBe(true)
 })
 
+it.each([2, 3])('reports started service needing attention for restart exit %i', async code => {
+  const value = fixture()
+  writeFileSync(value.restart, `param($Config, $ServiceScript)\nexit ${code}\n`)
+  expect((await run(value.config)).code).toBe(1)
+  expect(JSON.parse(readFileSync(value.settings.resultFile, 'utf8'))).toMatchObject({ ok: false, phase: 'started_needs_attention', exitCode: code })
+})
+
 it('does not repeat a failed scheduled deployment through the Watchdog', async () => {
   const value = fixture()
   expect((await run(value.config, [], { FAKE_RESTART_FAIL: '1' })).code).toBe(1)
@@ -137,13 +144,14 @@ it('does not execute a request that differs from the Watchdog claim', async () =
   expect(existsSync(value.record)).toBe(false)
 })
 
-it('does nothing without a request and rejects concurrent deployment', async () => {
+it('does nothing without a request and ignores an old deployment lock file', async () => {
   const value = fixture()
   rmSync(value.request)
   expect((await run(value.config)).code).toBe(0)
   expect(existsSync(value.record)).toBe(false)
   writeFileSync(value.request, JSON.stringify({ confirmation: 'deploy' }))
   writeFileSync(`${value.settings.resultFile}.lock`, '')
-  expect((await run(value.config)).stderr).toContain('deploy_locked')
-  expect(existsSync(value.record)).toBe(false)
+  expect((await run(value.config)).code).toBe(0)
+  expect(existsSync(value.record)).toBe(true)
+  expect(existsSync(`${value.settings.resultFile}.lock`)).toBe(true)
 })

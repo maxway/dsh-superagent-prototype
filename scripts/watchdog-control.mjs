@@ -15,7 +15,7 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildArtifact, verifyArtifact } from './watchdog-artifact.mjs'
-import { acquireLock, update } from './watchdog-update.mjs'
+import { acquireLock, observerStateDir, update } from './watchdog-update.mjs'
 
 const DEFAULT_HOME = process.env.DSH_WATCHDOG_HOME || join(homedir(), '.dsh', 'watchdog-independent')
 const DEFAULT_TASK = 'dsh-superagent-watchdog-observer'
@@ -59,9 +59,9 @@ function taskState(task) {
   return (result.stdout ?? '').trim() || 'missing'
 }
 
-function observerPid(home) {
+function observerPid(stateDir) {
   try {
-    const value = Number.parseInt(readFileSync(join(home, 'observer-state', 'watchdog.pid'), 'utf8').trim(), 10)
+    const value = Number.parseInt(readFileSync(join(stateDir, 'watchdog.pid'), 'utf8').trim(), 10)
     return Number.isInteger(value) && value > 0 ? value : undefined
   } catch { return undefined }
 }
@@ -225,7 +225,7 @@ export async function deployArtifact(options, dependencies = {}) {
   } finally {
     release()
   }
-  if (result.ok && result.phase === 'already-current' && !pidAlive(observerPid(config.watchdogHome))) {
+  if (result.ok && result.phase === 'already-current' && !pidAlive(observerPid(observerStateDir(config.watchdogHome)))) {
     const started = await (dependencies.startObserver ?? startObserver)(options)
     return { ...result, ...started }
   }
@@ -247,26 +247,28 @@ async function waitFor(predicate, milliseconds) {
 
 export async function startObserver(options) {
   const config = controlConfig(options)
+  const stateDir = observerStateDir(config.watchdogHome)
   if (!readPointer(config.watchdogHome, 'current.txt')) throw new Error(`No current Watchdog version under ${config.watchdogHome}`)
   if (taskState(options.task) === 'missing') throw new Error(`The scheduled task ${options.task} is not installed`)
   const started = run(taskCommand('run', options.task), { allowFailure: true })
-  if (!await waitFor(() => pidAlive(observerPid(config.watchdogHome)), 30_000)) {
+  if (!await waitFor(() => pidAlive(observerPid(stateDir)), 30_000)) {
     throw new Error(`The observer task started but no live observer pid appeared within 30s: ${started.stderr}`)
   }
-  return { started: true, pid: observerPid(config.watchdogHome), task: options.task }
+  return { started: true, pid: observerPid(stateDir), task: options.task }
 }
 
 export async function stopObserver(options) {
   const config = controlConfig(options)
+  const stateDir = observerStateDir(config.watchdogHome)
   const state = taskState(options.task)
   if (state !== 'missing') run(taskCommand('end', options.task), { allowFailure: true })
   stopLauncherProcesses(config.watchdogHome)
-  let pid = observerPid(config.watchdogHome)
+  let pid = observerPid(stateDir)
   if (!await waitFor(() => !pidAlive(pid), 10_000)) {
     if (pid && pidAlive(pid)) run(`taskkill /pid ${pid} /t /f`, { allowFailure: true })
     if (!await waitFor(() => !pidAlive(pid), 10_000)) throw new Error(`The observer pid ${pid} is still alive`)
   }
-  rmSync(join(config.watchdogHome, 'observer-state', 'watchdog.pid'), { force: true })
+  rmSync(join(stateDir, 'watchdog.pid'), { force: true })
   return { stopped: true, pid: pid ?? null, task: options.task, ...(state === 'missing' ? { note: 'task not installed' } : {}) }
 }
 
@@ -285,7 +287,7 @@ async function snapshot(config) {
 export async function observerStatus(options) {
   const config = controlConfig(options)
   const home = config.watchdogHome
-  const pid = observerPid(home)
+  const pid = observerPid(observerStateDir(home))
   const result = { home, task: options.task, taskState: taskState(options.task), current: readPointer(home, 'current.txt'),
     previous: readPointer(home, 'previous.txt'), pid: pid ?? null, pidAlive: pidAlive(pid), url: config.serviceUrl,
     service: await snapshot(config) }

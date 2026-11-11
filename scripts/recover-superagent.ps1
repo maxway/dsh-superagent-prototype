@@ -17,17 +17,12 @@ if ($ExpectedUrl -and ([uri]$ExpectedUrl).AbsoluteUri.TrimEnd('/') -ne $url.Abso
 $serviceHome = if ($settings.home) { [string]$settings.home } elseif ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
 $profile = if ($settings.profile) { [string]$settings.profile } elseif ($env:DSH_SUPERAGENT_PROFILE) { $env:DSH_SUPERAGENT_PROFILE } else { 'superagent' }
 if ($profile -notmatch '^[A-Za-z0-9_][A-Za-z0-9_.-]*$') { throw 'Invalid service profile.' }
-$markers = @((Join-Path $serviceHome "service\control\lifecycle\$($url.Port).maintenance"),
-  (Join-Path $serviceHome "service\control\profiles\$profile\deployment.maintenance"))
 . (Join-Path $PSScriptRoot 'superagent-lifecycle-lock.ps1')
 $mutex = Get-SuperagentLifecycleMutex $serviceHome $profile
 $locked = $false
 try {
   try { $locked = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $locked = $true }
   if (-not $locked) { Write-Output 'Deployment or recovery is in progress; recovery skipped.'; exit 0 }
-  foreach ($marker in $markers) {
-    if (Test-Path -LiteralPath $marker) { Write-Output "Deployment maintenance marker exists: $marker; recovery skipped."; exit 0 }
-  }
   $statusOutput = & pwsh -NoLogo -NoProfile -NonInteractive -File $ServiceScript status -Config $Config
   try { $status = $statusOutput | ConvertFrom-Json } catch { throw 'Cannot establish service process status.' }
   if ($null -eq $status -or $status.identity -ne 'listener' -or $status.manually_stopped -ne $false -or

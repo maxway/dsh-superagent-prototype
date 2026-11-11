@@ -108,7 +108,6 @@ if ($RespectStop -and $Action -in @('start', 'restart')) {
 
 $mutex = $null
 $locked = $false
-$marker = $null
 try {
 if (-not $alreadyLocked -and $Action -in @('stop', 'start', 'restart')) {
   . (Join-Path $PSScriptRoot 'superagent-lifecycle-lock.ps1')
@@ -118,9 +117,6 @@ if (-not $alreadyLocked -and $Action -in @('stop', 'start', 'restart')) {
 }
 $env:DSH_SUPERAGENT_LIFECYCLE_LOCKED = '1'
 if ($Action -in @('start', 'restart') -and -not $UseInstalled) {
-  $marker = Join-Path $DshHome "service\control\profiles\$DshProfile\deployment.maintenance"
-  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $marker) | Out-Null
-  Set-Content -LiteralPath $marker -Value "Deployment started $(Get-Date -Format o); retry deployment after failure."
   if ($Action -eq 'restart') {
     & $node $control 'stop' '--profile' $DshProfile '--home' $DshHome '--url' $Url '--stop-timeout' ([string]$StopTimeout)
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -145,9 +141,7 @@ if ($Action -eq 'verify') { $arguments += @('--survival-seconds', [string]$Survi
 if ($RespectStop) { $arguments += '--respect-stop' }
 
 & $node @arguments
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-if ($marker) { Remove-Item -LiteralPath $marker -Force }
-exit 0
+exit $LASTEXITCODE
 } finally {
   if ($locked) { $mutex.ReleaseMutex() }
   if ($mutex) { $mutex.Dispose() }

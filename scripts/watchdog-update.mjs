@@ -23,6 +23,19 @@ export function readJson(path, what) {
   try { return JSON.parse(text) } catch (error) { throw new Error(`The ${what} at ${path} is not JSON: ${error.message}`) }
 }
 
+export function observerStateDir(home) {
+  const path = join(home, 'observer.json')
+  let text
+  try { text = readFileSync(path, 'utf8') } catch (error) {
+    if (error.code === 'ENOENT') return join(home, 'observer-state')
+    throw new Error(`Cannot read the observer configuration at ${path}: ${error.message}`)
+  }
+  let value
+  try { value = JSON.parse(text) } catch (error) { throw new Error(`The observer configuration at ${path} is not JSON: ${error.message}`) }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('The observer configuration must be a JSON object')
+  return resolve(home, String(value.stateDir ?? '.watchdog'))
+}
+
 /** Load the operator configuration; the environment-specific paths stay outside the repository. */
 export function loadConfig(path) {
   const value = readJson(path, 'watchdog update configuration')
@@ -166,9 +179,9 @@ function runTrigger(config, manifest) {
 }
 
 /** The old observer may outlive the task's top process; stop exactly its recorded pid before switching versions. */
-function observerPid(home) {
+function observerPid(stateDir) {
   try {
-    const value = Number.parseInt(readFileSync(join(home, 'observer-state', 'watchdog.pid'), 'utf8').trim(), 10)
+    const value = Number.parseInt(readFileSync(join(stateDir, 'watchdog.pid'), 'utf8').trim(), 10)
     return Number.isInteger(value) && value > 0 ? value : undefined
   } catch { return undefined }
 }
@@ -190,20 +203,21 @@ async function waitForExit(pid, milliseconds) {
 /** Stop the old observer before the pointer switches; the scheduled task owns the lifecycle. */
 async function stopObserver(config, version) {
   if (!config.observerStopCommand) return undefined
+  const stateDir = observerStateDir(config.watchdogHome)
   const evidence = runCommand(config, config.observerStopCommand, version)
-  const pid = observerPid(config.watchdogHome)
+  const pid = observerPid(stateDir)
   if (pid && pidAlive(pid)) {
     if (!await waitForExit(pid, 10_000)) {
       spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true })
       if (!await waitForExit(pid, 10_000)) throw new Error(`The old observer pid ${pid} did not stop`)
     }
   }
-  rmSync(join(config.watchdogHome, 'observer-state', 'watchdog.pid'), { force: true })
+  rmSync(join(stateDir, 'watchdog.pid'), { force: true })
   return evidence
 }
 
 export async function verifyObserverHeartbeat(config, since) {
-  const heartbeatPath = join(config.watchdogHome, 'observer-state', 'heartbeat.json')
+  const heartbeatPath = join(observerStateDir(config.watchdogHome), 'heartbeat.json')
   const deadline = Date.now() + config.heartbeatTimeoutSeconds * 1000
   let heartbeat
   while (Date.now() < deadline) {
@@ -249,10 +263,11 @@ export async function update(config, rawRequest, dependencies = {}) {
     return result
   }
   try {
+    const stateDir = observerStateDir(config.watchdogHome)
     const startedAt = now().toISOString()
     const previousResult = (() => { try { return readJson(config.resultFile, 'update result') } catch { return undefined } })()
     if (previousResult?.request?.idempotencyKey === request.idempotencyKey
-      && (!previousResult.ok || pidAlive(observerPid(config.watchdogHome)))) {
+      && (!previousResult.ok || pidAlive(observerPid(stateDir)))) {
       logLine(`request ${request.idempotencyKey} was already applied; returning its result`)
       return { ...previousResult, idempotent: true }
     }
@@ -270,7 +285,7 @@ export async function update(config, rawRequest, dependencies = {}) {
       if (installed.sha256 !== artifact.sha256 || installed.commit !== artifact.commit) {
         throw new Error(`The installed artifact ${current} does not match the candidate`)
       }
-      if (pidAlive(observerPid(config.watchdogHome))) {
+      if (pidAlive(observerPid(stateDir))) {
         return finish({ at: now().toISOString(), ok: true, phase: 'already-current', version: artifact.version,
           previousVersion: previousResult?.previousVersion ?? null, request, startedAt })
       }

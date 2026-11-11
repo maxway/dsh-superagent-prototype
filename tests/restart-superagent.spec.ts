@@ -62,6 +62,17 @@ it.skipIf(process.platform !== 'win32')('requests the server to stop before star
   expect(existsSync(join(directory!, 'service', 'control', 'lifecycle', `${port}.maintenance`))).toBe(false)
 }, 30000)
 
+it.skipIf(process.platform !== 'win32').each([2, 3, 1])('preserves startup exit %i without creating maintenance markers', async code => {
+  const value = await fixture(200)
+  writeFileSync(value.mock, readFileSync(value.mock, 'utf8').replace(/exit 0\n$/, `exit ${code}\n`))
+  expect(await run(value.config, value.mock, value.update)).toBe(code)
+  const port = new URL(JSON.parse(readFileSync(value.config, 'utf8')).url).port
+  for (const marker of [join(directory!, 'service', 'control', 'lifecycle', `${port}.maintenance`),
+    join(directory!, 'service', 'control', 'profiles', 'superagent', 'deployment.maintenance')]) {
+    expect(existsSync(marker)).toBe(false)
+  }
+}, 30000)
+
 it.skipIf(process.platform !== 'win32')('uses configured PATH for the update tools', async () => {
   const value = await fixture(200)
   const settings = JSON.parse(readFileSync(value.config, 'utf8'))
@@ -78,7 +89,7 @@ it.skipIf(process.platform !== 'win32')('does not start when updating fails', as
   expect(await run(value.config, value.mock, value.update)).toBe(7)
   expect(() => readFileSync(value.calls, 'utf8')).toThrow()
   const port = new URL(JSON.parse(readFileSync(value.config, 'utf8')).url).port
-  expect(existsSync(join(directory!, 'service', 'control', 'lifecycle', `${port}.maintenance`))).toBe(true)
+  expect(existsSync(join(directory!, 'service', 'control', 'lifecycle', `${port}.maintenance`))).toBe(false)
 }, 30000)
 
 it.skipIf(process.platform !== 'win32')('refuses a different profile listener or an unlistening service before stopping', async () => {
@@ -162,6 +173,25 @@ it.skipIf(process.platform !== 'win32')('does not build when pulling latest fail
   expect(() => readFileSync(calls, 'utf8')).toThrow()
 })
 
+it.skipIf(process.platform !== 'win32').each([0, 2, 3, 1])('normal start ignores old maintenance markers for result %i', code => {
+  directory = mkdtempSync(join(tmpdir(), 'maintenance-markers-'))
+  const scripts = join(directory, 'scripts')
+  const config = join(directory, 'config.json')
+  const portMarker = join(directory, 'service', 'control', 'lifecycle', '19382.maintenance')
+  const profileMarker = join(directory, 'service', 'control', 'profiles', 'recovery-test', 'deployment.maintenance')
+  mkdirSync(scripts)
+  mkdirSync(join(directory, 'service', 'control', 'lifecycle'), { recursive: true })
+  writeFileSync(portMarker, 'failed deployment')
+  writeFileSync(join(scripts, 'dsh-superagent'), `if (process.argv[2] === 'status') console.log(JSON.stringify({ identity: 'listener', pids: [], foreign: [], unlistening: [] })); else process.exit(${code})`)
+  writeFileSync(join(scripts, 'update-superagent.ps1'), 'param($Checkout)\nexit 0\n')
+  writeFileSync(config, JSON.stringify({ checkout: directory, home: directory, profile: 'recovery-test', node: process.execPath, url: 'http://127.0.0.1:19382' }))
+  const wrapper = join(import.meta.dirname, '..', 'scripts', 'dsh-superagent.ps1')
+  const result = spawnSync('pwsh', ['-NoProfile', '-File', wrapper, 'start', '-Config', config], { encoding: 'utf8' })
+  expect(result.status, result.stderr).toBe(code)
+  expect(existsSync(portMarker)).toBe(true)
+  expect(existsSync(profileMarker)).toBe(false)
+})
+
 it.skipIf(process.platform !== 'win32')('passes the recovery flag to the control script rather than Node', () => {
   directory = mkdtempSync(join(tmpdir(), 'recovery-arguments-'))
   const scripts = join(directory, 'scripts')
@@ -170,10 +200,14 @@ it.skipIf(process.platform !== 'win32')('passes the recovery flag to the control
   mkdirSync(scripts)
   writeFileSync(join(scripts, 'dsh-superagent'), `require('node:fs').writeFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)))`)
   writeFileSync(config, JSON.stringify({ checkout: directory, home: directory, profile: 'recovery-test', node: process.execPath, url: 'http://127.0.0.1:19382' }))
+  const marker = join(directory, 'service', 'control', 'profiles', 'recovery-test', 'deployment.maintenance')
+  mkdirSync(join(directory, 'service', 'control', 'profiles', 'recovery-test'), { recursive: true })
+  writeFileSync(marker, 'failed deployment')
   const wrapper = join(import.meta.dirname, '..', 'scripts', 'dsh-superagent.ps1')
   const result = spawnSync('pwsh', ['-NoProfile', '-File', wrapper, 'start', '-Config', config, '-UseInstalled', '-RespectStop'], { encoding: 'utf8' })
   expect(result.status, result.stderr).toBe(0)
   expect(JSON.parse(readFileSync(calls, 'utf8'))).toContain('--respect-stop')
+  expect(existsSync(marker)).toBe(true)
 })
 
 it.skipIf(process.platform !== 'win32')('crash recovery starts the installed version without updating', () => {
@@ -189,14 +223,11 @@ it.skipIf(process.platform !== 'win32')('crash recovery starts the installed ver
   const markerDir = join(directory, 'service', 'control', 'lifecycle')
   mkdirSync(markerDir, { recursive: true })
   writeFileSync(join(markerDir, '19382.maintenance'), 'unfinished deployment')
-  execFileSync('pwsh', ['-NoProfile', '-File', recoverScript, '-Config', config, '-ServiceScript', mock])
-  expect(existsSync(calls)).toBe(false)
-  rmSync(join(markerDir, '19382.maintenance'))
   const profileDir = join(directory, 'service', 'control', 'profiles', 'superagent')
   mkdirSync(profileDir, { recursive: true })
   writeFileSync(join(profileDir, 'deployment.maintenance'), 'unfinished deployment')
   execFileSync('pwsh', ['-NoProfile', '-File', recoverScript, '-Config', config, '-ServiceScript', mock])
-  expect(existsSync(calls)).toBe(false)
+  expect(readFileSync(calls, 'utf8').trim()).toBe('start|True|True')
 })
 
 it.skipIf(process.platform !== 'win32')('does not recover on API errors while a process is alive or the service was stopped', () => {
