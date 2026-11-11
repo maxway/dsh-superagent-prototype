@@ -433,6 +433,7 @@ Some generic modules still need provider-specific behavior:
 | --- | --- |
 | `tests/core-engine.spec.ts` | Domain rules on in-memory repositories: receiving, Eval, fan-out, resume and stop, interrupted Assignments, the pause, Policy changes, reports and outcomes, attaching, replies, failed deliveries and dismissed problems |
 | `tests/executor-handoff-tool.spec.ts` | Low-to-high handoff tool validation and tier-specific worker instructions |
+| `tests/notices-handoff.spec.ts` | Handoff notifications distinguish transferred subscriptions from unrelated Threads |
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
