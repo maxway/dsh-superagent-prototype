@@ -1,5 +1,6 @@
 /** Tests for scripts/dsh-superagent using a temporary checkout path with spaces and stubbed ps, tmux, and dsh binaries. */
 import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync }
   from 'node:fs'
 import { createServer, type Server } from 'node:http'
@@ -633,15 +634,16 @@ if (-not [ConsoleVisibility]::AttachConsole(${servicePid})) { throw 'Could not a
   }
 }, 45_000)
 it.skipIf(process.platform !== 'win32')('stops the process that owns the management URL, not another process with the same profile', async () => {
-  const first = await fakeService('precision-test')
-  const second = await fakeService('precision-test')
-  expect(await status('precision-test', first.url)).toMatchObject({ pids: [first.pid], listener: [first.pid], unlistening: [second.pid] })
-  expect(await status('precision-test', second.url)).toMatchObject({ pids: [second.pid] })
-  expect(await run('stop', '--profile', 'precision-test', '--url', first.url, '--stop-timeout', '10'))
+  const profile = `precision-${randomUUID()}`
+  const first = await fakeService(profile)
+  const second = await fakeService(profile)
+  expect(await status(profile, first.url)).toMatchObject({ pids: [first.pid], listener: [first.pid], unlistening: [second.pid] })
+  expect(await status(profile, second.url)).toMatchObject({ pids: [second.pid] })
+  expect(await run('stop', '--profile', profile, '--url', first.url, '--stop-timeout', '10'))
     .toMatchObject({ code: 0, stdout: expect.stringContaining('dsh-superagent stopped') })
   await waitForExit(first.child)
   expect(second.child.exitCode).toBeNull()
-  expect((await status('precision-test', second.url)).pids).toEqual([second.pid])
+  expect((await status(profile, second.url)).pids).toEqual([second.pid])
   second.child.kill()
 }, 30_000)
 it.skipIf(process.platform !== 'win32')('stops a listener even when its start facts name another DSH home', async () => {
