@@ -125,7 +125,7 @@ async function start() {
     }
     const session = { id: sessionId, snapshotEvents: () => [], requestHeader: () => undefined, append: () => {} }
     agents.set(sessionId, { id: sessionId, ctx: agentCtx, inbox, followup: deliver(inbox.nextTurn), steer: deliver(inbox.nextStep),
-      inject: record, status: 'idle', cancel: () => {}, whenIdle: async () => {}, session } as never)
+      inject: record, status: 'idle', cancel: () => {}, whenIdle: async () => {}, model: { current: () => undefined }, session } as never)
   }
   const resolveAgent = async (id: string) => agents.has(id) ? { agent: agents.get(id) } : { error: { code: 'session/not-found' } }
   const ctx = new Context()
