@@ -15,12 +15,12 @@ if (-not $Config) { $Config = Join-Path $WatchdogHome 'observer.json' }
 $logFile = Join-Path $WatchdogHome 'launch-observer.log'
 
 function Fail([string]$message) {
-  try { "$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')) $message" | Add-Content -LiteralPath $logFile -Encoding utf8 } catch { /* The task result carries the error. */ }
+  try { "$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')) $message" | Add-Content -LiteralPath $logFile -Encoding utf8 } catch {}
   Write-Error $message -ErrorAction Continue
   exit 2
 }
 function Log([string]$message) {
-  try { "$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')) $message" | Add-Content -LiteralPath $logFile -Encoding utf8 } catch { /* The task result carries the error. */ }
+  try { "$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')) $message" | Add-Content -LiteralPath $logFile -Encoding utf8 } catch {}
 }
 
 function CurrentObserver {
