@@ -200,6 +200,8 @@ param([ValidateSet('start', 'stop', 'restart', 'status', 'verify')][string]$Acti
 exit $LASTEXITCODE
 ```
 
+For a simple Windows stop and start from an independent operator session, `pwsh scripts\restart-superagent.ps1` sends the stop request directly to the configured loopback URL, waits for the port to close, then invokes the service wrapper to start. Pass `-Config <path>` to select a different service configuration. It targets the configured URL without checking the listener's process identity; a failed stop or port that stays open prevents the start. It does not control Watchdog, fetch source, build, update files, or deploy a new version; it restarts the version already installed.
+
 The Node script remains the implementation and is available on both platforms when the environment is already set:
 
 ```sh
