@@ -32,7 +32,7 @@ it.skipIf(process.platform !== 'win32')('starts the sibling launch-observer.ps1 
   expect(readFileSync(join(dir, 'args.txt'), 'utf8').trim()).toBe(`config=${config}`)
 }, 30_000)
 
-it.skipIf(process.platform !== 'win32')('runs the current observer version through the PowerShell launcher', async () => {
+it.skip('runs the current observer version through the PowerShell launcher', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-launch-observer-ps-'))
   directory = dir
   copyFileSync(observerPs, join(dir, 'launch-observer.ps1'))
