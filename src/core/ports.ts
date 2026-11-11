@@ -42,7 +42,7 @@ export type AssessmentOutcome =
   | { kind: 'unavailable'; reason: string | Reason; audit?: Record<string, unknown> }
   /** An accept: `rules` the assessment matched, `name` the ticket's requested short name, `category` its deliverable, `note` a routing note for its worker, and `offPeak` that its work is deferred. */
   | { kind: 'accept'; title: string; scope: string; reason: string | Reason; acknowledgement?: string; rules?: string[]; audit?: Record<string, unknown>;
-    name?: string; category?: Category; tier?: Tier; note?: string; offPeak?: true }
+    name?: string; category?: Category; tier?: Tier; note?: string; offPeak?: true; offPeakSourceDefault?: true }
   | { kind: 'stop'; ticketId: string; reason: string | Reason; audit?: Record<string, unknown> }
 
 /** Semantic judgement. `request` queues the assessment, idempotently per `evalId`; the outcome returns through `Engine.decide`. */

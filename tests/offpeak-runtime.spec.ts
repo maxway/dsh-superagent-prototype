@@ -71,12 +71,37 @@ it('launches a Ticket not marked off-peak at once, outside the window', async ()
 it('defers a GitHub request by default and honours an explicit override for urgent work', async () => {
   setWindow({ enabled: true, start: '22:00', end: '08:00' })
   vi.useFakeTimers({ toFake: ['Date'], now: Date.parse('2026-09-09T04:00:00Z') })
+  const settings = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, model: { provider: 'test', model: 'deepseek-v4.1-flash' } } })
   const deferred = await accept(github('1', 'Upgrade the parser to the new grammar'))
   expect(deferred.offPeak).toBe(true)
   expect(ticketState(deferred)).toBe('pending')
+  h.runtime.store.saveSettings(settings)
   const urgent = await accept(github('2', 'The production build is broken'), { off_peak: false })
   expect(urgent.offPeak).toBeUndefined()
   expect(ticketState(urgent)).toBe('running')
+})
+
+it('uses the selected tier model rather than the fallback for the default', async () => {
+  setWindow({ enabled: true })
+  vi.useFakeTimers({ toFake: ['Date'], now: Date.parse('2026-09-09T04:00:00Z') })
+  const settings = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor,
+    model: { provider: 'test', model: 'other' }, tierModels: { ...settings.executor.tierModels, high: { provider: 'test', model: 'deepseek-v4.1-flash' } } } })
+  const ticket = await accept(github('1', 'Fix the parser'))
+  expect(ticket.offPeak).toBe(true)
+  expect(ticketState(ticket)).toBe('pending')
+})
+
+it('starts other models immediately by default but permits explicit deferral', async () => {
+  setWindow({ enabled: true })
+  vi.useFakeTimers({ toFake: ['Date'], now: Date.parse('2026-09-09T04:00:00Z') })
+  const immediate = await accept(github('1', 'Fix the parser'))
+  expect(immediate.offPeak).toBeUndefined()
+  expect(ticketState(immediate)).toBe('running')
+  const deferred = await accept(github('2', 'Fix the parser later'), { off_peak: true })
+  expect(deferred.offPeak).toBe(true)
+  expect(ticketState(deferred)).toBe('pending')
 })
 
 /** The state of a Ticket's latest Assignment, read fresh from the store. */
