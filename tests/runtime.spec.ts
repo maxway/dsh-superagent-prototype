@@ -1569,6 +1569,19 @@ it('relays the status-request hint when a worker\'s turn ends with no text and n
     summary: expect.stringContaining('orchestrator_ticket_request_status') })
 })
 
+it('requests a final status when a worker goes quiet after reporting progress', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'MR opened' })
+  const relayed = relays(runtime.masterId).length
+  const agent = agents.get(sessionId)! as { status: string }
+  agent.status = 'idle'
+  ;(runtime as unknown as { ctx: Context }).ctx.emit('agent/status', { agent, status: 'idle' } as never)
+  await vi.waitFor(() => expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'waiting', summary: 'MR opened' }))
+  expect(relays(runtime.masterId)).toHaveLength(relayed + 1)
+  expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_report', state: 'waiting',
+    summary: expect.stringContaining('orchestrator_ticket_request_status') })
+})
+
 it('fails a ticket at once on a worker error that is not passing, and relays it', async () => {
   const { ticket, sessionId } = await acceptedTicket()
   ;(runtime as unknown as { ctx: Context }).ctx.emit('agent/error', { agent: agents.get(sessionId), turn: 1, step: 1, error: new Error('Invalid tool schema') } as never)
