@@ -121,10 +121,12 @@ it('follows the Ticket\'s stage: a blocked Ticket a person answered since is wor
     inputs: [] as { id: string; kind: 'trigger'; triggerId: string; at: string; human?: true }[] }
   store.tickets.save(ticket)
   const row = ticketSummary(store.tickets.get('t1')!)
-  expect(row).toMatchObject({ category: 'development', tier: null })
-  expect(ticketSummary({ ...ticket, category: 'query', tier: 'low' })).toMatchObject({ category: 'query', tier: 'low' })
-  expect(ticketSummary({ ...ticket, category: 'research', tier: 'high' })).toMatchObject({ category: 'research', tier: 'high' })
-  expect(ticketDetail(host, 't1')).toMatchObject({ category: 'development', tier: null })
+  expect(row).toMatchObject({ tier: null })
+  expect(row).not.toHaveProperty('category')
+  expect(ticketSummary({ ...ticket, category: 'query', tier: 'low' })).toMatchObject({ tier: 'low' })
+  expect(ticketSummary({ ...ticket, category: 'research', tier: 'expert' })).not.toHaveProperty('category')
+  expect(ticketDetail(host, 't1')).toMatchObject({ tier: null })
+  expect(ticketDetail(host, 't1')).not.toHaveProperty('category')
   expect(row).toMatchObject({ stage: 'person', action: 'blocked', actions: { retry: true }, note: { text: 'Needs the design file',
     error: false } })
   expect(ticketDetail(host, 't1')!.assignments[0]).toMatchObject({ turnEndedAt: blocked.at })

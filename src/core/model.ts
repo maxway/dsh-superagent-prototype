@@ -101,7 +101,7 @@ export type Strength = 'explicit' | 'reply' | 'inferred'
 /** One Ticket's deliverable kind: a read-only answer, a read-only investigation, or a code change. */
 export const CATEGORIES = ['query', 'research', 'development'] as const
 export type Category = typeof CATEGORIES[number]
-export const TIERS = ['low', 'high'] as const
+export const TIERS = ['low', 'high', 'expert'] as const
 export type Tier = typeof TIERS[number]
 /** A Ticket accepted before categories existed, and one accepted without a choice, is development work. */
 export const DEFAULT_CATEGORY: Category = 'development'
@@ -293,7 +293,7 @@ export interface Ticket {
   id: string
   title: string
   decisionId: string
-  /** The one deliverable this Ticket carries; absent on Tickets accepted before categories existed. */
+  /** Historical deliverable restriction retained for tickets accepted with a category. */
   category?: Category
   tier?: Tier
   handoffFrom?: string

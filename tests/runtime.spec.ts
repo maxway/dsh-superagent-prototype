@@ -132,10 +132,10 @@ async function route(item: Record<string, unknown>): Promise<Record<string, unkn
   if (results[0]!.refused) throw new Error(String(results[0]!.refused))
   return results[0]!
 }
-async function acceptedTicket(trigger = feishu('1', '@bot 修一下回归'), category?: 'query' | 'research' | 'development', tier?: 'low' | 'high') {
+async function acceptedTicket(trigger = feishu('1', '@bot 修一下回归'), tier?: 'low' | 'high' | 'expert') {
   await receive(trigger)
   expect(relays(runtime.masterId).some(item => item.trigger_id === trigger.id)).toBe(true)
-  const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '修复回归', category, tier,
+  const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '修复回归', tier,
     worktree_name: worktreeName, acknowledgement: '收到，修复回归。' })
   const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
   return { trigger, ticket, sessionId: `worker-${ticket.id}` }
@@ -265,31 +265,22 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
   expect(runtime.store.replyStatus(key('ack', trigger.id))).toBe('sent')
   const larkCalls = vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args)
   expect(larkCalls.find(args => args[1] === '+messages-reply')).toEqual(expect.arrayContaining(['--message-id', 'om_1', '--markdown', '收到，修复回归。']))
-  // The first message holds the request itself and the category contract; an explicit ticket has no routing note beyond them.
+  // The first message holds the source request; an explicit ticket has no routing note beyond it.
   const first = relays(sessionId)[0]!
-  expect(first).toEqual({ ticket_id: ticket.id, title: '修复回归', assignment: 'Category: development.',
+  expect(first).toEqual({ ticket_id: ticket.id, title: '修复回归',
     trigger: expect.objectContaining({ trigger_id: trigger.id, from: MEMBER, thread: `feishu:${CHAT}:om_1`, text: trigger.text }) })
   expect(first.trigger).not.toHaveProperty('read')
   expect(await route({ kind: 'accept', trigger_id: trigger.id, title: 'again', worktree_name: worktreeName, acknowledgement: 'x' })).toMatchObject({ ticket: { ticket_id: ticket.id } })
 })
 
-it('records tier independently of the deliverable and defaults conservatively', async () => {
-  const queryHigh = await acceptedTicket(feishu('34', '@bot 复杂查询'), 'query', 'high')
-  const low = await acceptedTicket(feishu('31', '@bot 小改动'), 'development', 'low')
-  const high = await acceptedTicket(feishu('32', '@bot 调研'), 'research')
-  const query = await acceptedTicket(feishu('33', '@bot 查询'), 'query')
-  expect(low.ticket).toMatchObject({ category: 'development', tier: 'low' })
-  expect(high.ticket).toMatchObject({ category: 'research', tier: 'high' })
-  expect(query.ticket).toMatchObject({ category: 'query', tier: 'low' })
-  expect(queryHigh.ticket).toMatchObject({ category: 'query', tier: 'high' })
-  expect(sections.get(queryHigh.sessionId)!.text({})).toContain('This is a query ticket: answer it with read-only investigation.')
-})
-it('records a query ticket and gives its worker a read-only category contract', async () => {
-  const { ticket, sessionId } = await acceptedTicket(feishu('2', '@bot 只查一下'), 'query')
-  expect(ticket.category).toBe('query')
-  expect(sections.get(sessionId)!.text({})).toContain('This is a query ticket: answer it with read-only investigation.')
-  expect(relays(sessionId)[0]!.assignment).toBe('Category: query.')
-  expect(ticket.execution?.assignment).toBe('Category: query.')
+it('defaults to high and records a low tier for simple work without a category', async () => {
+  const low = await acceptedTicket(feishu('31', '@bot 小改动'), 'low')
+  const high = await acceptedTicket(feishu('32', '@bot 调研'))
+  expect(low.ticket).toMatchObject({ tier: 'low' })
+  expect(high.ticket).toMatchObject({ tier: 'high' })
+  expect(low.ticket).not.toHaveProperty('category')
+  expect(high.ticket).not.toHaveProperty('category')
+  expect(sections.get(high.sessionId)!.text({})).toContain('investigation alone does not authorize changes')
 })
 
 it('fans a person\'s later thread message out to the live worker as context and tells the orchestrator, without an Eval', async () => {

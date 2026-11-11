@@ -21,8 +21,8 @@ Ignore: a thread sharing another product's discussion followed by “maybe our a
 Accept when scoped to a screenshot of this project: “this button label is odd”, then “just 'Save' would do”; the concrete replacement establishes intent without an imperative.
 Do not decide from hedge keywords alone.
 When intent remains uncertain, ignore quietly and let subsequent messages establish it; do not ask humans to confirm routine chatter.
-On acceptance, record these three facts and source quotes in intent_evidence; acknowledge the specific change in one short sentence, unless a matched rule requires silence, then omit acknowledgement. Choose tier independently: low for clearly simple work, high for complex or unclear work. Query defaults to low, others to high; an explicit tier overrides the default.
-A matched rule's instruction may define what counts as requested implementation and an established target for its category.
+On acceptance, record these three facts and source quotes in intent_evidence; acknowledge the specific change in one short sentence, unless a matched rule requires silence, then omit acknowledgement. Choose tier independently of authorization: high by default, low for clearly simple work. Never select expert for inferred work. The tier does not expand the authorized scope.
+A matched rule's instruction may define what counts as requested implementation and an established target within its scope.
 Omit implementation plans, unchanged behavior and routine assurances.
 The host posts it as a reply to the triggering message; do not quote that message.
 Return rule_assessments with exactly one entry for every enabled rule: rule_id, matched and a factual reason.

@@ -62,7 +62,14 @@ it('uses tier models independently of category while retaining legacy fallback',
   expect(workerModel(settings, ticket('query', 'high'))?.model).toBe('terra')
   expect(workerModel(settings, ticket('query'))?.model).toBe('legacy')
   settings.executor.tierModels.low = null
-  expect(workerModel(settings, ticket('query', 'low'))?.model).toBe('legacy')
+  expect(workerModel(settings, ticket('query', 'low'))?.model).toBe('default')
+  settings.executor.tierModels.expert = { provider: 'p', model: 'expert' }
+  expect(workerModel(settings, ticket('query', 'expert'))?.model).toBe('expert')
+  settings.executor.tierModels.expert = null
+  expect(workerModel(settings, ticket('query', 'expert'))?.model).toBe('default')
+  settings.executor.model = null
+  expect(workerModel(settings, ticket('query', 'expert'))).toBeNull()
+  expect(workerModel(settings, ticket('query'))?.model).toBe('legacy')
 })
 it('selects a worker model by Ticket category, falling back to the executor default', () => {
   const settings = SettingsSchema.parse({ executor: { model: { provider: 'p', model: 'default' },

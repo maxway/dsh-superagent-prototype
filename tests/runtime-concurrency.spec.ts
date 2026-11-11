@@ -881,12 +881,13 @@ describe('the Executor\'s parts', () => {
     expect(execution.assignment).not.toContain('trigger/tr1')
     expect(ticketExecution({ ...ticket, mandate: { ...ticket.mandate, strength: 'explicit' } } as Ticket,
       { kind: 'accept', title: 'Fix', scope: 'Fix', reason: 'r', name: 'fix-login', note: 'the login page' } as never, settings, '/state').assignment)
-      .toBe('Routing note (not the source request): the login page\nCategory: development.')
-    // Every worker reads its category contract in the system prompt, so the assignment only names the category.
+      .toBe('Routing note (not the source request): the login page')
+    // Worker mandate instructions are separate from the assignment.
     expect(execution.assignment).not.toContain(mandateInstructions(ticket.mandate))
     expect(execution.assignment).toContain('- Copy fixes (copy): Fix typos only.')
-    expect(mandateInstructions({ strength: 'explicit' })).toContain('This is a development ticket')
-    expect(mandateInstructions({ strength: 'explicit', category: 'query' })).toContain('read-only investigation')
+    expect(mandateInstructions({ strength: 'explicit' })).toContain('investigation alone does not authorize changes')
+    expect(mandateInstructions({ strength: 'explicit', category: 'query' })).toContain('limited to read-only investigation')
+    expect(mandateInstructions({ strength: 'inferred', category: 'research' })).toContain('limited proactive authorization')
     // A reply-only ticket reads the read-only limits and the answer route.
     expect(mandateInstructions({ strength: 'reply' })).toContain('read-only reply ticket')
     expect(mandateInstructions({ strength: 'reply' })).toContain('reply_to_trigger_id')

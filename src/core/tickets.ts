@@ -1,7 +1,7 @@
 /** Tickets: their lifecycle from an accept to their end, their Subscriptions and their Inputs. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
-import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, ticketCategory, waitsForPerson } from './model.ts'
+import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, waitsForPerson } from './model.ts'
 import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
   Trigger, TriggerDisposition } from './model.ts'
 import type { AssessmentOutcome } from './ports.ts'
@@ -40,12 +40,10 @@ export class Tickets extends EnginePart {
     // Fall back to the last trigger for Evals recorded before `primary` existed.
     const primary = this.repo.triggers.get(evaluation.primary ?? triggerIds.at(-1)!)
     const origin = { triggerId: primary?.id ?? triggerIds[0]!, triggerIds }
-    // A read-only reply can only answer or investigate; every other accept is development work unless it names a category.
-    const category = mandate.strength === 'reply'
-      ? outcome.category === 'research' ? 'research' : 'query'
-      : outcome.category ?? 'development'
-    const tier = outcome.tier ?? (category === 'query' ? 'low' : 'high')
-    let ticket: Ticket = { id, title: outcome.title, decisionId, category, tier, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
+    const expertRequested = mandate.strength === 'explicit' && primary?.human
+      && !/`{3,}|~{3,}/.test(primary.text) && /^[ \t]*tier[ \t]*=[ \t]*expert[ \t]*\r?$/im.test(primary.text)
+    const tier = outcome.tier === 'expert' && !expertRequested ? 'high' : outcome.tier ?? 'high'
+    let ticket: Ticket = { id, title: outcome.title, decisionId, tier, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
       createdAt: at, updatedAt: at, origin, ...(outcome.offPeak ? { offPeak: true } : {}) }
     for (const triggerId of triggerIds) {
       const channel = this.repo.triggers.get(triggerId)?.channel
@@ -57,7 +55,7 @@ export class Tickets extends EnginePart {
     for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
     if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, outcome.acknowledgement)
     this.options.executor.start(this.require(id), assignment)
-    this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength, category, tier })
+    this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength, tier })
   }
   /**
    * Subscribes an open ticket to `thread` and records it in `ticket.follows` (`own` when opened by the ticket).
@@ -178,14 +176,14 @@ export class Tickets extends EnginePart {
       || !subscribed?.subscriptions.includes(old.id) || subscribed.context?.includes(old.id)
       || !old.channels.some(channel => channel.source === 'feishu')) throw new Error('This ticket cannot be handed off in its current state')
     if (!this.policy().revalidate(old.mandate)) throw new UserError('mandateRevoked')
-    const at = this.now(), id = key('handoff', old.id), category = ticketCategory(old)
+    const at = this.now(), id = key('handoff', old.id)
     if (this.repo.tickets.get(id)) throw new Error('This ticket cannot be handed off in its current state')
     const text = `Before doing any work, read the complete handoff summary in the full assignment using assignment_read if truncated.\nHandoff from ticket ${old.id}.${old.execution?.directory
       ? ` Previous workspace (may no longer exist): ${old.execution.directory}` : ''}\n${summary.trim()}`
     const outcome: Extract<AssessmentOutcome, { kind: 'accept' }> = { kind: 'accept', title: old.title, scope: old.mandate.scope,
-      reason: 'handoff', category, tier: 'high', note: text, ...(old.offPeak ? { offPeak: true } : {}) }
+      reason: 'handoff', tier: 'high', note: text, ...(old.offPeak ? { offPeak: true } : {}) }
     const marker: TicketInput = { id: key('input', id, 'handoff'), kind: 'text', text, at }
-    let ticket: Ticket = { id, title: old.title, decisionId: old.decisionId, category, tier: 'high', mandate: old.mandate,
+    let ticket: Ticket = { id, title: old.title, decisionId: old.decisionId, ...(old.category ? { category: old.category } : {}), tier: 'high', mandate: old.mandate,
       channels: old.channels, origin: old.origin, handoffFrom: old.id, assignments: [], inputs: [marker], undelivered: [marker.id],
       createdAt: at, updatedAt: at, ...(old.offPeak ? { offPeak: true } : {}), ...(old.git ? { git: old.git } : {}),
       ...(old.follows?.length ? { follows: old.follows } : {}) }
@@ -235,7 +233,7 @@ export class Tickets extends EnginePart {
       this.emit('thread.subscribed', { threadKey: thread.key, ticketId: id })
     }
     this.emit('ticket.ended', { ticketId: old.id, by: 'executor', outcome: 'stopped', reason: 'handoff' })
-    this.emit('ticket.created', { ticketId: id, decisionId: old.decisionId, strength: old.mandate.strength, category, tier: 'high' })
+    this.emit('ticket.created', { ticketId: id, decisionId: old.decisionId, strength: old.mandate.strength, tier: 'high' })
     for (const item of stopping) this.options.executor.stop(old, item, 'handoff')
     this.options.executor.start(ticket, assignment)
     return ticket

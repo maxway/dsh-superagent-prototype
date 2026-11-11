@@ -5,9 +5,10 @@ import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { ticketCategory, type Ticket } from '../core/index.ts'
 import type { RoleModel, Settings } from '../policy.ts'
 
-/** A tier model takes precedence; older tickets and unset tiers retain category-model fallback. */
+/** Tiered tickets use the executor fallback; only legacy tickets retain category-model selection. */
 export function workerModel(settings: Settings, ticket: Pick<Ticket, 'category' | 'mandate' | 'tier'>): RoleModel | null {
-  return (ticket.tier ? settings.executor.tierModels[ticket.tier] : null) ?? settings.executor.models[ticketCategory(ticket)] ?? settings.executor.model
+  return ticket.tier ? settings.executor.tierModels[ticket.tier] ?? settings.executor.model
+    : settings.executor.models[ticketCategory(ticket)] ?? settings.executor.model
 }
 
 /** Resolve a configured route through the live provider; catalog membership is not a restriction. */

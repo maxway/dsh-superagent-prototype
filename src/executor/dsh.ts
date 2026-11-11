@@ -4,7 +4,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, ticketCategory, waitsForPerson } from '../core/index.ts'
+import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
 import type { AssessmentOutcome, Assignment, Category, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Tier, Trigger }
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
@@ -96,21 +96,10 @@ export interface ExecutorHost {
 export const sourceTrigger = (host: { store: Pick<Store, 'triggers'> }, ticket: Ticket): Trigger | undefined =>
   host.store.triggers.get(ticket.origin.triggerId)
 
-/**
- * The extra instructions one Ticket gives its worker: the category's deliverable contract, the narrower authority of a reply
- * ticket or an inferred proactive ticket, and the handoff rule when the requested deliverable changes.
- */
-const CATEGORY_RULES: Readonly<Record<Category, string>> = {
-  query: 'This is a query ticket: answer it with read-only investigation. Do not modify, create or delete files, commit, push, '
-    + 'open, merge or close a change request, or change settings or accounts, and keep any subagents read-only.',
-  research: 'This is a research ticket: investigate with read-only means and report findings. Do not modify, create or delete files, '
-    + 'commit, push, open, merge or close a change request, or change settings or accounts, and keep any subagents read-only.',
-  development: 'This is a development ticket: make the requested code change, run the relevant checks and deliver it.',
-}
-const HANDOFF = 'If the requested deliverable changes, stop before doing other work and report the findings so a new request can be accepted; '
-  + 'do not use a subagent for it.'
-const DROPPED = 'If the requested deliverable changes, stop and report dropped with the findings; do not use a subagent for it.'
-/** Returns additional system-prompt instructions for a worker beyond the request: its category contract, reply/inferred limits, and the handoff rule. */
+const HANDOFF = 'If work goes beyond the authorized request, stop and report the findings so a new request can be accepted; '
+  + 'do not use a subagent to bypass this boundary.'
+const DROPPED = 'If work goes beyond the authorized request, stop and report dropped with the findings; do not use a subagent to bypass this boundary.'
+/** Returns worker instructions preserving the original mandate and historical read-only restrictions. */
 export function mandateInstructions(ticket: Pick<Mandate, 'strength'> & { category?: Category; tier?: Tier; handoffFrom?: string }): string {
   const escalation = ticket.tier === 'low' ? ' If this task needs greater capability, use orchestrator_ticket_handoff. Summarize what you have done, what remains unfinished, and risks or important constraints. The high-tier successor inherits the original authorization only; do not expand its scope. After a successful handoff, stop work immediately; your session may be cancelled before the tool result arrives.'
     : ticket.handoffFrom ? ' Before executing the original request, read the complete assignment and its handoff summary; if truncated, follow assignment_read and pagination to read it in full.' : ''
@@ -119,11 +108,12 @@ export function mandateInstructions(ticket: Pick<Mandate, 'strength'> & { catego
     + 'Answer with orchestrator_report: set reply_to_trigger_id to the question\'s trigger_id and put the concise answer in summary. '
     + 'Report ready when the answer is complete; report dropped when the question needs no investigation or cannot be answered read-only, '
     + 'and hand back or state plainly anything that would need an execution request from a sender allowed to make one. ' + HANDOFF + escalation
-  const category = ticket.category ?? 'development'
-  const limited = ticket.strength === 'inferred' && category === 'development' ? 'This ticket has limited proactive authorization. Independently verify that it is a small change '
+  const legacyReadOnly = ticket.category === 'query' || ticket.category === 'research'
+    ? 'This historical ticket is limited to read-only investigation. Do not modify, create or delete files, commit, push, open, merge or close a change request, or change settings or accounts, and keep any subagents read-only. ' : ''
+  const limited = ticket.strength === 'inferred' ? 'This ticket has limited proactive authorization. Independently verify that it is a small change '
     + 'internal to one module within the accepted rule scope. If it requires public-interface or behavior changes, new interaction, product '
     + 'decisions or clarification, stop and report dropped; do not expand scope. ' : ''
-  return `${CATEGORY_RULES[category]} ${limited}${ticket.strength === 'inferred' ? DROPPED : HANDOFF}${escalation}`
+  return `Investigate and implement as needed within the authorized request; investigation alone does not authorize changes. ${legacyReadOnly}${limited}${ticket.strength === 'inferred' ? DROPPED : HANDOFF}${escalation}`
 }
 /** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
@@ -136,10 +126,9 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
     .map(rule => `\n- ${rule.name} (${rule.id}): ${rule.instruction}`).join('')
   const precedence = rules ? `\nMatched rules; their procedure and communication instructions take precedence over the default acknowledgement and messaging policy for this ticket:${rules}` : ''
   // The origin trigger is delivered alongside the assignment, so `assignment` omits the trigger text.
-  const category = `Category: ${ticketCategory(ticket)}.`
   const assignment = ticket.mandate.strength === 'inferred' && ruleIds
-    ? `Proactively accepted under ${ruleIds.join(', ')}. Scope: ${outcome.scope}.${precedence}${note}\n${category}`
-    : [note.trim(), category].filter(Boolean).join('\n')
+    ? `Proactively accepted under ${ruleIds.join(', ')}. Scope: ${outcome.scope}.${precedence}${note}`
+    : note.trim()
   return { name, directory: join(executionRoot(settings, stateDir), name), assignment }
 }
 /** Character limits for inline assignment and trigger text in worker messages; longer text is read via its resource. */

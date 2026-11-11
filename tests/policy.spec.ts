@@ -316,7 +316,7 @@ describe('settings migration', () => {
       sources: { feishu: feishuSource({ chats: [{ chatId: CHAT, listen: 'mentions' }, { chatId: OBSERVED, listen: 'all' }], directMessages: false }), github: { enabled: true, config: { pollSeconds: 120 } } },
       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
-      executor: { model: null, models: { query: null, research: null, development: null }, tierModels: { low: null, high: null }, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [],
+      executor: { model: null, models: { query: null, research: null, development: null }, tierModels: { low: null, high: null, expert: null }, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [],
         offPeak: { enabled: false, start: '22:00', end: '08:00', timezone: 'Asia/Shanghai' } },
     })
     expect(migrateSettings(migrated)).toEqual(migrated)
@@ -363,10 +363,10 @@ describe('assessment outcomes', () => {
     expect(settingsPolicy(auto, scope).admitsInferred([])).toBe(false)
     expect(settingsPolicy(settings('observe'), scope).admitsInferred([enabled])).toBe(false)
   })
-  it('carries the category an accept names, and leaves it to the Ticket default when omitted', () => {
+  it('preserves an explicitly selected tier and leaves the default to the Ticket', () => {
     const auto = settings('auto')
-    expect(assessmentOutcome({ ...accept(auto), category: 'research' }, auto, 'inferred')).toMatchObject({ kind: 'accept', category: 'research' })
-    expect(assessmentOutcome(accept(auto), auto, 'inferred')).not.toHaveProperty('category')
+    expect(assessmentOutcome({ ...accept(auto), tier: 'low' }, auto, 'inferred')).toMatchObject({ kind: 'accept', tier: 'low' })
+    expect(assessmentOutcome(accept(auto), auto, 'inferred')).not.toHaveProperty('tier')
   })
 })
 

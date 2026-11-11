@@ -3,7 +3,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
 import { reasonText, threadKey, type Assessor, type AssessmentOutcome, type Candidate, type EngineForMainSession,
   type Trigger } from '../core/index.ts'
-import { AdmissionDirectionSchema, CategorySchema, TierSchema, RuleAssessmentSchema, assessmentOutcome, directionAllowed, type Settings } from '../policy.ts'
+import { AdmissionDirectionSchema, TierSchema, RuleAssessmentSchema, assessmentOutcome, directionAllowed, type Settings } from '../policy.ts'
 import { checkedImText } from '../infra/text.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { Deployment } from '../deployment.ts'
@@ -24,8 +24,7 @@ export const AssessmentSchema = z.object({
   rule_assessments: z.array(RuleAssessmentSchema)
     .refine(assessments => new Set(assessments.map(assessment => assessment.rule_id)).size === assessments.length,
       'Duplicate rule assessment IDs').describe('One per enabled rule.'),
-  category: CategorySchema.nullish().describe('For acceptance: query, research or development; defaults to development.'),
-  tier: TierSchema.nullish().describe('For acceptance: low for clearly simple work, high for complex or unclear work. Query defaults to low; other categories default to high.'),
+  tier: TierSchema.nullish().describe('For acceptance: low for clearly simple work, high by default for complex or unclear work. Never select expert for inferred work.'),
   direction: AdmissionDirectionSchema.describe('Required for every decision.'),
   title: z.string().min(1).max(160),
   worktree_name: WorktreeNameSchema.optional(),

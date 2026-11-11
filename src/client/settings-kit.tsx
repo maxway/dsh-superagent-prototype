@@ -69,7 +69,7 @@ function SwitchRow({ label, hint, checked,
   </div>
 }
 type RoleModel = Settings['eval']['model']
-export function ModelField({ id, value, onChange }: { id: string; value: RoleModel; onChange: (next: RoleModel) => void }) {
+export function ModelField({ id, value, onChange, inherited }: { id: string; value: RoleModel; onChange: (next: RoleModel) => void; inherited?: string }) {
   const { t, call } = usePanel()
   const [catalog, setCatalog] = useState<ApiResponse<'GET models'>>()
   const [error, setError] = useState<string>()
@@ -86,8 +86,8 @@ export function ModelField({ id, value, onChange }: { id: string; value: RoleMod
       onChange={event => set({ [name]: event.target.value })} />
   </Field>
   return <div className="dt-model">
-    <Hint>{fallback ? t('defaultModel', { model: `${fallback.provider} / ${fallback.model}${fallback.reasoningEffort
-      ? ` · ${fallback.reasoningEffort}` : ''}` }) : t('defaultModelUnavailable')}</Hint>
+    <Hint>{inherited ?? (fallback ? t('defaultModel', { model: `${fallback.provider} / ${fallback.model}${fallback.reasoningEffort
+      ? ` · ${fallback.reasoningEffort}` : ''}` }) : t('defaultModelUnavailable'))}</Hint>
     {error && <p className="dt-error">{t('modelCatalogError', { error })}</p>}
     <div className="dt-grid3">
       {input('provider', t('modelProvider'), t('modelInherit'))}{input('model', t('modelName'), t('modelInherit'))}{input('effort',

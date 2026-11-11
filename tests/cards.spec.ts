@@ -138,13 +138,15 @@ it('shows a trigger and a ticket as cards with a short preview and references to
   const { policyVersion: _version, ...mandate } = ticket.mandate
   const threads = [{ thread: 'github:42', bound: true as const }]
   const batch = [{ ...trigger, id: 'request-2', text: 'Also the flaky one.' }]
-  expect(ticketDetails(ticket, threads, batch)).toEqual({ ticket_id: 'ticket-1', title: 'Inspect failing check', category: 'development',
+  expect(ticketDetails(ticket, threads, batch)).toEqual({ ticket_id: 'ticket-1', title: 'Inspect failing check',
     state: 'person/review', strength: 'explicit', pr_number: 42, read: 'ticket/ticket-1', trigger_id: 'request-1', decision_id: 'd1',
     batch: [{ trigger_id: 'request-2', from: 'alice', at: trigger.at, preview: 'Also the flaky one.', read: 'trigger/request-2' }],
     threads, directory: '/worktrees/ticket-1', scope: mandate.scope, requested_by: 'alice', inputs: { items: [] },
     assignments: { items: [{ id: 'a1', state: 'running', at: '2026-09-09T00:00:00Z', report: { state: 'ready', at: '', preview: expect.stringMatching(/^The focused/),
       chars: SUMMARY.length, read: 'ticket/ticket-1/report/a1' } }] },
     assignment: 'ticket/ticket-1/assignment', result: 'ticket/ticket-1/result', transcript: 'ticket/ticket-1/transcript' })
+  expect(ticketDetails({ ...ticket, category: 'query', tier: 'expert' }, threads, batch)).toMatchObject({ tier: 'expert' })
+  expect(ticketDetails({ ...ticket, category: 'query' }, threads, batch)).not.toHaveProperty('category')
   // Its worker reads no Decision, so it sees no Decision's id.
   expect(ticketDetails({ ...ticket, inputs: [{ id: 'r', kind: 'reopen', decisionId: 'd2', at: '1' }] }, threads, [], true)).toMatchObject({
     inputs: { items: [{ kind: 'reopen', read: `ticket/ticket-1/input/${key('r')}` }] } })

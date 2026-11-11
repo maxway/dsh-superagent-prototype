@@ -71,13 +71,46 @@ function accepted(h: ReturnType<typeof harness>, id = '1', thread = 't1') {
   return decision
 }
 
+describe('ticket capability tier', () => {
+  it('defaults to high and retains an explicitly selected low tier without a category', () => {
+    for (const tier of [undefined, 'low'] as const) {
+      const h = harness()
+      h.engine.receive(trigger('1')); h.pump()
+      const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Work', scope: 'work', reason: 'asked', tier })
+      const ticket = h.repo.tickets.get(decision.ticketId!)!
+      expect(ticket.tier).toBe(tier ?? 'high')
+      expect(ticket).not.toHaveProperty('category')
+    }
+  })
+  it('only accepts expert from an explicit human message with the standalone tier protocol', () => {
+    for (const [strength, human, text, expected] of [
+      ['explicit', true, 'Please investigate\n tier = EXPERT \r\nThanks', 'expert'],
+      ['explicit', true, '不要 expert', 'high'],
+      ['explicit', true, 'Please use expert', 'high'],
+      ['explicit', true, '> tier=expert', 'high'],
+      ['explicit', true, '```\ntier=expert\n```', 'high'],
+      ['explicit', true, 'tier=expert\n~~~text\nquoted\n~~~', 'high'],
+      ['explicit', true, 'tier=expertish', 'high'],
+      ['explicit', true, 'Do not use tier=expert', 'high'],
+      ['explicit', false, 'tier=expert', 'high'],
+      ['reply', true, 'tier=expert', 'high'],
+      ['inferred', true, 'tier=expert', 'high'],
+    ] as const) {
+      const h = harness({ gate: () => ({ admissible: true, strength, basis: { via: 'listed' } }) })
+      h.engine.receive(trigger('1', { human, text })); h.pump()
+      const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Work', scope: 'work', reason: 'asked', tier: 'expert', rules: ['r1'] })
+      expect(h.repo.tickets.get(decision.ticketId!)!.tier).toBe(expected)
+    }
+  })
+})
+
 describe('low to high handoff', () => {
   const prepare = (ticket: Ticket) => ({ ...ticket, execution: { name: ticket.id, directory: `work/${ticket.id}`, assignment: '' } })
   function low(h: ReturnType<typeof harness>) {
     const first = trigger('1', { source: 'feishu', threads: [{ source: 'feishu', id: 'oc:om' }],
       channel: { source: 'feishu', thread: 'feishu:oc:om', address: { chatId: 'oc', messageId: 'om' } } })
     h.engine.receive(first); h.pump()
-    const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Question', scope: 'answer', reason: 'asked', category: 'query', tier: 'low' })
+    const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Question', scope: 'answer', reason: 'asked', tier: 'low' })
     h.settle()
     return decision.ticketId!
   }
@@ -86,6 +119,8 @@ describe('low to high handoff', () => {
       execution: { name: ticket.id, directory: `work/${ticket.id}`, assignment: outcome.note ?? '' } }))
     const h = harness({}, { prepareTicket })
     const oldId = low(h), old = h.repo.tickets.get(oldId)!
+    old.category = 'query'
+    h.repo.tickets.save(old)
     const other = accepted(h, '9', 'other').ticketId!
     h.engine.followForContext(oldId, { source: 'chat', id: 'context' })
     h.engine.receive(trigger('2', { threads: [{ source: 'feishu', id: 'oc:om' }] })); h.settle()
@@ -440,7 +475,8 @@ describe('subscription fan-out', () => {
     const events: { type: string; data: Record<string, unknown> }[] = []
     const h = harness({}, { emit: event => events.push(event) })
     const first = accepted(h).ticketId!
-    expect(events.find(event => event.type === 'ticket.created')?.data).toMatchObject({ ticketId: first, category: 'development', tier: 'high' })
+    expect(events.find(event => event.type === 'ticket.created')?.data).toMatchObject({ ticketId: first, strength: 'explicit', tier: 'high' })
+    expect(events.find(event => event.type === 'ticket.created')?.data).not.toHaveProperty('category')
     const second = accepted(h, '2', 't2').ticketId!
     h.engine.receive(trigger('3', { threads: [{ source: 'chat', id: 't2' }] }))
     // A follow-up of the second ticket goes to the first only once the second's worker hands it back.

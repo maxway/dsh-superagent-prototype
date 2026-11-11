@@ -123,6 +123,10 @@ export function ExecutionSettings() {
           <h2 className="dt-block-title">{t('term.executor')}<InfoTip text={t('executorIntro')} /></h2>
           <Section title={t('executorModel')} hint={t('executorModelHint')}><ModelField id="dt-worker-model" value={value.model}
             onChange={model => edit({ model })} /></Section>
+          {(['low', 'high', 'expert'] as const).map(tier => <Section key={tier} title={t(tier === 'low' ? 'tierModelLow' : tier === 'high' ? 'tierModelHigh' : 'tierModelExpert')} hint={t('tierModelHint')}>
+            <ModelField id={`dt-worker-${tier}-model`} value={value.tierModels[tier]} inherited={t('tierModelHint')}
+              onChange={model => edit({ tierModels: { ...value.tierModels, [tier]: model } })} />
+          </Section>)}
           <Field label={t('maxWorkers')} hint={t('maxWorkersHint')}>
             <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} required value={value.maxWorkers}
               onChange={event => edit({ maxWorkers: event.target.value })} />
