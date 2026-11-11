@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -258,6 +258,63 @@ it('reports a missing run route once, logs an unreachable service, and exits 1 w
   expect(missing.code).toBe(2)
   expect(missing.stderr).toContain('Cannot read the watchdog configuration')
 })
+
+it.skipIf(process.platform !== 'win32')('runs the configured mechanical recovery check without a model', async () => {
+  const config = configure('http://127.0.0.1:1', { report: false, crashRecovery: { serviceConfig: 'service.json', recoveryScript: 'recover.ps1' }, powershell: 'pwsh' })
+  const calls = join(directory!, 'recovery.txt')
+  writeFileSync(join(directory!, 'service.json'), '{}')
+  writeFileSync(join(directory!, 'recover.ps1'), `param($Config, $ExpectedUrl)\nSet-Content -LiteralPath '${calls.replaceAll("'", "''")}' -Value "$Config|$ExpectedUrl"\n`)
+  expect((await run(['--config', config, '--once'])).code).toBe(1)
+  expect(existsSync(calls)).toBe(false)
+  const observer = await import(pathToFileURL(script).href) as {
+    loadConfig: (path: string) => Record<string, unknown>
+    cycle: (config: Record<string, unknown>, state: Record<string, unknown>, now: Date, allowRecovery: boolean) => Promise<unknown>
+  }
+  await observer.cycle(observer.loadConfig(config), {}, new Date(), true)
+  expect(readFileSync(calls, 'utf8').trim()).toBe(`${join(directory!, 'service.json')}|http://127.0.0.1:1`)
+  expect(JSON.parse(readFileSync(join(directory!, 'state', 'state.json'), 'utf8'))).toMatchObject({ recoveryExit: 0 })
+})
+
+it.skipIf(process.platform !== 'win32')('rechecks crash recovery at its shorter interval', async () => {
+  const config = configure('http://127.0.0.1:1', { report: false, intervalSeconds: 900,
+    crashRecovery: { serviceConfig: 'service.json', recoveryScript: 'recover.ps1', retrySeconds: 1 }, powershell: 'pwsh' })
+  const calls = join(directory!, 'recovery.txt')
+  writeFileSync(join(directory!, 'service.json'), '{}')
+  writeFileSync(join(directory!, 'recover.ps1'), `param($Config, $ExpectedUrl)\nAdd-Content -LiteralPath '${calls.replaceAll("'", "''")}' -Value 'check'\n`)
+  const child = spawn(process.execPath, [script, '--config', config], { stdio: 'ignore' })
+  try {
+    const deadline = Date.now() + 10000
+    while ((!existsSync(calls) || readFileSync(calls, 'utf8').trim().split(/\r?\n/).length < 2) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    expect(readFileSync(calls, 'utf8').trim().split(/\r?\n/).length).toBeGreaterThanOrEqual(2)
+  } finally {
+    child.kill()
+    await new Promise<void>(resolve => child.once('exit', () => resolve()))
+  }
+}, 15000)
+
+it('consumes deployment requests only in the long-running observer', async () => {
+  const config = configure('http://127.0.0.1:1', { report: false, deployConfig: 'deploy.json' })
+  const checkout = join(directory!, 'checkout')
+  const calls = join(directory!, 'deploy-calls')
+  mkdirSync(join(checkout, 'scripts'), { recursive: true })
+  writeFileSync(join(checkout, 'scripts', 'deploy.mjs'), `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(calls)}, 'deployed')`)
+  writeFileSync(join(directory!, 'source-checkout.txt'), checkout)
+  writeFileSync(join(directory!, 'request.json'), '{}')
+  writeFileSync(join(directory!, 'deploy.json'), JSON.stringify({ requestPath: join(directory!, 'request.json'), resultFile: join(directory!, 'result.json') }))
+  expect((await run(['--config', config, '--once'])).code).toBe(1)
+  expect(existsSync(calls)).toBe(false)
+  const child = spawn(process.execPath, [script, '--config', config], { stdio: 'ignore' })
+  try {
+    const deadline = Date.now() + 10000
+    while (!existsSync(calls) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+    expect(readFileSync(calls, 'utf8')).toBe('deployed')
+  } finally {
+    child.kill()
+    await new Promise<void>(resolve => child.once('exit', () => resolve()))
+  }
+}, 15000)
 
 it('writes one independent alert after consecutive unreachable reads and a recovery record when the service returns', async () => {
   const { url } = await fakeService(() => snapshot())

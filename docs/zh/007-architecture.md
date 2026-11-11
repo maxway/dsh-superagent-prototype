@@ -360,16 +360,21 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/watchdog.ts` | 只读的 Watchdog 观测：从实时快照记录一次运行，并把渲染出的观测保存为“最近运行”心跳 |
 | `src/app/watchdog-recovery.ts` | enforce 模式下的有界恢复：重新检查缺失 worker Session、快照新鲜度、暂停状态和每 Session 恢复上限，然后 retry 一次并写审计行；绝不重启服务 |
 | `scripts/dsh-superagent` | 跨平台服务控制脚本：start、stop、restart、status、verify 与 Watchdog 命令；`--url` 的监听套接字所有者才是权威目标，Windows 上不传 `--url` 的 stop 会从管理状态自动发现正在运行的 superagent，日志和控制文件位于 `<DSH home>/service/`，需要时在 Windows Job 之外启动 |
-| `scripts/dsh-superagent.ps1` | 带版本的 Windows 操作入口：一个动作词（start/stop/restart/status）加可选的 `-Config`/`-RespectStop`；checkout 之外的机器 JSON 固定 checkout/home/profile/回环 URL，命令行不再暴露目标或时序参数 |
-| `scripts/watchdog` | 常驻的独立 Watchdog 进程：自有配置、状态、日志与 pid；挂一个带版本号的等待请求，等待返回后读取面板快照、每轮记录一次运行，发送配置好的安静日报，并可在服务不可达时写独立本地告警/恢复记录；配置 `agentConfig` 时，新的机械风险直接交给同版本完整 agent 判定与报告，不再由定时 gate 驱动 |
+| `scripts/dsh-superagent.ps1` | Windows 操作入口：普通 start/restart 在确认停服后拉取并构建最新代码；`-UseInstalled` 供专用恢复和内部调用，`-RespectStop` 尊重主动停机标记；机器 JSON 固定 checkout/home/profile/回环 URL |
+| `scripts/restart-superagent.ps1`, `scripts/update-superagent.ps1` | 独立机械部署：确认本机目标、停服后 fast-forward 拉取 `origin/main`、安装依赖、构建并启动；不调用模型，不备份或回滚，失败可能停机 |
+| `scripts/recover-superagent.ps1` | Watchdog 专用服务器崩溃恢复：尊重主动停机标记，启动已安装版本，不拉取或构建；helper 本身不表示已自动调度 |
+| `scripts/deploy.mjs`, `scripts/deploy.ps1` | 独立部署任务：校验请求并调用机械重启脚本，成功归档未变更请求；不支持模型驱动回退 |
+| `scripts/watchdog` | 常驻独立 observer：跟踪快照、记录巡检和本地告警，可配置机械崩溃恢复和部署请求消费；`agentConfig` 负责独立的任务风险判断 |
+| `scripts/watchdog-deployment.mjs` | 异步消费已配置的 Superagent 部署请求并去重，不阻塞 observer 心跳 |
 | `scripts/watchdog-agent/` | agent 包装、机械 gate、提示词与配置/模型模板，与观察器同版本：普通 gate 记录运行后退出，风险轮次从同一制品在自己的工作区（不是 checkout）启动完整 DSH agent；常驻 observer 在出现新风险时调用它 |
 | `scripts/watchdog-artifact.mjs` | 构建不可变 Watchdog 制品及 manifest（文件哈希、总摘要、`apiVersion`、`minServiceVersion`），并在安装前校验制品 |
 | `scripts/watchdog-smoke.mjs` | 用本地 mock 管理 API 验证未安装的制品：观察器与 agent gate 必须记录带 manifest 版本的运行，不接触生产服务或飞书 |
-| `scripts/watchdog-launch-observer.ps1` | 常驻 observer 的稳定启动器：读取 `current.txt` 并运行该版本的 `watchdog --config`，在非零退出时重启，因此切换版本不需要改写任务动作 |
+| `scripts/watchdog-bootstrap.mjs` | observer 启动前机械准备远端最新制品，并与 updater 的启动事务协调 |
+| `scripts/watchdog-launch-observer.ps1` | 常驻 observer 的稳定启动器：启动及异常重启时准备最新制品，不改写计划任务动作 |
 | `scripts/watchdog-launch-observer.vbs` | 常驻 observer 的隐藏入口：`wscript.exe` 以隐藏窗口运行 `launch-observer.ps1` 并等待其生命周期，因此常驻进程不会闪出 PowerShell 窗口 |
 | `scripts/launch-hidden.vbs` | 其他非交互 Windows 任务（部署、Watchdog 更新、服务启动）的无窗口入口：以隐藏窗口运行给定命令、等待并返回其退出码，因此计划任务里的 `node` 或 `pwsh` 及其控制台子进程不会出现在桌面上 |
-| `scripts/watchdog-control.mjs` | 操作员生命周期：`status`、`start`、`stop`、`deploy --build` 读取指针和计划任务，复用 manifest、smoke、指针切换、任务重启和心跳校验；不调用模型，也不需要手写版本、摘要或任务参数 |
-| `scripts/watchdog-update.mjs` | 独立 Watchdog 更新：请求与 staging 根校验、锁、smoke、安装、原子指针切换、observer 停止/启动、心跳、幂等与回滚；从不重启 superagent |
+| `scripts/watchdog-control.mjs` | 操作员生命周期：普通 `start` 和 `deploy` 从 `origin/main` 构建并启动，不接受旧制品，也不调用模型 |
+| `scripts/watchdog-update.mjs` | 独立 Watchdog 更新：命令行从最新 `origin/main` 构建，安装并启动后检查新鲜本地心跳；不做固定 75 秒等待或旧版自动回退，不重启 superagent |
 | `src/app/views/threads.ts` | 线程列表、线程时间线、搜索和决定列表 |
 | `src/app/views/sources.ts` | 来源状态：每个来源实例的状态、它最后一天的计数，以及它在那一天过滤和丢弃的内容 |
 | `src/app/views/settings.ts` | 设置页面的视图：每个块及其修订版本、每个来源的设置及其种类的表单，以及执行环境 |
@@ -444,7 +449,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/gitlab-webhook.spec.ts` | GitLab webhook：监听器校验、唤醒合并和项目 hook 的创建、更新与删除 |
 | `tests/commands.spec.ts` | 以部署账号执行的 CLI 调用、渠道的回答，以及限定在仓库范围内的 GitHub 调用 |
 | `tests/deploy-command.spec.ts` | 主 Session 的部署请求：从环境读取配置、原子写请求文件、启动独立任务，以及命令失败 |
-| `tests/deploy-executor.spec.ts` | 机械部署执行器：只读计划、停机状态备份、按清单切换、启动与存活检查、校验失败时回滚，headless agent 回退与操作员服务包装脚本，以及服务繁忙、清单越界、候选 revision 不符和 lockfile 变化时拒绝 |
+| `tests/deploy-executor.spec.ts` | 机械部署执行器：配置映射、只读计划、请求归档、失败时保留请求，以及拒绝旧版本目标和 agent 模式 |
 | `tests/commands-window.spec.ts` | 后台 CLI 命令运行时隐藏窗口 |
 | `tests/github-read.spec.ts` | GitHub 读取 |
 | `tests/admission-context.spec.ts` | 研判的线程窗口 |
@@ -480,7 +485,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/watchdog-launch.spec.ts` | 无窗口 observer 启动器：VBS 与其 PowerShell 启动器读取当前版本、使用任务参数并保留退出码 |
 | `tests/watchdog-diagnostics.spec.ts` | Windows 事件诊断：任务筛选、已禁用日志状态和访问失败 |
 | `tests/watchdog-control.spec.ts` | 机械生命周期：选项与计划任务命令、制品准备、启动器安装，以及不经过模型把部署请求交给更新器 |
-| `tests/watchdog-update.spec.ts` | 独立 Watchdog 更新：制品校验、smoke、安装与指针切换、已记录运行心跳、幂等、回滚与 staging 根拒绝 |
+| `tests/watchdog-update.spec.ts` | 独立 Watchdog 更新：最新制品构建、指针切换、本地心跳、幂等和失败不回退 |
 | `tests/timeline.spec.ts` | 线程的页面，以及触发按时间再按 id 排序的邻近项，每个已接收触发的时间都采用同一种形式 |
 | `tests/migration.spec.ts` | schema 11 迁移：每条已存储记录都处于当前形状，以及拒绝更旧的 schema |
 | `tests/store.spec.ts` | 仓储及其工作集（SQLite 中与内存中一致）、kv 区域，其中 `KV` 的每个键只在 `src/kv.ts` 和迁移中拼写，以及设置历史与查询 |

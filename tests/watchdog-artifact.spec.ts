@@ -32,7 +32,8 @@ it('builds a verifiable self-contained Watchdog artifact with a stable digest', 
     minServiceVersion: '0.1.0', builtAt: '2026-11-09T00:00:00.000Z' })
   expect(manifest.sha256).toMatch(/^[0-9a-f]{64}$/)
   expect(Object.keys(manifest.files).sort()).toEqual(['agent/config.example.json', 'agent/gate.mjs', 'agent/model.patch.example.yml',
-    'agent/prompt.md', 'agent/run.ps1', 'launch-observer.ps1', 'launch-observer.vbs', 'package.json', 'watchdog'])
+    'agent/prompt.md', 'agent/run.ps1', 'launch-observer.ps1', 'launch-observer.vbs', 'package.json', 'watchdog',
+    'watchdog-artifact.mjs', 'watchdog-bootstrap.mjs', 'watchdog-control.mjs', 'watchdog-deployment.mjs', 'watchdog-smoke.mjs', 'watchdog-update.mjs'])
   expect(JSON.parse(readFileSync(join(first, 'package.json'), 'utf8'))).toMatchObject({ type: 'module' })
 
   // The same sources and inputs produce the same digest, so a request can pin one artifact.

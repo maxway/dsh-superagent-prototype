@@ -36,6 +36,8 @@ it.skipIf(process.platform !== 'win32')('records observer stderr and its exit be
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-launch-failure-'))
   directory = dir
   copyFileSync(observerPs, join(dir, 'launch-observer.ps1'))
+  const bootstraps = join(dir, 'bootstraps.txt')
+  writeFileSync(join(dir, 'watchdog-bootstrap.mjs'), `import { appendFileSync } from 'node:fs'; appendFileSync(${JSON.stringify(bootstraps)}, 'bootstrap\\n')`)
   writeFileSync(join(dir, 'current.txt'), 'v1')
   const config = join(dir, 'observer.json')
   writeFileSync(config, '{}')
@@ -61,6 +63,7 @@ process.stderr.write('simulated clean stop\\n')
   expect(result.code, JSON.stringify({ ...result, log })).toBe(0)
   expect(log).toContain('observer output version=v1 simulated observer failure')
   expect(log).toContain('observer exit=9 version=v1')
+  expect(readFileSync(bootstraps, 'utf8').trim().split(/\r?\n/)).toEqual(['bootstrap', 'bootstrap'])
   expect(log).toContain('observer output version=v1 simulated clean stop')
   expect(log).toContain('observer exit=0 version=v1')
 }, 30_000)
@@ -97,6 +100,7 @@ it.skipIf(process.platform !== 'win32')('runs the observer even when the log can
   directory = dir
   copyFileSync(observerPs, join(dir, 'launch-observer.ps1'))
   mkdirSync(join(dir, 'launch-observer.log'))
+  writeFileSync(join(dir, 'watchdog-bootstrap.mjs'), 'process.exit(0)')
   writeFileSync(join(dir, 'current.txt'), 'v1')
   const config = join(dir, 'observer.json')
   writeFileSync(config, '{}')
@@ -111,10 +115,56 @@ it.skipIf(process.platform !== 'win32')('runs the observer even when the log can
   expect(readFileSync(marker, 'utf8')).toBe('ran')
 }, 30_000)
 
+it.skipIf(process.platform !== 'win32')('fails rather than launching the old observer when bootstrap fails', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-launch-bootstrap-failure-'))
+  directory = dir
+  copyFileSync(observerPs, join(dir, 'launch-observer.ps1'))
+  writeFileSync(join(dir, 'watchdog-bootstrap.mjs'), 'process.stderr.write("remote unavailable\\n"); process.exit(1)')
+  writeFileSync(join(dir, 'current.txt'), 'v1')
+  const config = join(dir, 'observer.json')
+  writeFileSync(config, '{}')
+  mkdirSync(join(dir, 'versions', 'v1'), { recursive: true })
+  const marker = join(dir, 'observer-ran.txt')
+  writeFileSync(join(dir, 'versions', 'v1', 'watchdog'), `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')\n`)
+  const code = await new Promise<number | null>(resolve => {
+    execFile('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(dir, 'launch-observer.ps1'), '-Config', config],
+      { timeout: 10_000 }, error => resolve(error ? (typeof error.code === 'number' ? error.code : null) : 0))
+  })
+  expect(code).toBe(2)
+  expect(readFileSync(join(dir, 'launch-observer.log'), 'utf8')).toMatch(/remote unavailable|bootstrap failed/i)
+  expect(() => readFileSync(marker)).toThrow()
+}, 15_000)
+
+it.skipIf(process.platform !== 'win32')('starts the transaction version without waiting for the updater lock', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-launch-transaction-'))
+  directory = dir
+  copyFileSync(observerPs, join(dir, 'launch-observer.ps1'))
+  copyFileSync(join(import.meta.dirname, '..', 'scripts', 'watchdog-bootstrap.mjs'), join(dir, 'watchdog-bootstrap.mjs'))
+  writeFileSync(join(dir, 'current.txt'), 'v1')
+  const config = join(dir, 'observer.json')
+  writeFileSync(config, '{}')
+  mkdirSync(join(dir, 'update.lock'))
+  writeFileSync(join(dir, 'update.lock', 'owner.json'), JSON.stringify({ pid: process.pid }))
+  writeFileSync(join(dir, 'update.lock', 'launch-version.txt'), 'v1')
+  mkdirSync(join(dir, 'versions', 'v1'), { recursive: true })
+  const marker = join(dir, 'observer-ran.txt')
+  writeFileSync(join(dir, 'versions', 'v1', 'watchdog'), `const fs = require('fs'); if (!fs.existsSync(${JSON.stringify(marker)})) { fs.writeFileSync(${JSON.stringify(marker)}, 'ran'); process.exit(9) }\n`)
+  const code = await new Promise<number | null>(resolve => {
+    execFile('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(dir, 'launch-observer.ps1'), '-Config', config],
+      { timeout: 30_000 }, error => resolve(error ? (typeof error.code === 'number' ? error.code : null) : 0))
+  })
+  expect(code).toBe(0)
+  expect(readFileSync(marker, 'utf8')).toBe('ran')
+  const log = readFileSync(join(dir, 'launch-observer.log'), 'utf8')
+  expect(log).toContain('observer exit=9 version=v1')
+  expect(log).toContain('observer exit=0 version=v1')
+}, 35_000)
+
 it.skip('runs the current observer version through the PowerShell launcher', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-launch-observer-ps-'))
   directory = dir
   copyFileSync(observerPs, join(dir, 'launch-observer.ps1'))
+  writeFileSync(join(dir, 'watchdog-bootstrap.mjs'), 'process.exit(0)')
   writeFileSync(join(dir, 'current.txt'), 'v1')
   const config = join(dir, 'observer.json')
   writeFileSync(config, '{}')

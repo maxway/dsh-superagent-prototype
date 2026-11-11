@@ -26,6 +26,12 @@ const FILES = [
   ['scripts/watchdog-agent/model.patch.example.yml', 'agent/model.patch.example.yml'],
   ['scripts/watchdog-launch-observer.ps1', 'launch-observer.ps1'],
   ['scripts/watchdog-launch-observer.vbs', 'launch-observer.vbs'],
+  ['scripts/watchdog-bootstrap.mjs', 'watchdog-bootstrap.mjs'],
+  ['scripts/watchdog-control.mjs', 'watchdog-control.mjs'],
+  ['scripts/watchdog-deployment.mjs', 'watchdog-deployment.mjs'],
+  ['scripts/watchdog-update.mjs', 'watchdog-update.mjs'],
+  ['scripts/watchdog-artifact.mjs', 'watchdog-artifact.mjs'],
+  ['scripts/watchdog-smoke.mjs', 'watchdog-smoke.mjs'],
 ]
 
 const sha256 = buffer => createHash('sha256').update(buffer).digest('hex')

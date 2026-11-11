@@ -254,11 +254,11 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
       execute: async args => {
         const config = deploymentConfig()
         if (!config) {
-          return { sent: false, reason: 'Deployment is not configured: set DSH_SUPERAGENT_DEPLOY_REQUEST and DSH_SUPERAGENT_DEPLOY_COMMAND in the service environment.' }
+          return { sent: false, reason: 'Deployment is not configured: set DSH_SUPERAGENT_DEPLOY_REQUEST in the service environment.' }
         }
         const request = await requestDeployment(config, args.confirmation)
         return { sent: true, at: request.at,
-          reason: 'Deployment request sent to the independent Watchdog; it releases the latest superagent, then reports the result.' }
+          reason: 'Deployment request queued for the independent Watchdog; check its deployment result for completion.' }
       },
     }),
     tool({

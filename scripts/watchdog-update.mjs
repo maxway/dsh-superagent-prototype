@@ -2,18 +2,17 @@
 /**
  * Independent Watchdog update task.
  *
- * The task runs outside the superagent service. It validates an operator request and an immutable artifact, smokes the
- * artifact against a local mock (no production Feishu or credentials), installs it under `versions/<version>`, switches
- * the `current.txt` pointer atomically, stops and starts the standing observer task and waits for a recorded run from the
- * new version. A failed smoke, start or heartbeat restores the previous pointer. It never restarts or reconfigures the
- * superagent service and never asks a model to decide anything: the observer task owns the long-running lifecycle.
+ * The task runs outside the superagent service. It validates an operator request and an artifact, installs it under
+ * `versions/<version>`, switches `current.txt`, starts the observer task and waits for a fresh local heartbeat.
+ * A failed start or heartbeat leaves the candidate and pointer in place for investigation. It never
+ * restarts or reconfigures the superagent service and never asks a model to decide anything.
  */
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { dirname, join, resolve, sep } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { verifyArtifact, versionAtLeast } from './watchdog-artifact.mjs'
-import { smokeArtifact } from './watchdog-smoke.mjs'
 
 const VERSION = /^[A-Za-z0-9._-]+$/
 const KEY = /^[A-Za-z0-9._:-]+$/
@@ -59,9 +58,7 @@ export function loadConfig(path) {
     logFile: required('logFile'),
     resultFile: required('resultFile'),
     heartbeatTimeoutSeconds: number('heartbeatTimeoutSeconds', 180),
-    survivalSeconds: number('survivalSeconds', 75),
     pollSeconds: number('pollSeconds', 5),
-    smokeTimeoutSeconds: number('smokeTimeoutSeconds', 30),
     lockStaleSeconds: number('lockStaleSeconds', 900),
   }
 }
@@ -136,7 +133,7 @@ function writeResult(config, result) {
   renameSync(temporary, config.resultFile)
 }
 
-function acquireLock(config) {
+export function acquireLock(config) {
   const lock = join(config.watchdogHome, 'update.lock')
   mkdirSync(config.watchdogHome, { recursive: true })
   try {
@@ -205,33 +202,7 @@ async function stopObserver(config, version) {
   return evidence
 }
 
-/** After a rollback, start the previous observer again. */
-function restartPrevious(config, version) {
-  if (!config.observerStartCommand || !version) return undefined
-  return runCommand(config, config.observerStartCommand, version)
-}
-
-/** Ask the service for its newest recorded runs; an unavailable service is reported, not treated as a bad artifact. */
-async function recordedRuns(config) {
-  const url = new URL('/orchestrator/api/watchdog/runs?limit=20', `${config.serviceUrl}/`)
-  const response = await fetch(url, { headers: { 'x-orchestrator-request': '1' }, signal: AbortSignal.timeout(5_000) })
-  if (!response.ok) throw new Error(`The management API answered ${response.status}`)
-  const value = await response.json()
-  return Array.isArray(value.runs) ? value.runs : []
-}
-
-async function waitForHeartbeat(config, version, since) {
-  const deadline = Date.now() + config.heartbeatTimeoutSeconds * 1000
-  while (Date.now() < deadline) {
-    const runs = await recordedRuns(config)
-    const match = runs.find(run => run?.version === version && Number.isFinite(Date.parse(run.at)) && Date.parse(run.at) >= since)
-    if (match) return match
-    await new Promise(resolvePromise => setTimeout(resolvePromise, config.pollSeconds * 1000))
-  }
-  throw new Error(`No recorded run from Watchdog ${version} within ${config.heartbeatTimeoutSeconds}s`)
-}
-
-export async function verifyObserverSurvival(config, since) {
+export async function verifyObserverHeartbeat(config, since) {
   const heartbeatPath = join(config.watchdogHome, 'observer-state', 'heartbeat.json')
   const deadline = Date.now() + config.heartbeatTimeoutSeconds * 1000
   let heartbeat
@@ -247,21 +218,7 @@ export async function verifyObserverSurvival(config, since) {
     await new Promise(resolvePromise => setTimeout(resolvePromise, 1000))
   }
   if (!heartbeat) throw new Error('No fresh live observer heartbeat after the start request')
-  const until = Date.now() + (config.survivalSeconds ?? 75) * 1000
-  while (Date.now() < until) {
-    await new Promise(resolvePromise => setTimeout(resolvePromise, Math.min(1000, until - Date.now())))
-    if (!pidAlive(heartbeat.pid)) throw new Error(`Observer pid ${heartbeat.pid} exited during the survival window`)
-    try {
-      const value = readJson(heartbeatPath, 'observer heartbeat')
-      const at = Date.parse(value.at)
-      if (value.pid !== heartbeat.pid && at >= since) throw new Error(`Observer pid changed from ${heartbeat.pid} to ${value.pid}`)
-      if (value.pid === heartbeat.pid && at >= heartbeat.at && at <= Date.now() + 5000) heartbeat.at = at
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('Observer pid changed')) throw error
-    }
-    if (Date.now() - heartbeat.at > 40_000) throw new Error(`Observer pid ${heartbeat.pid} stopped updating its heartbeat`)
-  }
-  return { pid: heartbeat.pid, lastHeartbeat: new Date(heartbeat.at).toISOString(), survivalSeconds: config.survivalSeconds ?? 75 }
+  return { pid: heartbeat.pid, lastHeartbeat: new Date(heartbeat.at).toISOString() }
 }
 
 async function report(config, note, idempotencyKey) {
@@ -277,16 +234,15 @@ async function report(config, note, idempotencyKey) {
 }
 
 /**
- * Apply one validated update request. Injectable smoke/trigger functions keep the switch and rollback testable without
- * touching a real scheduled task or the production service.
+ * Apply one validated update request. Injectable trigger and heartbeat functions allow isolated tests without touching
+ * a real scheduled task or the production service.
  */
 export async function update(config, rawRequest, dependencies = {}) {
   const request = validateRequest(rawRequest, config)
   const logLine = message => log(config, message)
-  const smoke = dependencies.smoke ?? smokeArtifact
   const trigger = dependencies.trigger ?? runTrigger
   const now = dependencies.now ?? (() => new Date())
-  const release = dependencies.lock === false ? () => {} : acquireLock(config)
+  const release = dependencies.lock === false || dependencies.lockHeld ? () => {} : acquireLock(config)
   const finish = (result) => {
     writeResult(config, result)
     logLine(`end ${result.ok ? 'ok' : 'failed'} ${result.phase} version=${result.version ?? '-'}`)
@@ -295,7 +251,8 @@ export async function update(config, rawRequest, dependencies = {}) {
   try {
     const startedAt = now().toISOString()
     const previousResult = (() => { try { return readJson(config.resultFile, 'update result') } catch { return undefined } })()
-    if (previousResult?.request?.idempotencyKey === request.idempotencyKey) {
+    if (previousResult?.request?.idempotencyKey === request.idempotencyKey
+      && (!previousResult.ok || pidAlive(observerPid(config.watchdogHome)))) {
       logLine(`request ${request.idempotencyKey} was already applied; returning its result`)
       return { ...previousResult, idempotent: true }
     }
@@ -309,12 +266,33 @@ export async function update(config, rawRequest, dependencies = {}) {
     }
     const current = readCurrent(config.watchdogHome)
     if (current === artifact.version) {
-      return finish({ at: now().toISOString(), ok: true, phase: 'already-current', version: artifact.version,
-        previousVersion: previousResult?.previousVersion ?? null, request, startedAt, smoke: 'skipped' })
+      const installed = verifyArtifact(join(config.watchdogHome, 'versions', current))
+      if (installed.sha256 !== artifact.sha256 || installed.commit !== artifact.commit) {
+        throw new Error(`The installed artifact ${current} does not match the candidate`)
+      }
+      if (pidAlive(observerPid(config.watchdogHome))) {
+        return finish({ at: now().toISOString(), ok: true, phase: 'already-current', version: artifact.version,
+          previousVersion: previousResult?.previousVersion ?? null, request, startedAt })
+      }
+      if (dependencies.lock !== false) writeFileSync(join(config.watchdogHome, 'update.lock', 'launch-version.txt'), artifact.version)
+      const triggerAt = Date.now()
+      let triggerEvidence
+      try { triggerEvidence = trigger(config, artifact) } catch (error) {
+        return finish({ at: now().toISOString(), ok: false, phase: 'start-failed', version: artifact.version,
+          previousVersion: previousResult?.previousVersion ?? null, request, startedAt, manualIntervention: true,
+          error: error instanceof Error ? error.message : String(error) })
+      }
+      try {
+        const observer = await (dependencies.verifyObserverHeartbeat ?? verifyObserverHeartbeat)(config, triggerAt)
+        return finish({ at: now().toISOString(), ok: true, phase: 'started', version: artifact.version,
+          previousVersion: previousResult?.previousVersion ?? null, request, startedAt, trigger: triggerEvidence, heartbeat: 'local', observer })
+      } catch (error) {
+        return finish({ at: now().toISOString(), ok: false, phase: 'heartbeat-unverified', version: artifact.version,
+          previousVersion: previousResult?.previousVersion ?? null, request, startedAt, trigger: triggerEvidence, manualIntervention: true,
+          error: error instanceof Error ? error.message : String(error) })
+      }
     }
     logLine(`updating ${current ?? '(none)'} -> ${artifact.version}; staging ${request.target.artifactPath}`)
-    const smokeEvidence = await smoke(request.target.artifactPath, { timeoutSeconds: config.smokeTimeoutSeconds, node: dependencies.node })
-    logLine(`smoke passed version=${artifact.version}`)
     const installed = installArtifact(config.watchdogHome, request.target.artifactPath, artifact)
     logLine(`artifact ${installed.installed ? 'installed' : 'reused'} at ${installed.destination}`)
     let stopped
@@ -322,58 +300,33 @@ export async function update(config, rawRequest, dependencies = {}) {
       stopped = await stopObserver(config, current ?? '')
     } catch (error) {
       return finish({ at: now().toISOString(), ok: false, phase: 'failed', version: artifact.version,
-        previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence,
+        previousVersion: current ?? null, request, startedAt,
         error: `The old observer could not be stopped, so the switch was not attempted: ${error instanceof Error ? error.message : String(error)}` })
     }
     writePointer(config.watchdogHome, 'previous.txt', current ?? null)
     writePointer(config.watchdogHome, 'current.txt', artifact.version)
+    if (dependencies.lock !== false) writeFileSync(join(config.watchdogHome, 'update.lock', 'launch-version.txt'), artifact.version)
     const triggerAt = Date.now()
     let triggerEvidence
     try {
       triggerEvidence = trigger(config, artifact)
     } catch (error) {
-      writePointer(config.watchdogHome, 'current.txt', current ?? null)
-      let restarted
-      try { restarted = restartPrevious(config, current ?? '') } catch (restartError) {
-        restarted = { error: restartError instanceof Error ? restartError.message : String(restartError) }
-      }
-      return finish({ at: now().toISOString(), ok: false, phase: 'rolled-back', version: artifact.version,
-        previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence, stop: stopped, restart: restarted,
+      return finish({ at: now().toISOString(), ok: false, phase: 'start-failed', version: artifact.version,
+        previousVersion: current ?? null, request, startedAt, stop: stopped, manualIntervention: true,
         error: error instanceof Error ? error.message : String(error) })
     }
-    let heartbeat = 'unverified'
-    let reachable = true
-    try { await recordedRuns(config) } catch { reachable = false }
-    if (reachable) {
-      try {
-        await waitForHeartbeat(config, artifact.version, triggerAt)
-        heartbeat = 'recorded'
-      } catch (error) {
-        writePointer(config.watchdogHome, 'current.txt', current ?? null)
-        let restarted
-        try { restarted = restartPrevious(config, current ?? '') } catch (restartError) {
-          restarted = { error: restartError instanceof Error ? restartError.message : String(restartError) }
-        }
-        return finish({ at: now().toISOString(), ok: false, phase: 'rolled-back', version: artifact.version,
-          previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence, stop: stopped, trigger: triggerEvidence,
-          restart: restarted, error: error instanceof Error ? error.message : String(error) })
-      }
-    } else {
-      heartbeat = 'unreachable'
-      logLine('the management API is unreachable; installed the artifact without a recorded-run proof')
-    }
-    let survival
+    let observer
     try {
-      survival = await (dependencies.verifyObserverSurvival ?? verifyObserverSurvival)(config, triggerAt)
+      observer = await (dependencies.verifyObserverHeartbeat ?? verifyObserverHeartbeat)(config, triggerAt)
     } catch (error) {
-      return finish({ at: now().toISOString(), ok: false, phase: 'survival-unverified', version: artifact.version,
-        previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence, stop: stopped, trigger: triggerEvidence, heartbeat,
+      return finish({ at: now().toISOString(), ok: false, phase: 'heartbeat-unverified', version: artifact.version,
+        previousVersion: current ?? null, request, startedAt, stop: stopped, trigger: triggerEvidence,
         manualIntervention: true, error: error instanceof Error ? error.message : String(error) })
     }
     const result = finish({ at: now().toISOString(), ok: true, phase: 'updated', version: artifact.version, commit: artifact.commit,
-      previousVersion: current ?? null, request, startedAt, smoke: smokeEvidence, stop: stopped, trigger: triggerEvidence, heartbeat, survival })
+      previousVersion: current ?? null, request, startedAt, stop: stopped, trigger: triggerEvidence, heartbeat: 'local', observer })
     if (config.reportChat) {
-      const note = `Watchdog 已更新到 ${artifact.version}${current ? `（上一版 ${current}）` : ''}；服务未重启；心跳 ${heartbeat === 'recorded' ? '已记录' : '未验证'}。`
+      const note = `Watchdog 已更新到 ${artifact.version}${current ? `（上一版 ${current}）` : ''}；服务未重启；已确认本地心跳。`
       if (!(await report(config, note, `watchdog-update-${request.idempotencyKey}`))) logLine('the update report could not be sent')
     }
     return result
@@ -401,6 +354,34 @@ function parseArgv(argv) {
 
 const usage = 'Usage: watchdog-update --config <path> [--request <path>] [--validate]'
 
+function validateLatestRequest(request) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('The update request must be a JSON object')
+  if (typeof request.confirmation !== 'string' || !request.confirmation.trim()) throw new Error('The update request has no operator confirmation')
+  const idempotencyKey = request.idempotencyKey ?? randomUUID()
+  if (typeof idempotencyKey !== 'string' || !KEY.test(idempotencyKey)) throw new Error('The update request needs a valid idempotencyKey')
+  return { ...request, idempotencyKey }
+}
+
+async function updateLatest(config, request) {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+  const stagingRelative = relative(root, config.stagingRoot)
+  if (!stagingRelative || (!stagingRelative.startsWith(`..${sep}`) && stagingRelative !== '..' && !isAbsolute(stagingRelative))) {
+    throw new Error('Watchdog staging must be outside the runtime checkout')
+  }
+  mkdirSync(config.stagingRoot, { recursive: true })
+  const temporary = mkdtempSync(join(config.stagingRoot, 'watchdog-latest-'))
+  try {
+    const { buildFromRepo, installLaunchers } = await import('./watchdog-control.mjs')
+    const artifactPath = buildFromRepo(temporary, root)
+    const manifest = verifyArtifact(artifactPath)
+    installLaunchers(config.watchdogHome, artifactPath, root)
+    return await update(config, { ...request, idempotencyKey: `${request.idempotencyKey}:${manifest.commit}`,
+      target: { version: manifest.version, artifactPath, sha256: manifest.sha256 } })
+  } finally {
+    rmSync(temporary, { recursive: true, force: true })
+  }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const options = parseArgv(process.argv.slice(2))
@@ -417,16 +398,15 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
           log(config, 'no Watchdog update request; nothing to do')
           process.exitCode = 0
         } else {
-          const request = readJson(requestPath, 'Watchdog update request')
+          const request = validateLatestRequest(readJson(requestPath, 'Watchdog update request'))
           // An invalid request stays in place so the operator can correct it; only a validated task request is archived.
-          validateRequest(request, config)
           const archive = join(dirname(config.requestPath), 'watchdog-update-request.last.json')
           if (requestPath === config.requestPath) {
             const temporary = `${config.requestPath}.${process.pid}.tmp`
             writeFileSync(temporary, `${JSON.stringify(request, null, 2)}\n`)
             renameSync(temporary, archive)
           }
-          update(config, request).then(result => { process.exitCode = result.ok ? 0 : 1 })
+          updateLatest(config, request).then(result => { process.exitCode = result.ok ? 0 : 1 })
             .catch(error => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1 })
         }
       }

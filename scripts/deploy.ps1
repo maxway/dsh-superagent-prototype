@@ -1,8 +1,7 @@
 # Independent deployment task entry point.
 #
 # A scheduled task runs this file outside the production service and outside every DSH tool command. It is a thin
-# Windows/PowerShell shim: the deployment logic lives in `scripts/deploy.mjs`, so a routine release can run the same
-# mechanical path without a model call and the plan/apply logic is covered by the repository test suite.
+# Windows/PowerShell shim: `scripts/deploy.mjs` invokes the independent mechanical restart without a model call.
 #
 # The deployment-specific paths stay in a JSON configuration outside the repository; pass it with -Config or
 # DSH_SUPERAGENT_DEPLOY_CONFIG. See docs/006-deployment.md for the fields and the scheduled task.
@@ -34,14 +33,11 @@ if (-not $node) { $node = 'node' }
 $executor = Join-Path $checkout 'scripts\deploy.mjs'
 if (-not (Test-Path -LiteralPath $executor)) { throw "The deployment executor does not exist: $executor" }
 
-# The mechanical path needs no model credentials. Set them when present so the explicit agent fallback still works.
 # The service keeps its own home and settings because a release uses the instance's service.ps1.
 $dshHome = [string](Field 'home')
 if (-not $dshHome) { $dshHome = $env:DSH_HOME }
 if ($dshHome) { $env:DSH_HOME = $dshHome }
 if (Field 'agentsHome') { $env:DSH_AGENTS_HOME = [string](Field 'agentsHome') }
-$userKey = [Environment]::GetEnvironmentVariable('LUMOS_API_KEY', 'User')
-if ($userKey) { $env:LUMOS_API_KEY = $userKey }
 if (Field 'deployRequest') { $env:DSH_SUPERAGENT_DEPLOY_REQUEST = [string](Field 'deployRequest') }
 if (Field 'deployCommand') { $env:DSH_SUPERAGENT_DEPLOY_COMMAND = [string](Field 'deployCommand') }
 $nodeDirectory = [System.IO.Path]::GetDirectoryName($node)

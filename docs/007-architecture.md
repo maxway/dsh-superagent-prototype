@@ -358,16 +358,20 @@ Some generic modules still need provider-specific behavior:
 | `src/app/watchdog.ts` | The read-only Watchdog observation: records a run from the live snapshot and keeps the rendered observation as the last-run heartbeat |
 | `src/app/watchdog-recovery.ts` | The bounded enforce-mode recovery: rechecks an absent worker Session, snapshot freshness, pause and the per-Session retry ceiling, then retries once and writes an audit row; never restarts the service |
 | `scripts/dsh-superagent` | The cross-platform service control script: start, stop, restart, status, verify and Watchdog commands; the listening owner of `--url` is authoritative, on Windows a stop without `--url` discovers the running superagent from its management state, logs and control files live under `<DSH home>/service/`, and it starts outside a Windows Job when needed |
-| `scripts/dsh-superagent.ps1` | The versioned Windows operator entry: one action word (start/stop/restart/status) plus optional `-Config`/`-RespectStop`; a machine JSON outside the checkout pins checkout/home/profile/loopback URL, and no target or timing parameter is exposed on the command line |
-| `scripts/watchdog` | The standing independent Watchdog process: its own configuration, state, log and pid; it holds one versioned wait request, reads the panel snapshot when the wait returns, records a run every cycle, sends the configured quiet daily report, and can write an independent local unreachable/recovered alert when the service is down; with `agentConfig`, new mechanical risk goes straight to the full agent from the same artifact instead of a timed gate |
+| `scripts/dsh-superagent.ps1` | The Windows operator entry: normal start and restart update and build latest; `-UseInstalled` is reserved for the internal start and dedicated crash recovery |
+| `scripts/restart-superagent.ps1` | Mechanical latest-code deployment: stop the configured server, pull, install, build and start; never controls Watchdog or calls a model |
+| `scripts/recover-superagent.ps1` | Dedicated server-crash recovery: start the installed version while respecting an intentional stop |
+| `scripts/watchdog` | Standing independent observer: follows the snapshot, records runs and local alerts, and optionally checks for service crashes and consumes deployment requests without a model; `agentConfig` handles separate task-risk judgment |
+| `scripts/watchdog-deployment.mjs` | Asynchronously consumes configured Superagent deployment requests and deduplicates attempts without blocking the observer heartbeat |
 | `scripts/watchdog-agent/` | The agent wrapper, mechanical gate, prompt and configuration/model templates, versioned with the observer: a quiet gate records a run and exits; a risky cycle starts the full DSH agent from the same artifact in its own workspace, never the checkout; the standing observer invokes it on new risk |
 | `scripts/watchdog-artifact.mjs` | Builds an immutable Watchdog artifact and its manifest (file hashes, one digest, `apiVersion`, `minServiceVersion`), and verifies an artifact before installation |
 | `scripts/watchdog-smoke.mjs` | Exercises an uninstalled artifact against a local mock management API: the observer and the agent gate must record runs carrying the manifest version, without the production service or Feishu |
-| `scripts/watchdog-launch-observer.ps1` | The standing observer's stable launcher: it reads `current.txt` and runs that version's `watchdog --config`, restarting it after a non-zero exit, so switching versions does not rewrite the task action |
+| `scripts/watchdog-bootstrap.mjs` | Prepares the latest Watchdog artifact for observer startup and coordinates with the updater without calling a model |
+| `scripts/watchdog-launch-observer.ps1` | The standing observer's stable launcher: prepares the latest artifact on startup and after a non-zero observer exit, without rewriting the task action |
 | `scripts/watchdog-launch-observer.vbs` | The hidden entry point of that standing task: `wscript.exe` runs `launch-observer.ps1` in a hidden window and waits for its lifetime, so the standing process never flashes a PowerShell window |
 | `scripts/launch-hidden.vbs` | The windowless entry point for the other non-interactive Windows tasks (deployment, Watchdog update, service start): it starts the given command hidden, waits for it and returns its exit code, so a scheduled `node` or `pwsh` and its console children never appear on the desktop |
-| `scripts/watchdog-control.mjs` | The operator lifecycle: `status`, `start`, `stop` and `deploy --build` read the pointers and scheduled task, use the manifest, smoke test, pointer switch, task restart and heartbeat proof, and never call a model or ask for version, digest and task parameters by hand |
-| `scripts/watchdog-update.mjs` | The independent Watchdog update: request and staging-root validation, lock, smoke, install, atomic pointer switch, observer stop/start, heartbeat, idempotency and rollback; it never restarts superagent |
+| `scripts/watchdog-control.mjs` | The operator lifecycle: normal `start` and `deploy` build the latest remote artifact, switch the pointer and start the observer without a model |
+| `scripts/watchdog-update.mjs` | The independent Watchdog update: latest remote build, installation, pointer switch, observer start and heartbeat; no old-version automatic restart or fixed survival wait |
 | `src/app/views/threads.ts` | The Thread lists, a Thread's timeline, the search and the Decision list |
 | `src/app/views/sources.ts` | The Source status: each Source instance's state, its last day's counts, and what it filtered and dropped in that day |
 | `src/app/views/settings.ts` | The settings page's view: each block with its revision, each Source's settings with its kind's form, and the execution environment |
@@ -442,7 +446,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/gitlab-webhook.spec.ts` | The GitLab webhook: listener verification, wake coalescing, and creation, update and removal of the project hook |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/deploy-command.spec.ts` | The main Session's deploy request: the configuration from the environment, the atomic request file, starting the independent task and a failing command |
-| `tests/deploy-executor.spec.ts` | The mechanical deployment executor: a read-only plan, stopped-state backup, manifest switch, start and survival check, rollback on failed verification, the headless agent fallback and the operator service wrapper, and refusals for a busy service, an escaping manifest, a wrong candidate revision and a changed lockfile |
+| `tests/deploy-executor.spec.ts` | The mechanical deployment entry: latest-only request, service configuration mapping, mock restart, request archival and failure reporting without model fallback |
 | `tests/commands-window.spec.ts` | The hidden window of a background CLI command |
 | `tests/github-read.spec.ts` | GitHub reads |
 | `tests/admission-context.spec.ts` | The Thread window of assessments |
@@ -478,7 +482,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/watchdog-launch.spec.ts` | The windowless observer launcher: the VBS and its PowerShell launcher start the current version with the task's arguments and keep the exit code |
 | `tests/watchdog-diagnostics.spec.ts` | Windows event diagnostics: task filtering, disabled-channel status and access failures |
 | `tests/watchdog-control.spec.ts` | The mechanical lifecycle: option parsing and scheduler commands, artifact preparation, launcher installation, and a deploy request handed to the updater without a model |
-| `tests/watchdog-update.spec.ts` | The independent Watchdog update: artifact validation, smoke, install and pointer switch, recorded-run heartbeat, idempotency, rollback and staging-root refusal |
+| `tests/watchdog-update.spec.ts` | The independent Watchdog update: latest artifact installation, pointer switch, local heartbeat, idempotency and failure without automatic rollback |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |

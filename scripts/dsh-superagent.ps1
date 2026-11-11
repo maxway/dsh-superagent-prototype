@@ -12,10 +12,13 @@ param(
   [ValidateSet('start', 'stop', 'restart', 'status', 'verify')]
   [string]$Action = 'status',
   [string]$Config = '',
-  [switch]$RespectStop
+  [switch]$RespectStop,
+  [switch]$UseInstalled
 )
 
 $ErrorActionPreference = 'Stop'
+$alreadyLocked = $env:DSH_SUPERAGENT_LIFECYCLE_LOCKED -eq '1'
+Remove-Item Env:DSH_SUPERAGENT_LIFECYCLE_LOCKED -ErrorAction SilentlyContinue
 
 function Fail([string]$message) { throw $message }
 
@@ -65,12 +68,6 @@ $DshHome = [System.IO.Path]::GetFullPath($DshHome)
 if (-not (Test-Path -LiteralPath $Checkout -PathType Container)) { Fail "The checkout does not exist: $Checkout" }
 $control = Join-Path $Checkout 'scripts\dsh-superagent'
 if (-not (Test-Path -LiteralPath $control -PathType Leaf)) { Fail "The control script does not exist: $control" }
-$profileDirectory = Join-Path $DshHome (Join-Path 'profiles' $DshProfile)
-# A stop may discover the running server from another home/profile, so only a start needs this profile locally.
-if ($Action -in @('start', 'restart') -and -not (Test-Path -LiteralPath $profileDirectory -PathType Container)) {
-  Fail "The DSH profile '$DshProfile' does not exist in $DshHome."
-}
-
 $target = $null
 if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$target) -or $target.Scheme -notin @('http', 'https')) {
   Fail "The URL must be an absolute http(s) URL: $Url"
@@ -92,20 +89,66 @@ if ($prepend.Count) { $env:PATH = (($prepend | ForEach-Object { [string]$_ }) -j
 
 if ($Action -in @('start', 'restart')) {
   if (-not $env:LUMOS_API_KEY) { $env:LUMOS_API_KEY = [Environment]::GetEnvironmentVariable('LUMOS_API_KEY', 'User') }
-  if (-not $env:LUMOS_API_KEY) { Fail 'The user-level LUMOS_API_KEY is missing; a start cannot authenticate the model provider.' }
 }
 $deployRequest = [string](Value 'deployRequest' '')
 $deployCommand = [string](Value 'deployCommand' '')
 if ($deployRequest) { $env:DSH_SUPERAGENT_DEPLOY_REQUEST = $deployRequest }
 if ($deployCommand) { $env:DSH_SUPERAGENT_DEPLOY_COMMAND = $deployCommand }
 
+if ($RespectStop -and $Action -in @('start', 'restart')) {
+  $markers = @(
+    (Join-Path $DshHome (Join-Path 'service\control\profiles' (Join-Path $DshProfile 'manually-stopped'))),
+    (Join-Path $Checkout (Join-Path '.artifacts\control\profiles' (Join-Path $DshProfile 'manually-stopped')))
+  )
+  if (@($markers | Where-Object { Test-Path -LiteralPath $_ }).Count) {
+    Write-Output 'Intentional stop is active; automatic recovery skipped.'
+    exit 0
+  }
+}
+
+$mutex = $null
+$locked = $false
+$marker = $null
+try {
+if (-not $alreadyLocked -and $Action -in @('stop', 'start', 'restart')) {
+  . (Join-Path $PSScriptRoot 'superagent-lifecycle-lock.ps1')
+  $mutex = Get-SuperagentLifecycleMutex $DshHome $DshProfile
+  try { $locked = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $locked = $true }
+  if (-not $locked) { Fail 'Another deployment or recovery is already in progress.' }
+}
+$env:DSH_SUPERAGENT_LIFECYCLE_LOCKED = '1'
+if ($Action -in @('start', 'restart') -and -not $UseInstalled) {
+  $marker = Join-Path $DshHome "service\control\profiles\$DshProfile\deployment.maintenance"
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $marker) | Out-Null
+  Set-Content -LiteralPath $marker -Value "Deployment started $(Get-Date -Format o); retry deployment after failure."
+  if ($Action -eq 'restart') {
+    & $node $control 'stop' '--profile' $DshProfile '--home' $DshHome '--url' $Url '--stop-timeout' ([string]$StopTimeout)
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  }
+  $statusOutput = & $node $control 'status' '--profile' $DshProfile '--home' $DshHome '--url' $Url
+  try { $status = $statusOutput | ConvertFrom-Json } catch { Fail 'Cannot establish whether the service is stopped; refusing to update the checkout.' }
+  if ($null -eq $status -or $status.identity -ne 'listener' -or @($status.pids).Count -or @($status.foreign).Count -or @($status.unlistening).Count) {
+    Fail 'The service may be running or its listener cannot be identified; refusing to update the checkout.'
+  }
+  $shell = (Get-Process -Id $PID).Path
+  & $shell -NoProfile -NonInteractive -File (Join-Path $Checkout 'scripts\update-superagent.ps1') -Checkout $Checkout
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  $Action = 'start'
+}
+
 $arguments = @($control, $Action, '--profile', $DshProfile, '--home', $DshHome)
 # A stop without a named URL discovers the running server; keep a configured/explicit URL exact.
 if ($urlConfigured -or $Action -ne 'stop') { $arguments += @('--url', $Url) }
-if ($Action -in @('start', 'restart')) { $arguments += @('--timeout', [string]$Timeout) }
+if ($Action -in @('start', 'restart')) { $arguments += @('--timeout', [string]$Timeout, '--use-installed') }
 if ($Action -in @('stop', 'restart')) { $arguments += @('--stop-timeout', [string]$StopTimeout) }
 if ($Action -eq 'verify') { $arguments += @('--survival-seconds', [string]$SurvivalSeconds) }
 if ($RespectStop) { $arguments = @('--respect-stop') + $arguments }
 
 & $node @arguments
-exit $LASTEXITCODE
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($marker) { Remove-Item -LiteralPath $marker -Force }
+exit 0
+} finally {
+  if ($locked) { $mutex.ReleaseMutex() }
+  if ($mutex) { $mutex.Dispose() }
+}

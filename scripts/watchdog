@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createDeploymentPoller } from './watchdog-deployment.mjs'
 
 const VERSION = 1
 const MAX_LOG_BYTES = 5 * 1024 * 1024
@@ -66,7 +67,7 @@ export function loadConfig(path) {
   const value = readJson(path, 'watchdog configuration')
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ConfigError('The watchdog configuration must be a JSON object')
   const unknown = Object.keys(value).filter(key => !['url', 'chatId', 'intervalSeconds', 'staleMinutes', 'report', 'dailyReport', 'stateDir', 'logFile',
-    'alertFile', 'alertAfterFailures', 'agentConfig', 'agentRunner', 'agentTimeoutSeconds', 'powershell'].includes(key))
+    'alertFile', 'alertAfterFailures', 'agentConfig', 'agentRunner', 'agentTimeoutSeconds', 'powershell', 'crashRecovery', 'deployConfig'].includes(key))
   if (unknown.length) throw new ConfigError(`Unknown watchdog configuration field: ${unknown.join(', ')}`)
   let url
   try { url = new URL(String(value.url)) } catch { throw new ConfigError('url must be an absolute http or https address') }
@@ -91,6 +92,13 @@ export function loadConfig(path) {
   const base = dirname(resolve(path))
   const stateDir = resolve(base, String(value.stateDir ?? '.watchdog'))
   const logFile = resolve(base, String(value.logFile ?? join(stateDir, 'watchdog.log')))
+  const deployConfig = typeof value.deployConfig === 'string' && value.deployConfig.trim() ? resolve(base, value.deployConfig) : undefined
+  if (value.deployConfig !== undefined && (!deployConfig || !existsSync(deployConfig))) throw new ConfigError('deployConfig must name an existing file')
+  let checkout = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+  try {
+    const source = readFileSync(join(base, 'source-checkout.txt'), 'utf8').trim()
+    if (source) checkout = resolve(base, source)
+  } catch {}
   const alertFile = typeof value.alertFile === 'string' && value.alertFile.trim() ? resolve(base, value.alertFile) : undefined
   const alertAfterFailures = value.alertAfterFailures ?? 2
   if (!Number.isInteger(alertAfterFailures) || alertAfterFailures < 1 || alertAfterFailures > 100) {
@@ -114,9 +122,30 @@ export function loadConfig(path) {
   if (agentConfig && !existsSync(agentConfig)) throw new ConfigError(`The Watchdog agent configuration does not exist: ${agentConfig}`)
   const powershell = typeof value.powershell === 'string' && value.powershell.trim()
     ? value.powershell : process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
+  let crashRecovery
+  if (value.crashRecovery !== undefined) {
+    const recovery = value.crashRecovery
+    if (!recovery || typeof recovery !== 'object' || Array.isArray(recovery) ||
+        Object.keys(recovery).some(key => !['serviceConfig', 'recoveryScript', 'retrySeconds'].includes(key)) ||
+        typeof recovery.serviceConfig !== 'string' || !recovery.serviceConfig.trim() ||
+        typeof recovery.recoveryScript !== 'string' || !recovery.recoveryScript.trim()) {
+      throw new ConfigError('crashRecovery requires serviceConfig and recoveryScript paths')
+    }
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new ConfigError('crashRecovery requires a local URL')
+    const retrySeconds = recovery.retrySeconds ?? 30
+    if (!Number.isInteger(retrySeconds) || retrySeconds < 1 || retrySeconds > 300) {
+      throw new ConfigError('crashRecovery.retrySeconds must be an integer between 1 and 300')
+    }
+    crashRecovery = { serviceConfig: resolve(base, recovery.serviceConfig), recoveryScript: resolve(base, recovery.recoveryScript), retrySeconds }
+    if (!existsSync(crashRecovery.serviceConfig) || !existsSync(crashRecovery.recoveryScript)) {
+      throw new ConfigError('crashRecovery serviceConfig and recoveryScript must exist')
+    }
+  }
   return { url: url.toString().replace(/\/+$/, ''), ...(chatId ? { chatId } : {}), intervalSeconds, staleMinutes, report,
     ...(dailyReport ? { dailyReport } : {}), ...(alertFile ? { alertFile } : {}), alertAfterFailures, stateDir, logFile,
-    ...(agentConfig ? { agentConfig, agentRunner, agentTimeoutSeconds, powershell } : {}) }
+    ...(agentConfig ? { agentConfig, agentRunner, agentTimeoutSeconds } : {}),
+    ...(crashRecovery ? { crashRecovery } : {}), ...(deployConfig ? { deployConfig, checkout } : {}),
+    ...((agentConfig || crashRecovery) ? { powershell } : {}) }
 }
 
 /**
@@ -304,11 +333,31 @@ async function sendReport(config, note) {
   answerJson(response, 'Watchdog Feishu report')
 }
 
-/**
- * Run the full DSH agent wrapper from the same artifact when the observer sees new mechanical risk. The wrapper's gate
- * rechecks the snapshot and only starts the model on risk, so a change between the observer's check and the agent run
- * cannot spend a model call. Resolves with the exit code; a timeout or spawn error is a failed run, not a restart loop.
- */
+function runCrashRecovery(config) {
+  return new Promise(resolveRecovery => {
+    let detail = ''
+    let settled = false
+    const finish = code => {
+      if (settled) return
+      settled = true
+      resolveRecovery({ code, detail })
+    }
+    let child
+    try {
+      child = spawn(config.powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', config.crashRecovery.recoveryScript,
+        '-Config', config.crashRecovery.serviceConfig, '-ExpectedUrl', config.url], { windowsHide: true })
+    } catch (error) {
+      detail = String(error)
+      finish(-1)
+      return
+    }
+    child.stdout.on('data', data => { detail = (detail + data).slice(0, 4000) })
+    child.stderr.on('data', data => { detail = (detail + data).slice(0, 4000) })
+    child.on('error', error => { detail = error.message; finish(-1) })
+    child.on('close', code => finish(code ?? -1))
+  })
+}
+
 function runAgent(config) {
   return new Promise(resolveAgent => {
     let settled = false
@@ -448,7 +497,7 @@ function acquireLock(stateDir) {
  * quiet daily report when it is due, and persist the state. A failed service read is logged and persisted; the caller
  * decides whether to keep looping.
  */
-export async function cycle(config, state, now = new Date()) {
+export async function cycle(config, state, now = new Date(), allowRecovery = false) {
   const at = now.toISOString()
   let snapshot
   try {
@@ -461,6 +510,13 @@ export async function cycle(config, state, now = new Date()) {
     alertUnreachable(config, state, message, at)
     writeState(config.stateDir, state)
     log(config, 'error', message)
+    if (allowRecovery && config.crashRecovery) {
+      const result = await runCrashRecovery(config)
+      state.recoveryAt = at
+      state.recoveryExit = result.code
+      writeState(config.stateDir, state)
+      log(config, result.code === 0 ? 'info' : 'error', `Crash recovery check exit=${result.code}: ${oneLine(result.detail, 500)}`)
+    }
     return { ok: false, findings: [], snapshot: undefined }
   }
   const findings = collectFindings(snapshot)
@@ -653,15 +709,25 @@ export async function main(argv = process.argv.slice(2)) {
   const stopping = signal => { stop.abort(); process.stderr.write(`Stopping on ${signal}.\n`) }
   process.once('SIGINT', () => stopping('SIGINT'))
   process.once('SIGTERM', () => stopping('SIGTERM'))
+  const deploymentPoller = !args.once && config.deployConfig ? createDeploymentPoller({ deployConfig: config.deployConfig,
+    checkout: config.checkout, onEvent: event => log(config, event.status === 'failed' || event.status === 'error' ? 'error' : 'info',
+      `Deployment ${event.status}${Number.isInteger(event.code) ? ` exit=${event.code}` : ''}`) }) : undefined
   try {
+    deploymentPoller?.start()
     let since
     let nextCycleAt = 0
     do {
       if (Date.now() >= nextCycleAt) {
-        const result = await cycle(config, state)
+        const result = await cycle(config, state, new Date(), !args.once)
         if (result.ok && result.snapshot) await maybeRunAgent(config, state, result.snapshot)
         if (args.once) return result.ok ? 0 : 1
-        if (!result.ok) log(config, 'warn', `The service was unreachable; retrying in ${config.intervalSeconds}s.`)
+        if (!result.ok) {
+          const retrySeconds = config.crashRecovery?.retrySeconds ?? config.intervalSeconds
+          log(config, 'warn', `The service was unreachable; retrying in ${retrySeconds}s.`)
+          await sleep(retrySeconds * 1000, stop.signal)
+          nextCycleAt = 0
+          continue
+        }
         nextCycleAt = Date.now() + config.intervalSeconds * 1000
       }
       let waited
@@ -669,8 +735,9 @@ export async function main(argv = process.argv.slice(2)) {
         waited = await waitForChange(config, since, Math.min(config.intervalSeconds, WAIT_MAX_SECONDS), stop.signal)
       } catch (error) {
         if (stop.signal.aborted) break
-        log(config, 'warn', `Could not wait for a change: ${error instanceof Error ? error.message : String(error)}; retrying in ${config.intervalSeconds}s.`)
-        await sleep(config.intervalSeconds * 1000, stop.signal)
+        const retrySeconds = config.crashRecovery?.retrySeconds ?? config.intervalSeconds
+        log(config, 'warn', `Could not wait for a change: ${error instanceof Error ? error.message : String(error)}; retrying in ${retrySeconds}s.`)
+        await sleep(retrySeconds * 1000, stop.signal)
         nextCycleAt = 0
         continue
       }
@@ -680,6 +747,7 @@ export async function main(argv = process.argv.slice(2)) {
     } while (!stop.signal.aborted)
     return 0
   } finally {
+    deploymentPoller?.stop()
     clearInterval(heartbeatTimer)
     release()
   }

@@ -45,6 +45,8 @@ the service after the DSH child has exited and then perform the health check.
 
 ## Mechanical executor, 2026-11-10
 
+**Historical design:** The following describes the retired 2026-11-10 executor, not the current deployment path; the agent fallback, candidate manifest and backup/switch flow have since been removed. See [deployment](../../006-deployment.md#deploying-the-latest-superagent) for the current entry.
+
 The routine deployment no longer starts a DSH agent. `scripts/deploy.mjs` (run
 through `scripts/deploy.ps1`) performs a read-only preflight, stops the service,
 copies the stopped SQLite state, switches an explicit runtime manifest, starts

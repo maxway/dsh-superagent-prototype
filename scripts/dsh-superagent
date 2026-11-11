@@ -16,6 +16,7 @@ import { accessSync, closeSync, constants, existsSync, mkdirSync, openSync, read
 import { createHash, randomUUID } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
+import { createServer as createTcpServer } from 'node:net'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -417,6 +418,7 @@ export function windowsProcesses(run = spawnSync) {
   const command = 'Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress'
   const result = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', windowsHide: true })
   if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(`Windows process scan failed: ${(result.stderr ?? '').trim()}`)
   return parseWindowsProcesses(result.stdout ?? '')
 }
 
@@ -432,8 +434,12 @@ function serviceProcess(item, profile) {
  * Whether a PID still exists, without a shell: used only while waiting for an already verified service to exit. The
  * identity was checked before the stop request, so this avoids spawning PowerShell every half second.
  */
-function alive(pid) {
-  try { process.kill(pid, 0); return true } catch { return false }
+export function alive(pid, probe = process.kill) {
+  try { probe(pid, 0); return true } catch (error) {
+    if (error?.code === 'ESRCH') return false
+    if (error?.code === 'EPERM' || error?.code === 'EACCES') return true
+    throw error
+  }
 }
 
 /** The PID this home last recorded for `profile`, whether or not it still runs. */
@@ -448,11 +454,21 @@ function recordedServicePid(profile, home) {
 }
 
 /** The PowerShell that lists the PIDs owning the listening TCP socket for one port. A missing socket is an empty list. */
-const LISTENER_PROBE = `$ErrorActionPreference = 'Stop'
-$pids = @()
-try { $pids = @(Get-NetTCPConnection -LocalPort __PORT__ -State Listen | Select-Object -ExpandProperty OwningProcess -Unique) }
-catch { if ($_.CategoryInfo.Category -ne 'ObjectNotFound') { throw } }
-ConvertTo-Json -Compress -InputObject @($pids)`
+export function parseWindowsListeners(text) {
+  return String(text ?? '').split(/\r?\n/).flatMap(line => {
+    const match = /^\s*TCP\s+(\S+):(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/i.exec(line)
+    if (!match) return []
+    const port = Number(match[2]), pid = Number(match[3])
+    return port > 0 && port <= 65_535 && pid > 0 ? [{ address: match[1], port, pid }] : []
+  })
+}
+
+function windowsListeners(run = spawnSync) {
+  const result = run('netstat.exe', ['-ano', '-p', 'tcp'], { encoding: 'utf8', windowsHide: true })
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(`Windows listener scan failed: ${(result.stderr ?? '').trim()}`)
+  return parseWindowsListeners(result.stdout)
+}
 
 /** Parse listener output, either a JSON array from PowerShell or whitespace-separated lsof PIDs. Null when unreadable. */
 export function parseListenerPids(value) {
@@ -474,13 +490,13 @@ export function parseListenerPids(value) {
  * Null when the platform cannot answer, so the caller can fall back to the older command-line scan rather than call a
  * running service stopped.
  */
-export function listenerPids(url, run = (script) => runPowerShell(script), platform = PLATFORM) {
+export function listenerPids(url, run = spawnSync, platform = PLATFORM) {
   let target
   try { target = new URL(url) } catch { return null }
   const port = Number(target.port || (target.protocol === 'https:' ? 443 : 80))
   if (!Number.isInteger(port) || port <= 0) return null
   if (platform === 'win32') {
-    try { return parseListenerPids(run(LISTENER_PROBE.replace('__PORT__', String(port)))) } catch { return null }
+    try { return [...new Set(windowsListeners(run).filter(item => item.port === port).map(item => item.pid))] } catch { return null }
   }
   const lsof = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' })
   if (lsof.error) return null
@@ -521,13 +537,6 @@ export function isSuperagentState(current) {
     && (health.assessment !== undefined || health.delivery !== undefined || health.reply !== undefined))
 }
 
-/** The PowerShell that lists the ports a PID listens on. */
-const PORTS_FOR_PID = `$ErrorActionPreference = 'Stop'
-$ports = @()
-try { $ports = @(Get-NetTCPConnection -State Listen -OwningProcess __PID__ | Select-Object -ExpandProperty LocalPort -Unique) }
-catch { if ($_.CategoryInfo.Category -ne 'ObjectNotFound') { throw } }
-ConvertTo-Json -Compress -InputObject @($ports)`
-
 /** Parse a JSON array or whitespace-separated list of TCP ports; invalid entries are dropped. */
 export function parsePorts(value) {
   const numbers = values => [...new Set(values.map(Number).filter(port => Number.isInteger(port) && port > 0 && port <= 65_535))]
@@ -547,9 +556,9 @@ export function parsePorts(value) {
 }
 
 /** The ports a DSH process listens on; empty when the platform cannot answer. */
-export function portsForPid(pid, run = script => runPowerShell(script), platform = PLATFORM) {
+export function portsForPid(pid, run = spawnSync, platform = PLATFORM) {
   if (platform === 'win32') {
-    try { return parsePorts(run(PORTS_FOR_PID.replace('__PID__', String(pid)))) } catch { return [] }
+    return [...new Set(windowsListeners(run).filter(item => item.pid === pid).map(item => item.port))]
   }
   const lsof = spawnSync('lsof', ['-nP', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-Fn'], { encoding: 'utf8' })
   if (lsof.error || lsof.status !== 0) return []
@@ -561,7 +570,12 @@ export function portsForPid(pid, run = script => runPowerShell(script), platform
  * asked for the management state, and only a state carrying the superagent parts is accepted. `records`, `portsOf` and
  * `probe` are injectable so selection is testable without a live host.
  */
-export async function discoverServers(records, portsOf = portsForPid, probe = url => state(url, 1_000)) {
+export async function discoverServers(records, portsOf, probe = url => state(url, 1_000)) {
+  if (!portsOf && WINDOWS) {
+    const listeners = windowsListeners()
+    portsOf = pid => [...new Set(listeners.filter(item => item.pid === pid).map(item => item.port))]
+  }
+  portsOf ??= portsForPid
   const servers = []
   for (const item of records) {
     if (item.pid === process.pid || !isDshHost(item.name)) continue
@@ -577,6 +591,25 @@ export async function discoverServers(records, portsOf = portsForPid, probe = ur
     }
   }
   return servers
+}
+
+export async function discoverLoopbackServers(listeners, probe = url => state(url, 1_000)) {
+  const targets = new Map()
+  for (const { address, port, pid } of listeners) {
+    const host = address === '0.0.0.0' ? '127.0.0.1' : address === '[::]' ? '[::1]' : address
+    if (!/^127\.\d+\.\d+\.\d+$/.test(host) && host !== '[::1]') continue
+    const url = `http://${host}:${port}`
+    targets.set(`${pid}:${url}`, { pid, port, url })
+  }
+  const entries = [...targets.values()]
+  const found = new Map()
+  for (let offset = 0; offset < entries.length; offset += 32) {
+    await Promise.all(entries.slice(offset, offset + 32).map(async server => {
+      const current = await probe(server.url)
+      if (isSuperagentState(current) && !found.has(server.pid)) found.set(server.pid, { ...server, health: current.health })
+    }))
+  }
+  return [...found.values()]
 }
 
 /** Pick one discovered server; one candidate, an explicit URL, or the profile name resolves it. */
@@ -689,7 +722,7 @@ export function outcome(pids, current) {
 }
 
 /** Read the service's process, health and ownership facts without printing them. */
-async function statusValue(args, stateTimeout = 2_000, stateAttempts = 1) {
+async function statusValue(args, stateTimeout = 2_000, stateAttempts = 1, inspectJob = true) {
   const found = target(args)
   const pids = found.pids
   let current = pids.length ? await state(args.url, stateTimeout) : null
@@ -698,7 +731,7 @@ async function statusValue(args, stateTimeout = 2_000, stateAttempts = 1) {
     await sleep(500)
     current = await state(args.url, stateTimeout)
   }
-  const job = WINDOWS && pids.length === 1 ? processJobFacts(pids[0]) : null
+  const job = inspectJob && WINDOWS && pids.length === 1 ? processJobFacts(pids[0]) : null
   const inJob = job ? job.inJob : null
   const foreignJob = job ? job.foreignJob : null
   const facts = startFacts(args.profile, args.home)
@@ -1001,6 +1034,14 @@ function findServerControl(server, preferredHome) {
   return undefined
 }
 
+export function selectRecordedServer(candidates, profile, home, find = findServerControl) {
+  const matches = candidates.map(candidate => ({ ...candidate, profile }))
+    .filter(candidate => find(candidate, home))
+  if (matches.length > 1) throw new Error('Multiple dsh-superagent servers match the profile control records; pass --url to choose one.')
+  if (!matches.length) throw new Error(`No discovered server matches the control record for profile ${profile}; pass --url to choose one.`)
+  return matches[0]
+}
+
 /** Write the intentional-stop marker beside the server's own control files, with a best-effort fallback. */
 function markServerStopped(server, preferredHome) {
   const found = findServerControl(server, preferredHome)
@@ -1029,6 +1070,11 @@ function removeServerPid(server, preferredHome) {
 
 /** Gracefully stop one discovered or explicit server and wait for exactly that process to exit. */
 async function stopServer(args, server, intentional) {
+  if (WINDOWS) {
+    if (!isSuperagentState(await state(server.url))) throw new Error(`The management API at ${server.url} is not a dsh-superagent server; refusing to stop.`)
+    const owners = listenerPids(server.url)
+    if (!owners || owners.length !== 1 || owners[0] !== server.pid) throw new Error('The management URL listener changed or is ambiguous; refusing to stop.')
+  }
   const marker = intentional ? markServerStopped(server, args.home) : undefined
   if (marker?.fallback) {
     process.stderr.write(`Warning: no control directory matched PID ${server.pid}; the stop marker was written to ${marker.directory}, `
@@ -1058,11 +1104,31 @@ async function stopServer(args, server, intentional) {
     : `dsh-superagent stopped (PID ${server.pid}, ${server.url}, profile ${server.profile}).\n`)
 }
 
+export function windowsStopTarget(url, profile, lookup = listenerPids) {
+  let target
+  try { target = new URL(url) } catch { throw new Error('The management URL is invalid; refusing to stop.') }
+  if (!['http:', 'https:'].includes(target.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)) {
+    throw new Error('The management URL must be loopback; refusing to stop.')
+  }
+  const owners = lookup(url)
+  if (!owners) throw new Error('Cannot identify the management URL listener; refusing to stop.')
+  if (owners.length > 1) throw new Error('Multiple processes own the management URL; refusing to stop.')
+  return owners.length ? { pid: owners[0], profile, port: urlPort(url), url } : undefined
+}
+
 async function stop(args, intentional = true) {
   let server
   // Windows has a management API and WMI; discover there. An explicit URL is always exact, and POSIX keeps the older
   // scan-based stop so its profile-scoped tmux lifecycle is unchanged.
-  if (args.url_explicit || !WINDOWS) {
+  if (WINDOWS && args.url_explicit) {
+    server = windowsStopTarget(args.url, args.profile)
+    if (!server) {
+      if (intentional) writeFileSync(join(control(args.profile, args.home), 'manually-stopped'), localStamp() + '\n')
+      process.stdout.write(`No dsh-superagent server is listening at ${args.url}; nothing to stop. `
+        + 'Automatic recovery is paused until start/restart.\n')
+      return
+    }
+  } else if (!WINDOWS) {
     const found = target(args)
     if (found.foreign.length) {
       const owners = found.foreign.map(entry => entry.pid).join(', ')
@@ -1081,19 +1147,9 @@ async function stop(args, intentional = true) {
       return
     }
   } else {
-    // No URL was named: find the server instead of making a person discover its port and home.
-    const records = windowsProcesses()
-    const candidates = await discoverServers(records)
-    server = chooseServer(candidates, { profile: args.profile, url: args.url, urlExplicit: false, profileExplicit: args.profile_explicit })
-    if (!server) {
-      if (candidates.length) {
-        throw new Error(`Multiple dsh-superagent servers are running: ${serverList(candidates)}. Pass --url or --profile to choose one.`)
-      }
-      if (intentional) writeFileSync(join(control(args.profile, args.home), 'manually-stopped'), localStamp() + '\n')
-      process.stdout.write('No running dsh-superagent server was found; nothing to stop. '
-        + 'Automatic recovery is paused until start/restart.\n')
-      return
-    }
+    const candidates = await discoverLoopbackServers(windowsListeners())
+    if (!candidates.length) throw new Error('No responsive dsh-superagent server was found; its absence cannot be confirmed without an explicit URL.')
+    server = selectRecordedServer(candidates, args.profile, args.home)
   }
   await stopServer(args, server, intentional)
 }
@@ -1213,11 +1269,7 @@ async function start(args) {
     let outsideJob = false
     if (WINDOWS && !args.outside_job_child) {
       const membership = processInJob(process.pid)
-      if (membership === null) {
-        throw new Error('Cannot determine whether this process is inside a Windows Job; refusing to start a service that '
-          + 'a closing Job could kill. Run the service from an independent task or terminal.')
-      }
-      outsideJob = membership
+      outsideJob = membership !== false
     }
     const dsh = outsideJob ? 'dsh' : findExecutable('dsh')
     const tmux = WINDOWS || outsideJob ? 'tmux' : findExecutable('tmux')
@@ -1294,7 +1346,7 @@ async function start(args) {
   while (Date.now() < deadline) {
     const current = await state(args.url)
     if (runtimeUp(current)) {
-      const inspected = await statusValue(args)
+      const inspected = await statusValue(args, 2_000, 1, false)
       if (!inspected.pids.length) { await sleep(1000); continue }
       process.stdout.write(JSON.stringify(inspected.value, null, 2) + '\n')
       const code = outcome(inspected.pids, inspected.current)
@@ -1316,16 +1368,6 @@ async function start(args) {
           foreignJob: inspected.foreignJob, url: args.url, launchedBy: process.pid })
       }
       if (outsideJobEnvironment) rmSync(outsideJobEnvironment, { force: true })
-      if (WINDOWS && method !== 'existing') {
-        if (inspected.foreignJob !== false) {
-          process.stderr.write('The service is not provably outside every Windows Job it did not create; a Job it inherited '
-            + 'from the launch chain could still kill it.\n')
-          return 1
-        }
-      } else if (WINDOWS && inspected.foreignJob === true) {
-        process.stderr.write('Warning: this running service belongs to a Windows Job it did not create and can be killed '
-          + 'when that Job closes; restart it from an independent task during a maintenance window.\n')
-      }
       return code
     }
     await sleep(1000)
@@ -1345,7 +1387,7 @@ export function parseArgv(argv, env = process.env) {
     ticket: undefined, reason: undefined, snapshot_at: undefined, idempotency_key: undefined,
     profile: env.DSH_SUPERAGENT_PROFILE || 'superagent', url: env.DSH_SUPERAGENT_URL || 'http://127.0.0.1:3082',
     home: env.DSH_HOME || join(homedir(), '.dsh'), timeout: 60, stop_timeout: 300, stale_minutes: 30, limit: 20,
-    respect_stop: false, survival_seconds: 20, outside_job_child: false,
+    respect_stop: false, survival_seconds: 20, outside_job_child: false, use_installed: false,
     profile_explicit: false, home_explicit: false, url_explicit: false }
   const positionals = []
   const value = (index, name) => {
@@ -1388,6 +1430,7 @@ export function parseArgv(argv, env = process.env) {
     else if (word === '--limit') { args.limit = Number(value(index, '--limit')); index++ }
     else if (word.startsWith('--limit=')) args.limit = Number(word.slice('--limit='.length))
     else if (word === '--respect-stop') args.respect_stop = true
+    else if (word === '--use-installed') args.use_installed = true
     // Internal: a wrapper started outside every Windows Job spawns the service and returns immediately.
     else if (word === '--outside-job-child') args.outside_job_child = true
     else if (word === '-h' || word === '--help') args.help = true
@@ -1503,9 +1546,54 @@ Watchdog options:
   --idempotency-key <k>  Optional stable recovery key; the default names the Ticket and snapshot.
   --limit <n>            How many recent runs \`watchdog runs\` prints (default: 20, at most 100).`
 
+export async function tcpPortAvailable(url) {
+  let target
+  try { target = new URL(url) } catch { return false }
+  if (!['http:', 'https:'].includes(target.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)) return false
+  const port = urlPort(url)
+  if (!port) return false
+  const available = (host, ipv6Only = false) => new Promise(resolve => {
+    const server = createTcpServer()
+    server.once('error', error => resolve(ipv6Only && ['EAFNOSUPPORT', 'EADDRNOTAVAIL', 'EPROTONOSUPPORT'].includes(error.code)))
+    server.listen({ port, host, ipv6Only, exclusive: true }, () => server.close(() => resolve(true)))
+  })
+  return await available('0.0.0.0') && await available('::', true)
+}
+
+export async function ensureUpdateSafe(args, inspect = target, probe = tcpPortAvailable, platform = PLATFORM) {
+  const found = inspect(args)
+  if (found.scan.length || (found.listener && found.listener.length)
+    || (found.listener === null && (platform === 'win32' || !await probe(args.url)))) {
+    throw new Error('The service may be running or its listener cannot be identified; refusing to update the checkout.')
+  }
+}
+
+async function updateCheckout(args) {
+  await ensureUpdateSafe(args)
+  const commands = WINDOWS
+    ? [['powershell.exe', ['-NoProfile', '-NonInteractive', '-File', join(ROOT, 'scripts', 'update-superagent.ps1'), '-Checkout', ROOT]]]
+    : [['git', ['-C', ROOT, 'pull', '--ff-only', 'origin', 'main']],
+        ['pnpm', ['--dir', ROOT, 'install', '--frozen-lockfile']], ['pnpm', ['--dir', ROOT, 'build']]]
+  for (const [file, commandArgs] of commands) {
+    const result = spawnSync(file, commandArgs, { stdio: 'inherit', windowsHide: true })
+    if (result.error) throw result.error
+    if (result.status !== 0) throw new Error(`${file} failed with exit code ${result.status}; the service was not started.`)
+  }
+}
+
 async function main(argv = process.argv.slice(2)) {
   const args = parseArgv(argv)
+  const lifecycleLocked = process.env.DSH_SUPERAGENT_LIFECYCLE_LOCKED === '1'
+  delete process.env.DSH_SUPERAGENT_LIFECYCLE_LOCKED
   if (args.help) { process.stdout.write(USAGE + '\n'); return 0 }
+  if (WINDOWS && !lifecycleLocked && !args.outside_job_child && ['start', 'restart', 'stop'].includes(args.action)) {
+    const payload = Buffer.from(JSON.stringify({ home: args.home, profile: args.profile, node: process.execPath, script: SCRIPT,
+      arguments: argv, update: args.action !== 'stop' && !args.use_installed })).toString('base64')
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File',
+      join(ROOT, 'scripts', 'superagent-lifecycle-lock.ps1'), '-Payload', payload], { stdio: 'inherit', windowsHide: true })
+    if (result.error) throw result.error
+    return result.status ?? 1
+  }
   process.umask(0o077)
   // A Watchdog only reads the management API, so a control operation in progress must not block it.
   if (args.action === 'watchdog') {
@@ -1531,7 +1619,10 @@ async function main(argv = process.argv.slice(2)) {
       // Only a stop keeps automatic recovery off; a restart whose stop timed out leaves it on.
       await stop(args, args.action === 'stop')
     }
-    if (args.action === 'start' || args.action === 'restart') return await start(args)
+    if (args.action === 'start' || args.action === 'restart') {
+      if (!args.use_installed) await updateCheckout(args)
+      return await start(args)
+    }
     return 0
   } finally { release() }
 }

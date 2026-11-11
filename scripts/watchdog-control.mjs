@@ -2,20 +2,20 @@
 /**
  * Operator lifecycle for the standing Watchdog.
  *
- * `status`, `start`, `stop` and `deploy` are mechanical: they use the scheduled task, the immutable artifact manifest,
- * the local smoke test and the recorded heartbeat. No model, agent prompt or operator chat participates, and every
+ * `status`, `start`, `stop` and `deploy` are mechanical: they use the scheduled task, the artifact manifest
+ * and the recorded heartbeat. No model, agent prompt or operator chat participates, and every
  * environment path has one default so a deploy needs only `deploy --build`.
  *
  * The scheduled task runs `launch-observer.vbs -Config observer.json`; the launcher reads `current.txt`, so a deploy
  * switches that pointer and restarts the task without rewriting the task action or restarting superagent.
  */
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { homedir } from 'node:os'
-import { dirname, join, resolve, sep } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildArtifact, verifyArtifact } from './watchdog-artifact.mjs'
-import { update } from './watchdog-update.mjs'
+import { acquireLock, update } from './watchdog-update.mjs'
 
 const DEFAULT_HOME = process.env.DSH_WATCHDOG_HOME || join(homedir(), '.dsh', 'watchdog-independent')
 const DEFAULT_TASK = 'dsh-superagent-watchdog-observer'
@@ -24,10 +24,10 @@ const VERSION = /^[A-Za-z0-9._-]+$/
 const USAGE = `Usage: watchdog-control <status|start|stop|deploy> [options]
 
   status                 Show the active version, observer process, task state and recorded heartbeat.
-  start                  Start the standing observer task and wait for its pid.
+  start                  Build and deploy latest origin/main, then start the standing observer.
   stop                   Stop the standing observer task and its exact process tree.
-  deploy --build         Build an artifact from this clean checkout and deploy it.
-  deploy --artifact <d>  Deploy an existing artifact directory.
+  deploy [--build]       Build and deploy the latest origin/main in a temporary clone.
+  deploy --artifact <d>  Not supported: deploy requires a fresh build from origin/main.
 
 Options:
   --home <dir>       Watchdog home (default: $DSH_WATCHDOG_HOME or ~/.dsh/watchdog-independent)
@@ -110,7 +110,6 @@ export function controlConfig(options) {
     resultFile: join(home, 'watchdog-deploy-result.json'),
     heartbeatTimeoutSeconds: 180,
     pollSeconds: 3,
-    smokeTimeoutSeconds: 30,
     lockStaleSeconds: 900,
   }
 }
@@ -139,32 +138,46 @@ export function parseArgv(argv) {
 function git(root, args) {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 30_000 })
   if (result.error) throw result.error
-  if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${(result.stderr ?? '').trim()}`)
+  if (result.status !== 0) throw new Error(`git ${args[0] === 'remote' ? args.slice(0, 3).join(' ') : args[0]} failed`)
   return (result.stdout ?? '').trim()
 }
 
-/** Build an artifact from the clean checkout and place it under this home's staging directory. */
 export function buildFromRepo(home, root = resolve(dirname(fileURLToPath(import.meta.url)), '..')) {
-  if (git(root, ['status', '--porcelain'])) throw new Error('The checkout has uncommitted changes; commit them before deploy --build')
-  const commit = git(root, ['rev-parse', 'HEAD'])
-  const version = commit.slice(0, 7)
-  if (!VERSION.test(version)) throw new Error(`The commit ${commit} does not name a valid artifact version`)
-  const staging = join(home, 'staging')
-  const out = join(staging, version)
-  mkdirSync(staging, { recursive: true })
-  rmSync(out, { recursive: true, force: true })
-  buildArtifact(root, out, { version, commit })
-  verifyArtifact(out)
-  return out
+  const stagingRelative = relative(resolve(root), resolve(home, 'staging'))
+  if (!stagingRelative || (!stagingRelative.startsWith(`..${sep}`) && stagingRelative !== '..' && !isAbsolute(stagingRelative))) {
+    throw new Error('Watchdog staging must be outside the runtime checkout')
+  }
+  const origin = git(root, ['remote', 'get-url', 'origin'])
+  const temporary = mkdtempSync(join(tmpdir(), 'watchdog-build-'))
+  try {
+    const checkout = join(temporary, 'checkout')
+    git(root, ['clone', '--no-checkout', '--single-branch', '--branch', 'main', '--', origin, checkout])
+    const commit = git(checkout, ['rev-parse', 'refs/remotes/origin/main^{commit}'])
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) throw new Error('Could not resolve origin/main to a commit')
+    git(checkout, ['checkout', '--detach', commit])
+    const version = commit.slice(0, 7)
+    const staging = join(home, 'staging')
+    const out = join(staging, version)
+    mkdirSync(staging, { recursive: true })
+    rmSync(out, { recursive: true, force: true })
+    buildArtifact(checkout, out, { version, commit })
+    verifyArtifact(out)
+    return out
+  } finally {
+    rmSync(temporary, { recursive: true, force: true })
+  }
 }
 
 /** Copy the stable observer launcher from an artifact to the home the scheduled task runs from. */
-function installLaunchers(home, artifact) {
-  for (const name of ['launch-observer.ps1', 'launch-observer.vbs']) {
+export function installLaunchers(home, artifact, root = resolve(dirname(fileURLToPath(import.meta.url)), '..')) {
+  mkdirSync(home, { recursive: true })
+  for (const name of ['launch-observer.ps1', 'launch-observer.vbs', 'watchdog-bootstrap.mjs', 'watchdog-control.mjs',
+    'watchdog-update.mjs', 'watchdog-artifact.mjs', 'watchdog-smoke.mjs']) {
     const source = join(artifact, name)
     if (!existsSync(source)) throw new Error(`The artifact has no ${name}; rebuild it from this checkout`)
     copyFileSync(source, join(home, name))
   }
+  writeFileSync(join(home, 'source-checkout.txt'), `${root}\n`)
 }
 
 /** Put an artifact under the staging root, install its launchers and return the verified local path. */
@@ -187,19 +200,33 @@ function deployedRequest(manifest, path) {
     target: { version: manifest.version, artifactPath: path, sha256: manifest.sha256 } }
 }
 
-/** Mechanical deploy: verify, smoke, install, switch pointer, restart the observer and prove its heartbeat. */
+/** Mechanical deploy: install, switch the pointer and start the observer. */
 export async function deployArtifact(options, dependencies = {}) {
+  if (options.artifact) throw new Error('deploy --artifact is not supported; use deploy --build to build latest origin/main')
   const config = controlConfig(options)
-  const source = options.build ? buildFromRepo(config.watchdogHome) : resolve(options.artifact)
-  const prepared = prepareArtifact(config.watchdogHome, source)
-  // Stop here, where the exact observer pid and launcher processes are known; the updater's stop command becomes a no-op.
-  await stopObserver(options)
-  const apply = dependencies.update ?? update
-  const result = await apply({ ...config, observerStopCommand: 'cmd /c exit 0' },
-    deployedRequest(prepared.manifest, prepared.path))
+  const source = (dependencies.buildFromRepo ?? buildFromRepo)(config.watchdogHome)
+  const deadline = Date.now() + 180_000
+  let release
+  while (!release) {
+    try { release = (dependencies.acquireLock ?? acquireLock)(config) } catch (error) {
+      if (!String(error.message).startsWith('Another Watchdog update is in progress:') || Date.now() >= deadline) throw error
+      await sleep(250)
+    }
+  }
+  let prepared
+  let result
+  try {
+    prepared = prepareArtifact(config.watchdogHome, source)
+    await (dependencies.stopObserver ?? stopObserver)(options)
+    const apply = dependencies.update ?? update
+    result = await apply({ ...config, observerStopCommand: 'cmd /c exit 0' },
+      deployedRequest(prepared.manifest, prepared.path), { lockHeld: true })
+  } finally {
+    release()
+  }
   if (result.ok && result.phase === 'already-current' && !pidAlive(observerPid(config.watchdogHome))) {
-    await startObserver(options)
-    return { ...result, started: true }
+    const started = await (dependencies.startObserver ?? startObserver)(options)
+    return { ...result, ...started }
   }
   return result
 }
@@ -270,17 +297,11 @@ async function main() {
   if (!['status', 'start', 'stop', 'deploy'].includes(options.command)) {
     process.stderr.write(`${USAGE}\n`); process.exitCode = 2; return
   }
-  if (options.command === 'deploy' && !options.build && !options.artifact) {
-    process.stderr.write('deploy needs --build or --artifact <directory>\n'); process.exitCode = 2; return
-  }
   if (options.command === 'deploy' && options.build && options.artifact) {
     process.stderr.write('deploy takes --build or --artifact, not both\n'); process.exitCode = 2; return
   }
   if (options.command === 'status') {
     process.stdout.write(`${JSON.stringify(await observerStatus(options), null, 2)}\n`); return
-  }
-  if (options.command === 'start') {
-    process.stdout.write(`${JSON.stringify(await startObserver(options), null, 2)}\n`); return
   }
   if (options.command === 'stop') {
     process.stdout.write(`${JSON.stringify(await stopObserver(options), null, 2)}\n`); return
