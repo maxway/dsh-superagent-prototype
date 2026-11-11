@@ -79,7 +79,7 @@ export const RoleModelSchema = z.object({ provider: z.string().trim().min(1), mo
 export type RoleModel = z.infer<typeof RoleModelSchema>
 export const CategorySchema = z.enum(CATEGORIES)
 export const TierSchema = z.enum(TIERS)
-export const TierModelsSchema = z.object({ low: RoleModelSchema.nullable().default(null), high: RoleModelSchema.nullable().default(null) }).strict()
+export const TierModelsSchema = z.object({ low: RoleModelSchema.nullable().default(null), high: RoleModelSchema.nullable().default(null), expert: RoleModelSchema.nullable().default(null) }).strict()
 /** Models by Ticket category; a category left empty inherits the executor's default model. */
 export const CategoryModelsSchema = z.object({
   query: RoleModelSchema.nullable().default(null),

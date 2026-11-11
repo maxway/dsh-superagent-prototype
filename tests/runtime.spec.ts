@@ -264,7 +264,7 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
   expect(runtime.store.threads.get(`feishu:${CHAT}:om_1`)?.subscriptions).toEqual([ticket.id])
   expect(runtime.store.replyStatus(key('ack', trigger.id))).toBe('sent')
   const larkCalls = vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args)
-  expect(larkCalls.find(args => args[1] === '+messages-reply')).toEqual(expect.arrayContaining(['--message-id', 'om_1', '--markdown', '收到，修复回归。']))
+  expect(larkCalls.find(args => args[1] === '+messages-reply')).toEqual(expect.arrayContaining(['--message-id', 'om_1', '--markdown', '收到，修复回归。 Worker: high.']))
   // The first message holds the request itself and the category contract; an explicit ticket has no routing note beyond them.
   const first = relays(sessionId)[0]!
   expect(first).toEqual({ ticket_id: ticket.id, title: '修复回归', assignment: 'Category: development.',
@@ -283,6 +283,12 @@ it('records tier independently of the deliverable and defaults conservatively', 
   expect(query.ticket).toMatchObject({ category: 'query', tier: 'low' })
   expect(queryHigh.ticket).toMatchObject({ category: 'query', tier: 'high' })
   expect(sections.get(queryHigh.sessionId)!.text({})).toContain('This is a query ticket: answer it with read-only investigation.')
+})
+it('selects expert from a human request and announces the resulting tier', async () => {
+  const { ticket } = await acceptedTicket(feishu('35', '@bot 调查问题\n档位: expert'), 'development', 'low')
+  expect(ticket.tier).toBe('expert')
+  const calls = vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args)
+  expect(calls.find(args => args.includes('om_35'))).toEqual(expect.arrayContaining(['--markdown', expect.stringContaining('Worker: expert.')]))
 })
 it('records a query ticket and gives its worker a read-only category contract', async () => {
   const { ticket, sessionId } = await acceptedTicket(feishu('2', '@bot 只查一下'), 'query')

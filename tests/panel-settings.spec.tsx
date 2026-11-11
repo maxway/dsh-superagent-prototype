@@ -55,7 +55,7 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   await click(zh.save)
   expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work',
     prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
-      model: 'worker-model', reasoningEffort: 'high' }, models: { query: null, research: null, development: null }, tierModels: { low: null, high: null },
+      model: 'worker-model', reasoningEffort: 'high' }, models: { query: null, research: null, development: null }, tierModels: { low: null, high: null, expert: null },
     offPeak: { enabled: false, start: '22:00', end: '08:00', timezone: 'Asia/Shanghai' } })
   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',
     'settings/executor'])

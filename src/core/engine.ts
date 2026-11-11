@@ -227,8 +227,8 @@ export class Engine {
   handback(ticketId: string, triggerId: string, reason: string): boolean {
     return this.repo.atomic(() => this.evals.handback(ticketId, triggerId, reason))
   }
-  /** Transfer a low-tier ticket to a new high-tier ticket under the same mandate. */
-  handoff(ticketId: string, summary: string): Ticket { return this.repo.atomic(() => this.tickets.handoff(ticketId, summary)) }
+  /** Transfer a ticket to a higher-tier successor under the same mandate. */
+  handoff(ticketId: string, summary: string, expertTriggerId?: string): Ticket { return this.repo.atomic(() => this.tickets.handoff(ticketId, summary, expertTriggerId)) }
   /**
    * Record a report on an open ticket's current Assignment. Its question for a person (`attention`) is asked, kept, or
    * cleared (`null` or a `ready` report), and a replaced attention question whose reply has not been sent yet is withdrawn
