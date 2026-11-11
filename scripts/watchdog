@@ -633,6 +633,22 @@ export async function main(argv = process.argv.slice(2)) {
     return 2
   }
   const state = readState(config.stateDir)
+  const heartbeat = () => {
+    try {
+      writeFileSync(join(config.stateDir, 'heartbeat.json'), `${JSON.stringify({ pid: process.pid, at: new Date().toISOString() })}\n`, { mode: 0o600 })
+    } catch (error) {
+      log(config, 'error', `Could not write local heartbeat: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  let heartbeatTimer
+  if (!args.once) {
+    try {
+      const previous = JSON.parse(readFileSync(join(config.stateDir, 'heartbeat.json'), 'utf8'))
+      log(config, 'info', `Previous local heartbeat pid=${previous.pid} at=${previous.at}`)
+    } catch {}
+    heartbeat()
+    heartbeatTimer = setInterval(heartbeat, 30_000)
+  }
   const stop = new AbortController()
   const stopping = signal => { stop.abort(); process.stderr.write(`Stopping on ${signal}.\n`) }
   process.once('SIGINT', () => stopping('SIGINT'))
@@ -664,6 +680,7 @@ export async function main(argv = process.argv.slice(2)) {
     } while (!stop.signal.aborted)
     return 0
   } finally {
+    clearInterval(heartbeatTimer)
     release()
   }
 }
