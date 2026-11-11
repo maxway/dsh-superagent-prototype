@@ -798,10 +798,9 @@ export class DshExecutor implements Executor {
     this.host.store.atomic(() => {
       const before = latestReport(current)?.summary ?? ''
       const updated = this.host.engine.report(ticket.id, { state: 'waiting', summary: said || before })
-      // A quiet final after orchestrator_report is not a new status or an empty handoff.
       if (said) this.relay(resultRelay(updated, 'waiting', said))
-      else if (!before.trim()) {
-        this.relay(resultRelay(updated, 'waiting', 'Worker ended without a status report. Use orchestrator_ticket_request_status to request one.'))
+      else {
+        this.relay(resultRelay(updated, 'waiting', 'Worker ended without a final status report. Use orchestrator_ticket_request_status to request one.'))
       }
     })
   }
