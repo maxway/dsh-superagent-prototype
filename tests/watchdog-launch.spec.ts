@@ -32,6 +32,48 @@ it.skipIf(process.platform !== 'win32')('starts the sibling launch-observer.ps1 
   expect(readFileSync(join(dir, 'args.txt'), 'utf8').trim()).toBe(`config=${config}`)
 }, 30_000)
 
+it.skipIf(process.platform !== 'win32')('records observer stderr and its exit before a successful retry', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-launch-failure-'))
+  directory = dir
+  copyFileSync(observerPs, join(dir, 'launch-observer.ps1'))
+  writeFileSync(join(dir, 'current.txt'), 'v1')
+  const config = join(dir, 'observer.json')
+  writeFileSync(config, '{}')
+  mkdirSync(join(dir, 'versions', 'v1'), { recursive: true })
+  const marker = join(dir, 'retried.txt')
+  writeFileSync(join(dir, 'versions', 'v1', 'watchdog'), `const fs = require('fs')
+if (!fs.existsSync(${JSON.stringify(marker)})) {
+  fs.writeFileSync(${JSON.stringify(marker)}, 'failed')
+  process.stderr.write('simulated observer failure\\n')
+  process.exit(9)
+}
+process.stderr.write('simulated clean stop\\n')
+`)
+  const code = await new Promise<number | null>(resolve => {
+    execFile('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(dir, 'launch-observer.ps1'), '-Config', config],
+      { timeout: 30_000 }, error => resolve(error ? (typeof error.code === 'number' ? error.code : null) : 0))
+  })
+  expect(code).toBe(0)
+  const log = readFileSync(join(dir, 'launch-observer.log'), 'utf8')
+  expect(log).toContain('observer output version=v1 simulated observer failure')
+  expect(log).toContain('observer exit=9 version=v1')
+  expect(log).toContain('observer output version=v1 simulated clean stop')
+  expect(log).toContain('observer exit=0 version=v1')
+}, 30_000)
+
+it.skipIf(process.platform !== 'win32')('records launcher configuration failure and exits with code 2', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-launch-invalid-'))
+  directory = dir
+  copyFileSync(observerPs, join(dir, 'launch-observer.ps1'))
+  const code = await new Promise<number | null>(resolve => {
+    execFile('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(dir, 'launch-observer.ps1'),
+      '-Config', join(dir, 'missing.json')], { timeout: 30_000 }, error =>
+      resolve(error ? (typeof error.code === 'number' ? error.code : null) : 0))
+  })
+  expect(code).toBe(2)
+  expect(readFileSync(join(dir, 'launch-observer.log'), 'utf8')).toContain('configuration does not exist')
+}, 30_000)
+
 it.skip('runs the current observer version through the PowerShell launcher', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-launch-observer-ps-'))
   directory = dir
