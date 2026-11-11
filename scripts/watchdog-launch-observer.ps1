@@ -36,7 +36,8 @@ function CurrentObserver {
 try {
   if (-not (Test-Path -LiteralPath $Config)) { Fail "The Watchdog observer configuration does not exist: $Config" }
   $node = (Get-Command node -ErrorAction Stop).Source
-  Log "observer launcher start config=$Config node=$node"
+  $session = try { (Get-Process -Id $PID -ErrorAction Stop).SessionId } catch { 'unknown' }
+  Log "observer launcher start pid=$PID session=$session config=$Config node=$node"
   while ($true) {
     # Re-read the pointer on every restart: a switch performed while the old observer was stopped must start the new version.
     $target = CurrentObserver
