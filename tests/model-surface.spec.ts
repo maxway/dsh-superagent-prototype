@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, expect, it, vi } from 'vitest'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
-import { latestAssignment } from '../src/core/index.ts'
+import { latestAssignment, TIERS } from '../src/core/index.ts'
 import { promptParts } from '../src/app/prompts.ts'
 import { RESOURCES } from '../src/app/resources.ts'
 import { TICKET_STATES } from '../src/app/cards.ts'
@@ -307,7 +307,8 @@ function failures(): Map<string, string> {
   walk(schemas, (node, property) => {
     if (property && Array.isArray(node.enum)) options.set(property, new Set([...options.get(property) ?? [], ...node.enum.map(String)]))
   })
-  for (const name of ['decision', 'purpose', 'state']) expect(options.has(name), `${name} has options`).toBe(true)
+  for (const name of ['decision', 'purpose', 'state', 'tier']) expect(options.has(name), `${name} has options`).toBe(true)
+  options.set('tier', new Set([...options.get('tier')!, ...TIERS]))
   const tools = { orchestrator: new Set(toolsOf('orchestrator').keys()), worker: new Set(toolsOf('worker').keys()) }
   const registered = (token: string) => tools.orchestrator.has(token) || tools.worker.has(token)
   const variables = new Set(host.runtime.ticketEnvironment(host.runtime.store.tickets.get(sessions.a)!).map(variable => variable.key))
@@ -352,7 +353,7 @@ function failures(): Map<string, string> {
 it('collects both roles\' tools, prompts, skills and inputs', () => {
   expect([...toolsOf('worker').keys()].sort()).toEqual(['orchestrator_ack', 'orchestrator_read', 'orchestrator_report',
     'orchestrator_thread_follow',
-    'orchestrator_thread_unrelated', 'orchestrator_trigger_handback'])
+    'orchestrator_thread_unrelated', 'orchestrator_ticket_handoff', 'orchestrator_trigger_handback'])
   expect([...toolsOf('orchestrator').keys()]).toEqual(expect.arrayContaining(['orchestrator_route', 'orchestrator_eval_decide', 'orchestrator_reply']))
   // The one routing tool takes the place of four.
   for (const name of ['orchestrator_ticket_accept', 'orchestrator_ticket_attach', 'orchestrator_ticket_stop', 'orchestrator_trigger_ignore']) {
