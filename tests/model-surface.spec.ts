@@ -95,6 +95,8 @@ async function start() {
     const collected = { stdout: reader(answers[argv.join(' ')] ?? ''), stderr: reader('') }
     return { done: Promise.resolve({ exitCode: 0, signal: null }), collected }
   } }
+  let selectedModel: string | undefined
+  const selectModel = (model?: string) => { selectedModel = model }
   const agents = new Map<string, { status: string }>()
   const tools = new Map<string, Map<string, Tool>>()
   const sections = new Map<string, Section>()
@@ -125,7 +127,7 @@ async function start() {
     }
     const session = { id: sessionId, snapshotEvents: () => [], requestHeader: () => undefined, append: () => {} }
     agents.set(sessionId, { id: sessionId, ctx: agentCtx, inbox, followup: deliver(inbox.nextTurn), steer: deliver(inbox.nextStep),
-      inject: record, status: 'idle', cancel: () => {}, whenIdle: async () => {}, model: { current: () => undefined }, session } as never)
+      inject: record, status: 'idle', cancel: () => {}, whenIdle: async () => {}, model: { current: () => selectedModel ? { model: selectedModel } : undefined }, session } as never)
   }
   const resolveAgent = async (id: string) => agents.has(id) ? { agent: agents.get(id) } : { error: { code: 'session/not-found' } }
   const ctx = new Context()
@@ -151,7 +153,7 @@ async function start() {
   const run = async (sessionId: string, name: string, args: unknown) =>
     await tools.get(sessionId)!.get(name)!.execute(args, { signal: new AbortController().signal }) as Record<string, unknown>
   const stop = async () => { await runtime.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) }
-  return { ctx, runtime, agents, tools, sections, skills, inputs, run, stop }
+  return { ctx, runtime, agents, tools, sections, skills, inputs, run, stop, selectModel }
 }
 type Host = Awaited<ReturnType<typeof start>>
 
@@ -386,14 +388,24 @@ it('enforces the word limits the text states', async () => {
 
 /** The enabled rules' lines of the main Session's Policy section, as the settings hold them now. */
 const ruleLines = () => host.runtime.store.settings().policy.rules.filter(rule => rule.enabled).map(rule => `- ${rule.name} (${rule.id}): ${rule.instruction}`)
-it.each(['orchestrator', 'worker'] as const)('keeps the %s within its character budget', role => {
+it.each(['orchestrator', 'worker', 'workerGpt'] as const)('keeps the %s within its character budget', variant => {
+  const role = variant === 'orchestrator' ? 'orchestrator' : 'worker'
   const ids = role === 'orchestrator' ? [host.runtime.masterId] : [sessions.workerA, sessions.workerB]
-  // Strip machine-dependent variable values (such as directory paths), and the team's rules, before measuring prompt length.
-  const builtIn = (text: string) => ruleLines().reduce((rest, line) => rest.replace(line, ''), text).replace(/ = "[^"\n]*"/g, ' = ""')
-  const prompt = Math.max(...ids.map(id => builtIn(host.sections.get(id)!({})).length))
-  const definitions = [...toolsOf(role).values()].map(({ name, description, parameters }) => ({ name, description, parameters }))
-  const tools = JSON.stringify(definitions).length
-  expect(prompt + tools, `${prompt} characters of prompt and ${tools} of tools`).toBeLessThanOrEqual(BUDGET[role])
+  host.selectModel(variant === 'workerGpt' ? 'gpt-6.1-terra' : undefined)
+  try {
+    // Strip machine-dependent variable values (such as directory paths), and the team's rules, before measuring prompt length.
+    const builtIn = (text: string) => ruleLines().reduce((rest, line) => rest.replace(line, ''), text).replace(/ = "[^"\n]*"/g, ' = ""')
+    const texts = ids.map(id => builtIn(host.sections.get(id)!({})))
+    if (variant === 'workerGpt') {
+      const guidance = promptParts(host.runtime.prompts.current().config, 'worker', undefined, undefined, 'gpt-6.1-terra')
+        .find(part => part.name === 'runtime/work/gpt')!.text
+      for (const text of texts) expect(text).toContain(guidance)
+    }
+    const prompt = Math.max(...texts.map(text => text.length))
+    const definitions = [...toolsOf(role).values()].map(({ name, description, parameters }) => ({ name, description, parameters }))
+    const tools = JSON.stringify(definitions).length
+    expect(prompt + tools, `${prompt} characters of prompt and ${tools} of tools`).toBeLessThanOrEqual(BUDGET[role])
+  } finally { host.selectModel() }
 })
 
 it('keeps the routing rules in dispatch, which says the main Session may accept the rest of a stop message as new work', () => {
