@@ -64,6 +64,9 @@ it('adds GPT guidance only to GPT workers, preserving other prompts and override
   for (const model of ['deepseek-v4.1-flash', 'claude-opus', 'my-gpt-model']) expect(worker(model)).toBe(baseline)
   for (const model of ['GPT-6.1-TERRA', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.5']) {
     expect(worker(model)).toContain('Assess risk by likelihood, impact and reversibility')
+    expect(worker(model)).toContain('Arrange a bounded wait using a managed background job')
+    expect(worker(model)).toContain('On wake, inspect the outcome, address actionable failures')
+    expect(worker(model)).toContain('A final message in the Session is not delivery')
   }
   expect(composePrompt(config, 'orchestrator', undefined, undefined, 'gpt-6.1-terra')).not.toContain('Own the outcome:')
   const overridden = { ...config, overrides: { 'runtime/work/gpt': { text: 'GPT team guidance.' } } }
