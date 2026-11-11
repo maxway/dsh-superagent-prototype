@@ -435,6 +435,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | --- | --- |
 | `tests/core-engine.spec.ts` | 内存仓储上的领域规则：接收、评估、扇出、恢复与停止、被中断的派工、暂停、策略变更、报告与结果、附加、回复、失败的投递和被关闭的问题 |
 | `tests/executor-handoff-tool.spec.ts` | low 到 high 接力工具的校验和档位专属 worker 指令 |
+| `tests/notices-handoff.spec.ts` | 接力通知区分转移订阅与无关线程 |
 | `tests/stage.spec.ts` | 工单阶段，逐行验证 |
 | `tests/policy.spec.ts` | 来源范围、准入、准入表、授权重新校验、策略版本、设置迁移和研判结论 |
 | `tests/registry.spec.ts` | `SourceRegistry`：实例、校验、策略部分、渠道和线程上下文 |

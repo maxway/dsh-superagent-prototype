@@ -17,8 +17,13 @@
 - 官方原型只接入 GitHub；本 fork 增加了 GitLab 来源。每个部署只有一个生效的 Git 来源；在 profile 中安装两个 Git 插件后，可在来源页切换当前宿主。
 - 切换是一个动作：先校验目标账号和仓库，再只重启一次；旧宿主还有未结束工单时，切换会列出它们，要求先停止或明确确认。工单记录接受时的宿主，不能在另一个宿主上恢复；切回原宿主后可以继续。
 - GitLab 来源轮询项目中的 Issue、合并请求、note 和流水线，在原 note 中回复，把合并请求绑定到工单，并把 CI 状态送回执行器。
-- 可选配置 GitLab webhook：来源自动在项目里创建或更新 webhook，事件到达时立即触发同步；不配置时退化为轮询，适合有固定 IP 的部署。
+- 可选配置 GitLab webhook：来源自动在项目里创建或更新 webhook，事件到达时立即触发同步；需要 GitLab 可访问的稳定地址；不配置时仍按轮询工作。
 - 支持自建 GitLab，包括通过 HTTP 提供的实例；提交、推送、合并请求、评审回复和 CI 修复通过 `glab` 完成。
+
+#### 工单分类、模型档位与接力
+
+- 工单按 `query`、`research` 或 `development` 划分授权范围，能力档位 `low` / `high` 独立选择模型；默认查询为 `low`，其他工作为 `high`。未配置档位模型时依次回退到类别模型、执行器默认模型和宿主默认模型；已有 Session 不会因设置变更而换模型。
+- 同一授权任务需要更强能力时，符合条件的飞书来源 `low` 工单可接力给新的 `high` 工单；它继承原授权，不扩大范围。接力使用摘要和新工作目录，不保证完整上下文或切换期间绝无重复。条件与配置见 [003 执行](docs/zh/003-execution.md#工单类别与模型)。
 
 #### Windows 原生部署
 
@@ -71,8 +76,10 @@
 
 ## 文档
 
-通用设计与开发文档与官方一致，入口见[官方 README](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/README.md)。本 fork 额外提供：
+通用背景可参考[官方 README](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/README.md)；本 fork 的当前行为以本仓库文档为准：
 
+- [003 执行](docs/zh/003-execution.md)：工单类别、模型选择、接力及运行恢复。
+- [012 Worker 交接设计](docs/zh/012-worker-handoff.md)：更广泛的交接方案，尚未实现；不要与现有能力接力混淆。
 - [009 Windows 部署](docs/zh/009-windows-deployment.md)：必要性、适配方案、分阶段实施与验证记录。
 - [010 Session 保留机制](docs/zh/010-session-retention.md)：Session、工作目录和数据库的增长测量、已实现的工作目录与分支回收，以及后续清理提案。
 - [011 多 Git 来源](docs/zh/011-multi-git-sources.md)：一个部署使用多个 Git 来源或项目的现状、可行性评估与分阶段建议。
