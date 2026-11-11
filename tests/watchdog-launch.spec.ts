@@ -49,12 +49,16 @@ if (!fs.existsSync(${JSON.stringify(marker)})) {
 }
 process.stderr.write('simulated clean stop\\n')
 `)
-  const code = await new Promise<number | null>(resolve => {
+  const result = await new Promise<{ code: number | null; error: string; stdout: string; stderr: string }>(resolve => {
     execFile('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(dir, 'launch-observer.ps1'), '-Config', config],
-      { timeout: 30_000 }, error => resolve(error ? (typeof error.code === 'number' ? error.code : null) : 0))
+      { timeout: 30_000 }, (error, stdout, stderr) => resolve({
+        code: error ? (typeof error.code === 'number' ? error.code : null) : 0,
+        error: error?.message ?? '', stdout, stderr,
+      }))
   })
-  expect(code).toBe(0)
-  const log = readFileSync(join(dir, 'launch-observer.log'), 'utf8')
+  let log = ''
+  try { log = readFileSync(join(dir, 'launch-observer.log'), 'utf8') } catch {}
+  expect(result.code, JSON.stringify({ ...result, log })).toBe(0)
   expect(log).toContain('observer output version=v1 simulated observer failure')
   expect(log).toContain('observer exit=9 version=v1')
   expect(log).toContain('observer output version=v1 simulated clean stop')
@@ -72,6 +76,39 @@ it.skipIf(process.platform !== 'win32')('records launcher configuration failure 
   })
   expect(code).toBe(2)
   expect(readFileSync(join(dir, 'launch-observer.log'), 'utf8')).toContain('configuration does not exist')
+}, 30_000)
+
+it.skipIf(process.platform !== 'win32')('reports a configuration failure even when the log cannot be written', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-launch-unwritable-log-'))
+  directory = dir
+  copyFileSync(observerPs, join(dir, 'launch-observer.ps1'))
+  mkdirSync(join(dir, 'launch-observer.log'))
+  const result = await new Promise<{ code: number | null; stderr: string }>(resolve => {
+    execFile('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(dir, 'launch-observer.ps1'),
+      '-Config', join(dir, 'missing.json')], { timeout: 30_000 }, (error, _stdout, stderr) =>
+      resolve({ code: error ? (typeof error.code === 'number' ? error.code : null) : 0, stderr }))
+  })
+  expect(result.code).toBe(2)
+  expect(result.stderr).toContain('configuration does not exist')
+}, 30_000)
+
+it.skipIf(process.platform !== 'win32')('runs the observer even when the log cannot be written', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-launch-unwritable-output-'))
+  directory = dir
+  copyFileSync(observerPs, join(dir, 'launch-observer.ps1'))
+  mkdirSync(join(dir, 'launch-observer.log'))
+  writeFileSync(join(dir, 'current.txt'), 'v1')
+  const config = join(dir, 'observer.json')
+  writeFileSync(config, '{}')
+  mkdirSync(join(dir, 'versions', 'v1'), { recursive: true })
+  const marker = join(dir, 'observer-ran.txt')
+  writeFileSync(join(dir, 'versions', 'v1', 'watchdog'), `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')\n`)
+  const code = await new Promise<number | null>(resolve => {
+    execFile('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(dir, 'launch-observer.ps1'), '-Config', config],
+      { timeout: 30_000 }, error => resolve(error ? (typeof error.code === 'number' ? error.code : null) : 0))
+  })
+  expect(code).toBe(0)
+  expect(readFileSync(marker, 'utf8')).toBe('ran')
 }, 30_000)
 
 it.skip('runs the current observer version through the PowerShell launcher', async () => {
