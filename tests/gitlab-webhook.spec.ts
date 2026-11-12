@@ -83,7 +83,8 @@ describe('gitlab project hook management', () => {
       return args.includes('POST') ? JSON.stringify({ id: 5 }) : '[]'
     })
     const record = await reconcileWebhook(tool, 'projects/42', 'http://192.168.1.20:3084/gitlab/webhook', 'token-1', h.value)
-    expect(record).toEqual({ secret: 'token-1', url: 'http://192.168.1.20:3084/gitlab/webhook', hookId: 5 })
+    expect(record).toEqual({ secret: 'token-1', url: 'http://192.168.1.20:3084/gitlab/webhook', hookId: 5,
+      host: 'https://gitlab.com', project: 'projects/42' })
     expect(h.records.get(KV.gitlab.webhook)).toEqual(record)
     const create = calls.find(args => args.includes('POST'))!
     expect(create).toEqual(expect.arrayContaining(['projects/42/hooks', '--field', 'url=http://192.168.1.20:3084/gitlab/webhook',
@@ -92,7 +93,7 @@ describe('gitlab project hook management', () => {
   })
   it('updates its stored hook, adopts one with the same URL, and deletes it when the URL is cleared', async () => {
     const h = state()
-    h.records.set(KV.gitlab.webhook, { secret: 'old', url: 'http://old/webhook', hookId: 7 })
+    h.records.set(KV.gitlab.webhook, { secret: 'old', url: 'http://old/webhook', hookId: 7, host: 'https://gitlab.com', project: 'projects/42' })
     const tool = commands(), calls: string[][] = []
     vi.spyOn(tool, 'run').mockImplementation(async (_program, args) => {
       calls.push(args)
@@ -119,11 +120,44 @@ describe('gitlab project hook management', () => {
     })
     expect(await reconcileWebhook(tool, 'projects/42', 'http://new:3084/gitlab/webhook', 's', h.value)).toMatchObject({ hookId: 7 })
     expect(calls.some(args => args.includes('POST'))).toBe(false)
-    h.records.set(KV.gitlab.webhook, { secret: 's', url: 'http://new:3084/gitlab/webhook', hookId: 7 })
+    h.records.set(KV.gitlab.webhook, { secret: 's', url: 'http://new:3084/gitlab/webhook', hookId: 7, host: 'https://gitlab.com', project: 'projects/42' })
     const missing = commands()
     vi.spyOn(missing, 'run').mockRejectedValue(new CliError('404 Not Found', 404))
     await removeWebhook(missing, 'projects/42', h.value)
     expect(h.records.get(KV.gitlab.webhook)).toBeUndefined()
+  })
+  it.each([
+    { host: 'https://other.example', project: 'projects/42' },
+    { host: 'https://gitlab.com', project: 'projects/99' },
+    {},
+  ])('does not use an unbound or mismatched hook id: %j', async identity => {
+    const h = state(), tool = commands(), calls: string[][] = []
+    h.records.set(KV.gitlab.webhook, { secret: 'old', url: 'http://old/hook', hookId: 7, ...identity })
+    vi.spyOn(tool, 'run').mockImplementation(async (_program, args) => {
+      calls.push(args)
+      if (args[1]!.includes('/hooks?')) return JSON.stringify([{ id: 7, url: 'http://unrelated/hook' }])
+      return JSON.stringify({ id: 8 })
+    })
+    const record = await reconcileWebhook(tool, 'projects/42', 'http://new/hook', 's', h.value)
+    expect(record).toMatchObject({ hookId: 8, host: 'https://gitlab.com', project: 'projects/42' })
+    expect(calls.some(args => args.includes('PUT'))).toBe(false)
+    expect(calls.some(args => args.includes('POST'))).toBe(true)
+    h.records.set(KV.gitlab.webhook, { secret: 'old', url: 'http://old/hook', hookId: 7, ...identity })
+    calls.length = 0
+    await removeWebhook(tool, 'projects/42', h.value)
+    expect(calls).toEqual([])
+    expect(h.records.get(KV.gitlab.webhook)).toBeUndefined()
+  })
+  it('adopts a matching URL instead of trusting a legacy id', async () => {
+    const h = state(), tool = commands(), calls: string[][] = []
+    h.records.set(KV.gitlab.webhook, { secret: 'old', url: 'http://old/hook', hookId: 7 })
+    vi.spyOn(tool, 'run').mockImplementation(async (_program, args) => {
+      calls.push(args)
+      if (args[1]!.includes('/hooks?')) return JSON.stringify([{ id: 7, url: 'http://unrelated/hook' }, { id: 8, url: 'http://new/hook' }])
+      return JSON.stringify({ id: 8 })
+    })
+    expect(await reconcileWebhook(tool, 'projects/42', 'http://new/hook', 's', h.value)).toMatchObject({ hookId: 8 })
+    expect(calls.find(args => args.includes('PUT'))).toContain('projects/42/hooks/8')
   })
   it('explains that the agent account needs Maintainer to manage project hooks', async () => {
     const h = state()
@@ -135,7 +169,7 @@ describe('gitlab project hook management', () => {
   })
   it('does not parse an empty DELETE response as JSON', async () => {
     const h = state()
-    h.records.set(KV.gitlab.webhook, { secret: 's', url: 'http://host/hook', hookId: 7 })
+    h.records.set(KV.gitlab.webhook, { secret: 's', url: 'http://host/hook', hookId: 7, host: 'https://gitlab.com', project: 'projects/42' })
     const tool = commands()
     const run = vi.spyOn(tool, 'run').mockResolvedValue('')
     await removeWebhook(tool, 'projects/42', h.value)
