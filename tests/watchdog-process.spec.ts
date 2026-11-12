@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -75,57 +75,37 @@ it('validates configuration, finds mechanical problems and keeps finding identit
     collectFindings: (snapshot: unknown) => Record<string, unknown>[]
     gateFindings: (snapshot: unknown) => Record<string, unknown>[]
     fingerprint: (findings: Record<string, unknown>[]) => string
-    localClock: (timeZone: string, now: Date) => { date: string, hour: number }
-    dailyReportDue: (config: Record<string, unknown>, state: Record<string, unknown>, now?: Date) => boolean
     waitForChange: (config: Record<string, unknown>, since: string | undefined, timeoutSeconds: number, signal?: AbortSignal) =>
       Promise<{ version: string, changed: boolean, reason: string }>
   }
   directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-watchdog-config-'))
   const path = join(directory, 'watchdog.json')
-  writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', report: true, stateDir: 'state' }))
-  expect(() => module.loadConfig(path)).toThrow(/chatId/)
   writeFileSync(path, JSON.stringify({ url: 'not a url', stateDir: 'state' }))
   expect(() => module.loadConfig(path)).toThrow(/url must be/)
   writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', unknown: 1 }))
   expect(() => module.loadConfig(path)).toThrow(/Unknown watchdog configuration field/)
   writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', intervalSeconds: 5 }))
   expect(() => module.loadConfig(path)).toThrow(/intervalSeconds/)
-  // A daily report is only meaningful with Feishu reporting on, and its schedule must be a valid local hour and zone.
-  writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', stateDir: 'state', dailyReport: { hour: 9 } }))
-  expect(() => module.loadConfig(path)).toThrow(/dailyReport requires report true/)
-  writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', report: true, chatId: 'oc_test', stateDir: 'state',
-    dailyReport: { hour: 24 } }))
-  expect(() => module.loadConfig(path)).toThrow(/dailyReport.hour/)
-  writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', report: true, chatId: 'oc_test', stateDir: 'state',
-    dailyReport: { hour: 9, timezone: 'Mars/Olympus' } }))
-  expect(() => module.loadConfig(path)).toThrow(/IANA time zone/)
-  writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9', report: true, chatId: 'oc_test', stateDir: 'state',
-    dailyReport: { hour: 9, timezone: 'Asia/Shanghai' } }))
-  expect(module.loadConfig(path)).toMatchObject({ dailyReport: { hour: 9, timezone: 'Asia/Shanghai' } })
   const config = module.loadConfig((writeFileSync(path, JSON.stringify({ url: 'http://127.0.0.1:9/', stateDir: 'state' })), path))
-  expect(config).toMatchObject({ url: 'http://127.0.0.1:9', intervalSeconds: 900, staleMinutes: 30, report: false })
-  const morning = new Date('2026-11-09T01:30:00.000Z')
-  expect(module.localClock('Asia/Shanghai', morning)).toEqual({ date: '2026-11-09', hour: 9 })
-  expect(module.dailyReportDue({ report: true, dailyReport: { hour: 9, timezone: 'Asia/Shanghai' } }, {}, morning)).toBe(true)
-  expect(module.dailyReportDue({ report: true, dailyReport: { hour: 10, timezone: 'Asia/Shanghai' } }, {}, morning)).toBe(false)
-  expect(module.dailyReportDue({ report: true, dailyReport: { hour: 9, timezone: 'Asia/Shanghai' } },
-    { quietReportDate: '2026-11-09' }, morning)).toBe(false)
+  expect(config).toMatchObject({ url: 'http://127.0.0.1:9', intervalSeconds: 900, staleMinutes: 30 })
 
   const findings = module.collectFindings(snapshot({ tickets: [
-    { id: 't1', title: 'Stuck', signals: ['no-progress'] },
+    { id: 't1', title: 'Stuck', signals: ['queued', 'no-progress'] },
     { id: 't2', title: 'Waiting', signals: ['waiting-person'] },
   ], state: { paused: false, load: { running: 3, maxWorkers: 3 }, health: { runtime: { state: 'ready' }, gitlab: { state: 'error', detail: 'offline' } },
     setup: { problem: { code: 'agentCliUnset', place: 'gitlab' } } } }))
-  // A full worker load explains no-progress, and setup plus an unhealthy part are findings on their own.
-  expect(findings).toEqual([{ kind: 'ticket', id: 't2', title: 'Waiting', signals: ['waiting-person'] },
+  // Full worker load explains queued, but no-progress remains visible as a mechanical hint.
+  expect(findings).toEqual([{ kind: 'ticket', id: 't1', title: 'Stuck', signals: ['no-progress'] },
+    { kind: 'ticket', id: 't2', title: 'Waiting', signals: ['waiting-person'] },
     { kind: 'health', part: 'gitlab', state: 'error', detail: 'offline' },
     { kind: 'setup', code: 'agentCliUnset', place: 'gitlab' }])
   expect(module.fingerprint(findings)).toBe(module.fingerprint(module.collectFindings(snapshot({ tickets: [
+    { id: 't1', title: 'Stuck', signals: ['no-progress'] },
     { id: 't2', title: 'Waiting', silentMinutes: 90, signals: ['waiting-person'] },
   ], state: { paused: false, load: { running: 0, maxWorkers: 3 }, health: { runtime: { state: 'ready' }, gitlab: { state: 'error', detail: 'offline' } },
     setup: { problem: { code: 'agentCliUnset', place: 'gitlab' } } } }))))
   // A paused service explains the Ticket signals it causes, but a delivery fault stays visible.
-  expect(module.collectFindings(snapshot({ tickets: [{ id: 't1', title: 'Stuck', signals: ['no-progress'] }],
+  expect(module.collectFindings(snapshot({ tickets: [{ id: 't1', title: 'Stuck', signals: ['queued', 'no-progress', 'waiting-person'] }],
     state: { paused: true, load: { running: 0, maxWorkers: 3 }, health: { runtime: { state: 'ready' } }, setup: { problem: null } } }))).toEqual([])
   expect(module.collectFindings(snapshot({ tickets: [{ id: 't1', title: 'Stuck', signals: ['delivery-error'] }],
     state: { paused: true, load: { running: 0, maxWorkers: 3 }, health: { runtime: { state: 'ready' } }, setup: { problem: null } } })))
@@ -147,23 +127,6 @@ it('validates configuration, finds mechanical problems and keeps finding identit
     .toEqual([{ kind: 'ticket', id: 'f1', title: 'Flaky', signals: ['repeated-failures'] }])
 })
 
-it('waits on one versioned request and returns the version to resume from', async () => {
-  const service = await fakeService(() => snapshot())
-  const config = configure(service.url)
-  const module = await import(pathToFileURL(script).href) as {
-    loadConfig: (path: string) => Record<string, unknown>
-    waitForChange: (config: Record<string, unknown>, since: string | undefined, timeoutSeconds: number) =>
-      Promise<{ version: string, changed: boolean, reason: string }>
-  }
-  const loaded = module.loadConfig(config)
-  const initial = await module.waitForChange(loaded, undefined, 1)
-  expect(initial).toMatchObject({ version: 'version-2' })
-  expect(service.calls.at(-1)?.url).toBe('/orchestrator/api/watchdog/wait?timeout=1&stale_minutes=30')
-  const changed = await module.waitForChange(loaded, 'version-1', 1)
-  expect(changed).toMatchObject({ version: 'version-2', changed: true, reason: 'change' })
-  expect(service.calls.at(-1)?.url).toBe('/orchestrator/api/watchdog/wait?timeout=1&stale_minutes=30&since=version-1')
-})
-
 it('writes a local heartbeat even when the service is unreachable', async () => {
   const config = configure('http://127.0.0.1:1', { report: false })
   const child = spawn(process.execPath, [script, '--config', config], { stdio: 'ignore' })
@@ -174,79 +137,100 @@ it('writes a local heartbeat even when the service is unreachable', async () => 
     const value = JSON.parse(readFileSync(heartbeat, 'utf8'))
     expect(value.pid).toBe(child.pid)
     expect(Date.parse(value.at)).toBeGreaterThan(Date.now() - 10_000)
+    const second = await run(['--config', config, '--once'])
+    expect(second.code).toBe(2)
+    expect(second.stderr).toContain('Watchdog lock exists')
   } finally {
     child.kill()
     await new Promise<void>(resolve => child.once('exit', () => resolve()))
   }
 }, 15_000)
 
-it('records every observation and reports a finding only when it changes', async () => {
+it('keeps observations locally without writing runs or reports', async () => {
   const answers: unknown[] = []
   const { calls, url } = await fakeService(() => answers[0])
+  const config = configure(url, { dailyReport: { hour: 0, timezone: 'UTC' } })
   answers[0] = snapshot()
-  const config = configure(url)
-  const first = await run(['--config', config, '--once'])
-  expect(first.code).toBe(0)
-  expect(calls.filter(call => call.method === 'POST').map(call => call.url)).toEqual(['/orchestrator/api/watchdog/runs'])
-  const statePath = join(directory!, 'state', 'state.json')
-  expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({ reachable: true, current: [] })
-
-  // The same quiet observation records another run but sends nothing.
-  const second = await run(['--config', config, '--once'])
-  expect(second.code).toBe(0)
-  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(0)
-
-  // A new signal reports once; the unchanged finding does not report again.
-  answers[0] = snapshot({ tickets: [{ id: 't1', title: 'Stuck', stage: 'working', silentMinutes: 40, signals: ['no-progress'] }] })
   expect((await run(['--config', config, '--once'])).code).toBe(0)
+  answers[0] = snapshot({ tickets: [{ id: 't1', title: 'Stuck', signals: ['no-progress'] }] })
   expect((await run(['--config', config, '--once'])).code).toBe(0)
-  const reports = calls.filter(call => call.url === '/orchestrator/api/watchdog/report')
-  expect(reports).toHaveLength(1)
-  expect(JSON.parse(reports[0]!.body!)).toMatchObject({ chatId: 'oc_test' })
-  expect(JSON.parse(reports[0]!.body!).note).toContain('t1 no-progress')
-
-  // A changed signal is a different finding and reports again.
-  answers[0] = snapshot({ tickets: [{ id: 't1', title: 'Stuck', stage: 'person', action: 'failed', silentMinutes: 40, signals: ['waiting-person'] }] })
-  expect((await run(['--config', config, '--once'])).code).toBe(0)
-  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(2)
+  expect(calls.map(call => call.method)).toEqual(['GET', 'GET'])
   const status = await run(['--config', config, '--status'])
   expect(status.code).toBe(0)
-  expect(JSON.parse(status.stdout)).toMatchObject({ reachable: true, reportedFingerprint: expect.any(String), current: ['t1 waiting-person'] })
+  expect(JSON.parse(status.stdout)).toMatchObject({ reachable: true, current: ['t1 no-progress'] })
+  expect(readFileSync(join(directory!, 'state', 'watchdog.log'), 'utf8')).toContain('Observed 1 finding')
 })
 
-it('sends a quiet daily report once per local day and not again on later quiet cycles', async () => {
-  const { calls, url } = await fakeService(() => snapshot())
-  const config = configure(url, { dailyReport: { hour: 0, timezone: 'UTC' } })
+it('records malformed snapshot findings as unreachable and recovers on the next valid snapshot', async () => {
+  let answer: unknown = snapshot()
+  const { url } = await fakeService(() => answer)
+  const config = configure(url, { alertFile: 'alerts.jsonl', alertAfterFailures: 1 })
   expect((await run(['--config', config, '--once'])).code).toBe(0)
-  const reports = calls.filter(call => call.url === '/orchestrator/api/watchdog/report')
-  expect(reports).toHaveLength(1)
-  expect(JSON.parse(reports[0]!.body!)).toMatchObject({ chatId: 'oc_test' })
-  expect(JSON.parse(reports[0]!.body!).note).toContain('每日巡检')
-  expect(JSON.parse(readFileSync(join(directory!, 'state', 'state.json'), 'utf8')))
-    .toMatchObject({ reachable: true, quietReportDate: expect.any(String) })
-  // The same local date suppresses the heartbeat; a findings cycle does not replace it and still reports on change.
+  answer = snapshot({ tickets: [{ id: 'bad', signals: {} }] })
+  expect((await run(['--config', config, '--once'])).code).toBe(1)
+  const state = join(directory!, 'state', 'state.json')
+  expect(JSON.parse(readFileSync(state, 'utf8'))).toMatchObject({ reachable: false, unreachable: 1, lastError: expect.any(String) })
+  expect(JSON.parse(readFileSync(join(directory!, 'alerts.jsonl'), 'utf8')).kind).toBe('unreachable')
+  for (const incomplete of [{ tickets: [] }, { tickets: [], state: {} }, { tickets: [], state: { health: null } }]) {
+    answer = incomplete
+    expect((await run(['--config', config, '--once'])).code).toBe(1)
+    expect(JSON.parse(readFileSync(state, 'utf8'))).toMatchObject({ reachable: false, lastError: expect.stringContaining('complete Watchdog snapshot') })
+  }
+  answer = snapshot()
   expect((await run(['--config', config, '--once'])).code).toBe(0)
-  expect(calls.filter(call => call.url === '/orchestrator/api/watchdog/report')).toHaveLength(1)
+  expect(JSON.parse(readFileSync(state, 'utf8'))).toMatchObject({ reachable: true, unreachable: 0 })
 })
 
-it('reports a missing run route once, logs an unreachable service, and exits 1 without a state from status', async () => {
-  const { calls, url } = await fakeService(() => snapshot())
-  const config = configure(url, { report: false })
-  // The first cycle records a run; the fake service then stops answering the run route with 404.
-  server!.removeAllListeners('request')
-  server!.on('request', (request, response) => {
-    calls.push({ method: request.method, url: request.url, body: '' })
-    if (request.url?.startsWith('/orchestrator/api/watchdog/runs')) {
-      response.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Unknown operation' }))
-      return
-    }
-    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(snapshot()))
+it('continues periodic observation after a malformed snapshot', async () => {
+  let healthy = false
+  const { calls, url } = await fakeService(() => healthy ? snapshot() : snapshot({ tickets: [null] }))
+  const config = configure(url)
+  const clock = join(directory!, 'clock.cjs')
+  writeFileSync(clock, 'const original = setTimeout; global.setTimeout = (fn, ms, ...args) => original(fn, ms === 60000 ? 50 : ms, ...args)')
+  const child = spawn(process.execPath, ['--require', clock, script, '--config', config], { stdio: 'ignore' })
+  try {
+    const state = join(directory!, 'state', 'state.json')
+    const deadline = Date.now() + 10_000
+    while (!existsSync(state) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20))
+    expect(JSON.parse(readFileSync(state, 'utf8'))).toMatchObject({ reachable: false })
+    healthy = true
+    while (Date.now() < deadline && !JSON.parse(readFileSync(state, 'utf8')).reachable) await new Promise(resolve => setTimeout(resolve, 20))
+    expect(JSON.parse(readFileSync(state, 'utf8'))).toMatchObject({ reachable: true })
+    expect(calls.length).toBeGreaterThanOrEqual(2)
+  } finally {
+    child.kill()
+    await new Promise<void>(resolve => child.once('exit', () => resolve()))
+  }
+}, 15_000)
+
+it('rejects an oversized snapshot without recording it as reachable', async () => {
+  server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(Buffer.alloc(8 * 1024 * 1024 + 1, 32))
   })
-  expect((await run(['--config', config, '--once'])).code).toBe(0)
-  expect((await run(['--config', config, '--once'])).code).toBe(0)
-  const log = readFileSync(join(directory!, 'state', 'watchdog.log'), 'utf8')
-  expect(log.match(/no watchdog run route yet/g)).toHaveLength(1)
+  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
+  const config = configure(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)
+  expect((await run(['--config', config, '--once'])).code).toBe(1)
+  expect(JSON.parse(readFileSync(join(directory!, 'state', 'state.json'), 'utf8'))).toMatchObject({ reachable: false })
+})
 
+it('enforces a total deadline even while the response keeps streaming', async () => {
+  server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.write('{')
+    const stream = setInterval(() => response.write(' '), 100)
+    response.on('close', () => clearInterval(stream))
+  })
+  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
+  const config = configure(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)
+  const started = Date.now()
+  expect((await run(['--config', config, '--once'])).code).toBe(1)
+  expect(Date.now() - started).toBeGreaterThanOrEqual(9_000)
+  expect(Date.now() - started).toBeLessThan(15_000)
+  expect(JSON.parse(readFileSync(join(directory!, 'state', 'state.json'), 'utf8'))).toMatchObject({ reachable: false })
+}, 18_000)
+
+it('logs an unreachable service and exposes the local status', async () => {
   const unreachable = configure('http://127.0.0.1:1')
   const result = await run(['--config', unreachable, '--once'])
   expect(result.code).toBe(1)
@@ -259,62 +243,70 @@ it('reports a missing run route once, logs an unreachable service, and exits 1 w
   expect(missing.stderr).toContain('Cannot read the watchdog configuration')
 })
 
-it.skipIf(process.platform !== 'win32')('runs the configured mechanical recovery check without a model', async () => {
-  const config = configure('http://127.0.0.1:1', { report: false, crashRecovery: { serviceConfig: 'service.json', recoveryScript: 'recover.ps1' }, powershell: 'pwsh' })
-  const calls = join(directory!, 'recovery.txt')
+it('ignores recovery and deployment requests in a running observer', async () => {
+  const config = configure('http://127.0.0.1:1', { crashRecovery: { serviceConfig: 'service.json', recoveryScript: 'recover.ps1', retrySeconds: 1 },
+    powershell: 'pwsh', deployConfig: 'deploy.json', agentConfig: 'missing-agent.json' })
+  const recovery = join(directory!, 'recovery-ran')
   writeFileSync(join(directory!, 'service.json'), '{}')
-  writeFileSync(join(directory!, 'recover.ps1'), `param($Config, $ExpectedUrl)\nSet-Content -LiteralPath '${calls.replaceAll("'", "''")}' -Value "$Config|$ExpectedUrl"\n`)
-  expect((await run(['--config', config, '--once'])).code).toBe(1)
-  expect(existsSync(calls)).toBe(false)
-  const observer = await import(pathToFileURL(script).href) as {
-    loadConfig: (path: string) => Record<string, unknown>
-    cycle: (config: Record<string, unknown>, state: Record<string, unknown>, now: Date, allowRecovery: boolean) => Promise<unknown>
+  writeFileSync(join(directory!, 'recover.ps1'), `param($Config, $ExpectedUrl)\nSet-Content -LiteralPath '${recovery.replaceAll("'", "''")}' -Value 'ran'\n`)
+  const request = join(directory!, 'request.json')
+  const result = join(directory!, 'result.json')
+  writeFileSync(request, '{}')
+  writeFileSync(join(directory!, 'deploy.json'), JSON.stringify({ requestPath: request, resultFile: result }))
+  const child = spawn(process.execPath, [script, '--config', config], { stdio: 'ignore' })
+  try {
+    const state = join(directory!, 'state', 'state.json')
+    const deadline = Date.now() + 10_000
+    while (!existsSync(state) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+    expect(JSON.parse(readFileSync(state, 'utf8'))).toMatchObject({ reachable: false })
+    expect(existsSync(join(directory!, 'state', 'heartbeat.json'))).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 1200))
+    expect(existsSync(recovery)).toBe(false)
+    expect(readFileSync(request, 'utf8')).toBe('{}')
+    expect(existsSync(result)).toBe(false)
+    expect(readdirSync(directory!).some(name => name.startsWith('result.json.watchdog-'))).toBe(false)
+    expect(readFileSync(join(directory!, 'state', 'watchdog.log'), 'utf8')).not.toMatch(/Crash recovery|Deployment/)
+  } finally {
+    child.kill()
+    await new Promise<void>(resolve => child.once('exit', () => resolve()))
   }
-  await observer.cycle(observer.loadConfig(config), {}, new Date(), true)
-  expect(readFileSync(calls, 'utf8').trim()).toBe(`${join(directory!, 'service.json')}|http://127.0.0.1:1`)
-  expect(JSON.parse(readFileSync(join(directory!, 'state', 'state.json'), 'utf8'))).toMatchObject({ recoveryExit: 0 })
+}, 15_000)
+it('refuses an existing lock without replacing it', async () => {
+  const config = configure('http://127.0.0.1:1')
+  const stateDir = join(directory!, 'state')
+  mkdirSync(stateDir)
+  const lock = join(stateDir, 'watchdog.pid')
+  writeFileSync(lock, '123456789\n')
+  const result = await run(['--config', config, '--once'])
+  expect(result.code).toBe(2)
+  expect(result.stderr).toContain('verify no observer is running before removing it manually')
+  expect(readFileSync(lock, 'utf8')).toBe('123456789\n')
 })
 
-it.skipIf(process.platform !== 'win32')('rechecks crash recovery at its shorter interval', async () => {
-  const config = configure('http://127.0.0.1:1', { report: false, intervalSeconds: 900,
-    crashRecovery: { serviceConfig: 'service.json', recoveryScript: 'recover.ps1', retrySeconds: 1 }, powershell: 'pwsh' })
-  const calls = join(directory!, 'recovery.txt')
-  writeFileSync(join(directory!, 'service.json'), '{}')
-  writeFileSync(join(directory!, 'recover.ps1'), `param($Config, $ExpectedUrl)\nAdd-Content -LiteralPath '${calls.replaceAll("'", "''")}' -Value 'check'\n`)
-  const child = spawn(process.execPath, [script, '--config', config], { stdio: 'ignore' })
-  try {
-    const deadline = Date.now() + 10000
-    while ((!existsSync(calls) || readFileSync(calls, 'utf8').trim().split(/\r?\n/).length < 2) && Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 50))
-    }
-    expect(readFileSync(calls, 'utf8').trim().split(/\r?\n/).length).toBeGreaterThanOrEqual(2)
-  } finally {
-    child.kill()
-    await new Promise<void>(resolve => child.once('exit', () => resolve()))
-  }
-}, 15000)
-
-it('consumes deployment requests only in the long-running observer', async () => {
-  const config = configure('http://127.0.0.1:1', { report: false, deployConfig: 'deploy.json' })
-  const checkout = join(directory!, 'checkout')
-  const calls = join(directory!, 'deploy-calls')
-  mkdirSync(join(checkout, 'scripts'), { recursive: true })
-  writeFileSync(join(checkout, 'scripts', 'deploy.mjs'), `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(calls)}, 'deployed')`)
-  writeFileSync(join(directory!, 'source-checkout.txt'), checkout)
-  writeFileSync(join(directory!, 'request.json'), '{}')
-  writeFileSync(join(directory!, 'deploy.json'), JSON.stringify({ requestPath: join(directory!, 'request.json'), resultFile: join(directory!, 'result.json') }))
+it('retries failed local alerts and recovery records without falsely acknowledging them', async () => {
+  let healthy = false
+  const { url } = await fakeService(() => healthy ? snapshot() : {})
+  const config = configure(url, { alertFile: 'alerts.jsonl', alertAfterFailures: 1 })
+  const alert = join(directory!, 'alerts.jsonl')
+  const state = join(directory!, 'state', 'state.json')
+  mkdirSync(alert)
   expect((await run(['--config', config, '--once'])).code).toBe(1)
-  expect(existsSync(calls)).toBe(false)
-  const child = spawn(process.execPath, [script, '--config', config], { stdio: 'ignore' })
-  try {
-    const deadline = Date.now() + 10000
-    while (!existsSync(calls) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
-    expect(readFileSync(calls, 'utf8')).toBe('deployed')
-  } finally {
-    child.kill()
-    await new Promise<void>(resolve => child.once('exit', () => resolve()))
-  }
-}, 15000)
+  expect(JSON.parse(readFileSync(state, 'utf8'))).not.toHaveProperty('alertedAt')
+  expect(readFileSync(join(directory!, 'state', 'watchdog.log'), 'utf8')).not.toContain('Independent alert written')
+  rmSync(alert, { recursive: true })
+  expect((await run(['--config', config, '--once'])).code).toBe(1)
+  expect(JSON.parse(readFileSync(state, 'utf8'))).toHaveProperty('alertedAt')
+  expect(JSON.parse(readFileSync(alert, 'utf8')).kind).toBe('unreachable')
+  rmSync(alert)
+  mkdirSync(alert)
+  healthy = true
+  expect((await run(['--config', config, '--once'])).code).toBe(0)
+  expect(JSON.parse(readFileSync(state, 'utf8'))).toMatchObject({ reachable: true, unreachable: 2, alertedAt: expect.any(String) })
+  rmSync(alert, { recursive: true })
+  expect((await run(['--config', config, '--once'])).code).toBe(0)
+  expect(JSON.parse(readFileSync(alert, 'utf8'))).toMatchObject({ kind: 'recovered', failures: 2 })
+  expect(JSON.parse(readFileSync(state, 'utf8'))).not.toHaveProperty('alertedAt')
+})
 
 it('writes one independent alert after consecutive unreachable reads and a recovery record when the service returns', async () => {
   const { url } = await fakeService(() => snapshot())

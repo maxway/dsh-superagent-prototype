@@ -31,9 +31,8 @@ it('builds a verifiable self-contained Watchdog artifact with a stable digest', 
   expect(manifest).toMatchObject({ name: 'dsh-superagent-watchdog', version: 'artifact-1', apiVersion: 1,
     minServiceVersion: '0.1.0', builtAt: '2026-11-09T00:00:00.000Z' })
   expect(manifest.sha256).toMatch(/^[0-9a-f]{64}$/)
-  expect(Object.keys(manifest.files).sort()).toEqual(['agent/config.example.json', 'agent/gate.mjs', 'agent/model.patch.example.yml',
-    'agent/prompt.md', 'agent/run.ps1', 'launch-observer.ps1', 'launch-observer.vbs', 'package.json', 'watchdog',
-    'watchdog-artifact.mjs', 'watchdog-bootstrap.mjs', 'watchdog-control.mjs', 'watchdog-deployment.mjs', 'watchdog-smoke.mjs', 'watchdog-update.mjs'])
+  expect(Object.keys(manifest.files).sort()).toEqual(['launch-observer.ps1', 'launch-observer.vbs', 'package.json', 'watchdog',
+    'watchdog-artifact.mjs', 'watchdog-control.mjs', 'watchdog-smoke.mjs', 'watchdog-update.mjs'])
   expect(JSON.parse(readFileSync(join(first, 'package.json'), 'utf8'))).toMatchObject({ type: 'module' })
 
   // The same sources and inputs produce the same digest, so a request can pin one artifact.
@@ -47,11 +46,25 @@ it('builds a verifiable self-contained Watchdog artifact with a stable digest', 
   expect(JSON.parse(result)).toMatchObject({ version: 'artifact-1', commit: 'artifact-1000000000000000000000000000000000000' })
 })
 
+it('defaults the CLI artifact version and timestamp to the current commit and time', async () => {
+  directory = mkdtempSync(join(tmpdir(), 'watchdog-artifact-default-'))
+  const out = join(directory, 'artifact')
+  const result = await new Promise<{ code: number, stderr: string }>(resolve => {
+    execFile(process.execPath, [artifact, '--out', out], { timeout: 30_000 }, (error, _stdout, stderr) =>
+      resolve({ code: typeof error?.code === 'number' ? error.code : 0, stderr }))
+  })
+  expect(result.code, result.stderr).toBe(0)
+  const manifest = JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8'))
+  expect(manifest.commit).toMatch(/^[a-f0-9]{40,64}$/)
+  expect(manifest.version).toBe(manifest.commit)
+  expect(Number.isFinite(Date.parse(manifest.builtAt))).toBe(true)
+})
+
 it('refuses an artifact whose file changed after the manifest was written', async () => {
   directory = mkdtempSync(join(tmpdir(), 'watchdog-artifact-tamper-'))
   const out = join(directory, 'artifact')
   expect(await build(out, 'artifact-2')).toMatchObject({ code: 0 })
-  writeFileSync(join(out, 'agent', 'gate.mjs'), 'export {}\n')
+  writeFileSync(join(out, 'watchdog'), 'export {}\n')
   const result = await new Promise<{ code: number, stderr: string }>(resolve => {
     execFile(process.execPath, [smoke, out], { timeout: 60_000 }, (error, _stdout, stderr) =>
       resolve({ code: typeof error?.code === 'number' ? error.code : 0, stderr }))

@@ -2,10 +2,8 @@
 /**
  * Smoke an uninstalled Watchdog artifact without the production service or Feishu.
  *
- * A local mock management API answers one quiet snapshot and accepts observation runs. The artifact's observer must
- * complete one `--once` cycle, and the artifact's agent gate must complete one quiet gate cycle from the same version;
- * both runs must carry the manifest version. This proves the artifact is self-contained before an update switches the
- * live `current` pointer.
+ * A local mock management API answers one quiet snapshot and rejects writes. The artifact's observer must complete one
+ * read-only `--once` cycle and persist local state without sending requests that change the service.
  */
 import { spawn } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -47,21 +45,13 @@ export async function smokeArtifact(artifactDirectory, options = {}) {
   const node = options.node ?? process.execPath
   const timeoutMs = (options.timeoutSeconds ?? 30) * 1000
   const directory = mkdtempSync(join(tmpdir(), 'watchdog-smoke-'))
-  const runs = []
+  const requests = []
   let server
   try {
     server = createServer((request, response) => {
-      let body = ''
-      request.on('data', chunk => { body += chunk })
-      request.on('end', () => {
-        response.writeHead(200, { 'content-type': 'application/json' })
-        if (request.method === 'POST' && request.url?.startsWith('/orchestrator/api/watchdog/runs')) {
-          try { runs.push(JSON.parse(body)) } catch { /* A malformed body still gets an answer; the assertion fails. */ }
-          response.end(JSON.stringify({ id: 'smoke-run', text: 'smoke' }))
-          return
-        }
-        response.end(JSON.stringify(SNAPSHOT))
-      })
+      requests.push({ method: request.method, url: request.url })
+      response.writeHead(request.method === 'GET' ? 200 : 405, { 'content-type': 'application/json' })
+      response.end(JSON.stringify(SNAPSHOT))
     })
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
     const url = `http://127.0.0.1:${server.address().port}`
@@ -72,15 +62,13 @@ export async function smokeArtifact(artifactDirectory, options = {}) {
     const observer = await run(node, [join(artifactDirectory, 'watchdog'), '--once', '--config', config],
       { cwd: directory }, timeoutMs)
     if (observer.code !== 0) throw new Error(`The artifact observer failed (exit ${observer.code}): ${observer.stderr.trim() || observer.stdout.trim()}`)
-    const observerRun = runs.find(entry => entry.version === manifest.version)
-    if (!observerRun) throw new Error(`The artifact observer recorded no run for version ${manifest.version}`)
-    if (!observerRun.idempotencyKey) throw new Error('The artifact observer recorded a run without an idempotency key')
-
-    const gate = await run(node, [join(artifactDirectory, 'agent', 'gate.mjs'), '--config', config], { cwd: directory }, timeoutMs)
-    if (gate.code !== 0) throw new Error(`The artifact agent gate failed (exit ${gate.code}): ${gate.stderr.trim() || gate.stdout.trim()}`)
-    const gateRun = runs.filter(entry => entry.version === manifest.version).at(-1)
-    if (!gateRun || gateRun === observerRun) throw new Error(`The artifact agent gate recorded no run for version ${manifest.version}`)
-    return { version: manifest.version, commit: manifest.commit, observerRun: observerRun.idempotencyKey, gateRun: gateRun.idempotencyKey }
+    if (!requests.some(entry => entry.method === 'GET' && entry.url?.startsWith('/orchestrator/api/watchdog'))) {
+      throw new Error('The artifact observer did not read a Watchdog snapshot')
+    }
+    if (requests.some(entry => entry.method !== 'GET')) throw new Error('The artifact observer sent a non-GET request')
+    const state = JSON.parse(readFileSync(join(directory, 'state', 'state.json'), 'utf8'))
+    if (state.reachable !== true) throw new Error('The artifact observer did not persist a reachable state')
+    return { version: manifest.version, commit: manifest.commit, observer: 'read-only' }
   } finally {
     server?.close()
     rmSync(directory, { recursive: true, force: true })

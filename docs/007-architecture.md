@@ -249,7 +249,7 @@ Each model request binds the Session to the current prompt revision. The revisio
 | --- | --- |
 | `src/app/runtime.ts` | The composition root: builds the parts with the interfaces they use, registers the routes and the Source host, and starts and stops dsh-superagent |
 | `src/app/notices.ts` | Domain events and worker reports into notices and relays for the main Session |
-| `src/app/tools/main.ts`, `src/app/tools/executor.ts` | Tool arguments of the main Session and the Executor Sessions into calls of the core classes, and their results into cards; the main Session's `orchestrator_deploy` sends the operator's deploy request to the independent Watchdog |
+| `src/app/tools/main.ts`, `src/app/tools/executor.ts` | Tool arguments of the main Session and the Executor Sessions into calls of the core classes, and their results into cards; the main Session's `orchestrator_deploy` queues the operator's deploy request for a separately configured executor |
 | `src/app/http.ts`, `src/app/views/`, `src/app/api.ts` | HTTP requests into calls, and Store reads into the panel's views; `api.ts` types every route for the panel |
 | `src/app/resources.ts`, `src/app/links.ts`, `src/app/cards.ts` | Resource names into reads, source messages into links, records into compact cards for models |
 | `src/sources/github*.ts`, `src/sources/gitlab*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | GitHub, GitLab and Feishu payloads into Triggers and Thread facts, and messages into CLI calls |
@@ -340,7 +340,7 @@ Some generic modules still need provider-specific behavior:
 | `src/app/retry-health.ts` | `RetryHealth`: which Sessions wait on a model budget retry, for the `models` health entry |
 | `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
 | `src/app/assessment.ts` | The MasterAssessor, the assessment schema and the window `orchestrator_eval` answers |
-| `src/app/deployment.ts` | The main Session's deploy request to the independent Watchdog: the request file and the task command from the environment; it sends, never releases |
+| `src/app/deployment.ts` | The main Session's deploy request for a separately configured executor: the request file and the optional task command from the environment; it queues, never releases |
 | `src/app/execution-environment.ts` | The execution environment: its variables, a Ticket's values, the directory root and the lines of the prompt section, which `src/app/prompts.ts` fills into its template |
 | `src/app/source-context.ts` | `sourceContextOf`: each Source kind's `SourceContext` |
 | `src/app/links.ts` | `sourceLink`, the page of a Trigger's message, and `candidateCard` |
@@ -355,24 +355,19 @@ Some generic modules still need provider-specific behavior:
 | `src/app/views/records.ts` | The rows the views share: Triggers, Tickets, Threads, Decisions and Channel links, and `ownersOf`, the owners of follow-ups as one request reads them |
 | `src/app/views/tickets.ts` | The Ticket lists by stage, a Ticket's page, the Mandate basis facts and the Executor's load |
 | `src/app/views/watchdog.ts` | The read-only Watchdog view and `watchdogSummary`: every open Ticket's stage, latest Assignment and report, silence and mechanical signals (including `session-missing` when a running Assignment has no live worker Session), rendered as the Feishu observation report |
-| `src/app/watchdog.ts` | The read-only Watchdog observation: records a run from the live snapshot and keeps the rendered observation as the last-run heartbeat |
+| `src/app/watchdog.ts` | Service-side observation recording from the live snapshot; its last run is not the independent observer heartbeat |
 | `src/app/watchdog-recovery.ts` | The bounded enforce-mode recovery: rechecks an absent worker Session, snapshot freshness, pause and the per-Session retry ceiling, then retries once and writes an audit row; never restarts the service |
 | `scripts/dsh-superagent` | The cross-platform service control script: start, stop, restart, status, verify and Watchdog commands; the listening owner of `--url` is authoritative, on Windows a stop without `--url` discovers the running superagent from its management state, logs and control files live under `<DSH home>/service/`, and it starts outside a Windows Job when needed |
 | `scripts/dsh-superagent.ps1` | The Windows operator entry: normal start and restart update and build latest; `-UseInstalled` is reserved for the internal start and dedicated crash recovery |
 | `scripts/restart-superagent.ps1`, `scripts/update-superagent.ps1` | Mechanical latest-code deployment: stop the configured server, pull, install, build and start; never controls Watchdog or calls a model |
 | `scripts/recover-superagent.ps1` | Dedicated server-crash recovery: start the installed version while respecting an intentional stop |
 | `scripts/deploy.mjs`, `scripts/deploy.ps1` | Independent deployment task: validates requests, invokes the mechanical restart and archives successful unchanged requests without model fallback |
-| `scripts/watchdog` | Standing independent observer: follows the snapshot, records runs and local alerts, and optionally checks for service crashes and consumes deployment requests without a model; `agentConfig` handles separate task-risk judgment |
-| `scripts/watchdog-deployment.mjs` | Asynchronously consumes configured Superagent deployment requests and deduplicates attempts without blocking the observer heartbeat |
-| `scripts/watchdog-agent/` | The agent wrapper, mechanical gate, prompt and configuration/model templates, versioned with the observer: a quiet gate records a run and exits; a risky cycle starts the full DSH agent from the same artifact in its own workspace, never the checkout; the standing observer invokes it on new risk |
-| `scripts/watchdog-artifact.mjs` | Builds an immutable Watchdog artifact and its manifest (file hashes, one digest, `apiVersion`, `minServiceVersion`), and verifies an artifact before installation |
-| `scripts/watchdog-smoke.mjs` | Exercises an uninstalled artifact against a local mock management API: the observer and the agent gate must record runs carrying the manifest version, without the production service or Feishu |
-| `scripts/watchdog-bootstrap.mjs` | Prepares the latest Watchdog artifact for observer startup and coordinates with the updater without calling a model |
-| `scripts/watchdog-launch-observer.ps1` | The standing observer's stable launcher: prepares the latest artifact on startup and after a non-zero observer exit, without rewriting the task action |
-| `scripts/watchdog-launch-observer.vbs` | The hidden entry point of that standing task: `wscript.exe` runs `launch-observer.ps1` in a hidden window and waits for its lifetime, so the standing process never flashes a PowerShell window |
-| `scripts/launch-hidden.vbs` | The windowless entry point for the other non-interactive Windows tasks (deployment, Watchdog update, service start): it starts the given command hidden, waits for it and returns its exit code, so a scheduled `node` or `pwsh` and its console children never appear on the desktop |
-| `scripts/watchdog-control.mjs` | The operator lifecycle: normal `start` and `deploy` build the latest remote artifact, switch the pointer and start the observer without a model |
-| `scripts/watchdog-update.mjs` | The independent Watchdog update: latest remote build, installation, pointer switch, observer start and heartbeat; no old-version automatic restart or fixed survival wait |
+| `scripts/watchdog` | Intended independent observer: reads GET snapshots at fixed intervals without long polling and writes local state, logs and heartbeat; no model, Feishu, service writes, automatic recovery, deployment polling or self-update. Existing installations require a separate Watchdog deployment to adopt this behavior |
+| `scripts/watchdog-deployment.mjs`, `scripts/watchdog-agent/`, `scripts/watchdog-bootstrap.mjs` | Legacy helpers, excluded from the new artifact; separately installed old tasks may still run |
+| `scripts/watchdog-artifact.mjs`, `scripts/watchdog-smoke.mjs` | Artifact build and isolated smoke tooling; deployment is a separate operator action |
+| `scripts/watchdog-launch-observer.ps1`, `scripts/watchdog-launch-observer.vbs` | Intended launcher runs the currently installed observer version without fetching or updating; the VBS entry starts it hidden. Existing installations require separate deployment |
+| `scripts/launch-hidden.vbs` | Windowless entry point for non-interactive Windows tasks; starts the given command hidden, waits and returns its exit code |
+| `scripts/watchdog-control.mjs`, `scripts/watchdog-update.mjs` | In the candidate, `status` is read-only; `start`, `stop`, `deploy` and the update entry are disabled for safety. Observer and launcher do not update themselves |
 | `src/app/views/threads.ts` | The Thread lists, a Thread's timeline, the search and the Decision list |
 | `src/app/views/sources.ts` | The Source status: each Source instance's state, its last day's counts, and what it filtered and dropped in that day |
 | `src/app/views/settings.ts` | The settings page's view: each block with its revision, each Source's settings with its kind's form, and the execution environment |
@@ -475,17 +470,17 @@ Some generic modules still need provider-specific behavior:
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/watchdog.spec.ts` | The Watchdog view and its Feishu observation summary: stages, latest reports, silence, faults, off-peak and review waits, activity from Inputs, a missing worker Session, and the rendered report |
-| `tests/watchdog-process.spec.ts` | The independent Watchdog process: configuration validation, mechanical findings and their stable identity, run recording, report dedupe, the quiet daily report, an unreachable service's independent alert and recovery, the versioned wait and the status command; the gate's quiet, risk and unreachable exits |
-| `tests/watchdog-deployment.spec.ts` | Asynchronous deployment polling: competing pollers, request deduplication, detached execution and failure handling |
-| `tests/watchdog-gate.spec.ts` | The artifact gate: a result waiting for review for more than a day in the real snapshot shape (`person` + `review`) and repeated failed attempts escalate, a quiet cycle records a run without a model, and the mechanical risk is recorded before the full agent runs |
-| `tests/watchdog-artifact.spec.ts` | The versioned Watchdog artifact: its file set and manifest, a stable digest, a self-contained observer/gate smoke and tamper detection |
+| `tests/watchdog-process.spec.ts` | Independent observer behavior, configuration and local state |
+| `tests/watchdog-deployment.spec.ts` | Legacy deployment polling helper coverage; not behavior of the intended observer |
+| `tests/watchdog-gate.spec.ts` | Legacy gate helper coverage; the new artifact excludes the agent module |
+| `tests/watchdog-artifact.spec.ts` | Watchdog artifact file set, manifest and verification coverage |
 | `tests/watchdog-agent.spec.ts` | The Watchdog agent wrapper: the full agent starts in its own configured workspace with absolute checkout commands, a workspace inside the checkout is refused, and an unset workspace is named after its service profile (`watchdog_superagent`, `watchdog_sheepdoku`) |
 | `tests/watchdog-recovery.spec.ts` | Bounded Watchdog recovery: off by default, one audited retry only for a running Assignment with no live Session, idempotent replay, a per-Session ceiling, and refusals for a present Session, stale snapshot or non-running Assignment |
-| `tests/watchdog-observer-agent.spec.ts` | The standing observer's event-driven handover: new risk runs the full agent once, the same finding spends no second model call, a cleared risk re-arms it, a failed agent is reported once without retrying, and the agent configuration is validated |
+| `tests/watchdog-observer-agent.spec.ts` | Observer and agent integration coverage; the intended observer does not invoke an agent |
 | `tests/watchdog-launch.spec.ts` | The windowless observer launcher: the VBS and its PowerShell launcher start the current version with the task's arguments and keep the exit code |
 | `tests/watchdog-diagnostics.spec.ts` | Windows event diagnostics: task filtering, disabled-channel status and access failures |
-| `tests/watchdog-control.spec.ts` | The mechanical lifecycle: option parsing and scheduler commands, artifact preparation, launcher installation, and a deploy request handed to the updater without a model |
-| `tests/watchdog-update.spec.ts` | The independent Watchdog update: latest artifact installation, pointer switch, local heartbeat, idempotency and failure without automatic rollback |
+| `tests/watchdog-control.spec.ts` | Read-only status and disabled lifecycle control coverage |
+| `tests/watchdog-update.spec.ts` | Disabled Watchdog update and related configuration coverage |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |
@@ -520,7 +515,7 @@ One SQLite file, `<stateDir>/orchestrator.sqlite`, which only the Store opens.
 | `decision` | Decisions, by Thread | Engine |
 | `effect` | The effect queue: per kind and key, the payload, its order, failed attempts with the last error, and when it is due | Effects; the schema 11 migration queues what earlier versions kept for the main Session |
 | `outbox` | The receipt of each message for a Channel, by id, with the Ticket it is for and its `status`, `pending`, `sent` or `dropped`, kept so an id is never queued twice; for a dropped message, when and why, as the generated column `dropped`, its time, and a reason code. A message that waits has a `reply` effect, which holds its attempts | The Outbox |
-| `watchdog_run` | Every recorded Watchdog observation run, by its id and unique idempotency key: the time, paused state, open and flagged counts, the caller's note and the rendered observation, plus the Watchdog artifact's `version` and `commit` when the reporter knows them; the newest thirty days are kept, so a fresh run proves the check is alive | `src/app/watchdog.ts` |
+| `watchdog_run` | Every recorded Watchdog observation run, by its id and unique idempotency key: the time, paused state, open and flagged counts, the caller's note and the rendered observation, plus the Watchdog artifact's `version` and `commit` when the reporter knows them; the newest thirty days are kept; a service-side run is not an independent observer heartbeat | `src/app/watchdog.ts` |
 | `watchdog_recovery` | Every bounded recovery attempt by its id and unique idempotency key, with the Ticket, Snapshot time, reason, result and optional error; one non-refused attempt per Session, so an audit row both proves and caps the action | `src/app/watchdog-recovery.ts` |
 | `kv` | Every other record, by key | The part that names it |
 

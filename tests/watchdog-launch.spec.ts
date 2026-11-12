@@ -63,7 +63,7 @@ process.stderr.write('simulated clean stop\\n')
   expect(result.code, JSON.stringify({ ...result, log })).toBe(0)
   expect(log).toContain('observer output version=v1 simulated observer failure')
   expect(log).toContain('observer exit=9 version=v1')
-  expect(readFileSync(bootstraps, 'utf8').trim().split(/\r?\n/)).toEqual(['bootstrap', 'bootstrap'])
+  expect(() => readFileSync(bootstraps, 'utf8')).toThrow()
   expect(log).toContain('observer output version=v1 simulated clean stop')
   expect(log).toContain('observer exit=0 version=v1')
 }, 30_000)
@@ -115,7 +115,7 @@ it.skipIf(process.platform !== 'win32')('runs the observer even when the log can
   expect(readFileSync(marker, 'utf8')).toBe('ran')
 }, 30_000)
 
-it.skipIf(process.platform !== 'win32')('fails rather than launching the old observer when bootstrap fails', async () => {
+it.skipIf(process.platform !== 'win32')('starts the installed observer without invoking bootstrap', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-launch-bootstrap-failure-'))
   directory = dir
   copyFileSync(observerPs, join(dir, 'launch-observer.ps1'))
@@ -130,9 +130,9 @@ it.skipIf(process.platform !== 'win32')('fails rather than launching the old obs
     execFile('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(dir, 'launch-observer.ps1'), '-Config', config],
       { timeout: 10_000 }, error => resolve(error ? (typeof error.code === 'number' ? error.code : null) : 0))
   })
-  expect(code).toBe(2)
-  expect(readFileSync(join(dir, 'launch-observer.log'), 'utf8')).toMatch(/remote unavailable|bootstrap failed/i)
-  expect(() => readFileSync(marker)).toThrow()
+  expect(code).toBe(0)
+  expect(readFileSync(marker, 'utf8')).toBe('ran')
+  expect(readFileSync(join(dir, 'launch-observer.log'), 'utf8')).not.toMatch(/remote unavailable|bootstrap failed/i)
 }, 15_000)
 
 it.skipIf(process.platform !== 'win32')('starts the transaction version without waiting for the updater lock', async () => {

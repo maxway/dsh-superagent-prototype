@@ -270,56 +270,17 @@ directory after the new entry is deployed and no old invocation remains.
 
 Open the URL printed in the log, then choose **Superagent** in the sidebar.
 
-### Hourly check
-
-Do not use a model or a scheduled agent to decide whether to stop or restart the server. A standing Watchdog configured with `crashRecovery` can invoke `pwsh scripts\recover-superagent.ps1` after confirming a crash; it uses the installed version and respects the intentional-stop marker. The helper alone does not enable automatic recovery. Normal operator-initiated restarts instead use the latest-code deployment path.
-
 ### Task-level check (Watchdog)
 
-The hourly check watches the process. A task-level check also watches the work: every open Ticket's stage, latest report, silence and mechanical signals. The independent Watchdog does this outside the service, so it keeps working when the service is down. The service formerly offered its own intervention settings, SQLite decision audit and `retry`/`stop` route; those are removed because the external Watchdog owns the decisions, and the service now exposes only the read-only observation surface.
-
-`GET /orchestrator/api/watchdog` returns the read-only snapshot: service state, every open Ticket with its stage, latest Assignment and report, silence and mechanical signals, and the last recorded observation (`lastRun`). `scripts/dsh-superagent --profile superagent --url <panel URL> watchdog` prints the same JSON. The snapshot command sends only GET requests; `--stale-minutes` changes only its signal threshold.
-
-To follow changes without polling the full snapshot, the service also offers a versioned wait: `GET /orchestrator/api/watchdog/wait?since=<version>&timeout=<seconds>&stale_minutes=<minutes>` returns at once with a new `version` when a Ticket, health, pause or setup fact changes, at the next silence or review deadline, or when the timeout expires. The timeout is capped at 240 seconds. The Watchdog keeps one request in flight and reads the full snapshot only after the wait returns.
-
-An external agent reading the snapshot reports only what a person should act on: `delivery-error` or `undelivered-inputs`; `no-progress` or `queued` that `offPeak`, a paused service, incomplete setup or a full worker load does not explain; a person stage that has waited far longer than 30 minutes, or a ready result awaiting review for more than a day; repeated failed attempts; or a last report that no longer matches the Ticket title. It records its observation every time it runs, even when nothing is wrong, and keeps quiet otherwise. It does not edit settings, prompts, the database or Session files; the service has no intervention route for it to call.
-
-When the Watchdog has something to report, `scripts/dsh-superagent --profile superagent --url <panel URL> watchdog report --chat <chat id>` sends the observation summary to that Feishu chat through the Feishu Source's bot, so a person reads it where they already talk to the service. The server renders the summary from the live snapshot: the service state and the open Tickets that carry mechanical signals with their silence and latest report. `--note "<one sentence>"` appends the Watchdog's own judgement. The chat must be one the bot is in, and the Feishu Source must be on and configured; the report changes no Ticket and is separate from the 100-word limit on conversational replies. The command calls `POST /orchestrator/api/watchdog/report` with `chatId`, `idempotencyKey` and an optional `note`.
-
-Record each observation run with `scripts/dsh-superagent --profile superagent --url <panel URL> watchdog run [--note "<one sentence>"]`. The server renders the observation from the live snapshot and keeps it for thirty days, so `watchdog runs [--limit <n>]` lists recent observations and `GET /orchestrator/api/watchdog` reports the newest as `lastRun`. A recorded run changes no Ticket and sends nothing; a quiet period with a fresh `lastRun` is distinguishable from a check that stopped running. Record one every time the check runs, including when there is nothing to report.
+The intended independent Watchdog observer reads `GET /orchestrator/api/watchdog` at a fixed interval, without long polling; the snapshot describes service state and open Tickets and their mechanical signals. When the service is unreachable the observer cannot inspect its current state, but can record the failed observation locally.
 
 ### Independent Watchdog process
 
-`scripts/watchdog` is the standing observer: it reads the same read-only snapshot, records each observation as a run, and keeps its own configuration, state and log; it needs neither DSH nor the operator's profile. With `agentConfig`, new mechanical risk goes to the full DSH agent from the same artifact, which judges and reports, so the observer no longer duplicates a mechanical findings report and monitoring is driven by the HTTP long connection rather than a 30-minute timed gate. Host and deployment checks live here too. Create `watchdog.json`; its relative paths resolve against the file's folder:
+The intended observer writes local state, logs and heartbeat; it does not run a model, send Feishu messages, write observations or reports to the service, automatically recover a service or Ticket, poll deployment requests, or update itself. Local evidence is not proactive notification: an operator must inspect it or arrange a separate alerting system. A service-side `lastRun` is not an observer heartbeat and can be stale. The service may still expose recovery or other write APIs, including an enforce-mode recovery API; a read-only observer does not disable or secure those APIs.
 
-```json
-{
-  "url": "http://127.0.0.1:3083",
-  "chatId": "oc_...",
-  "report": true,
-  "intervalSeconds": 900,
-  "staleMinutes": 30,
-  "dailyReport": { "hour": 9, "timezone": "Asia/Shanghai" },
-  "stateDir": "observer-state",
-  "alertFile": "observer-alerts.jsonl",
-  "deployConfig": "C:\\Users\\me\\.dsh\\watchdog-deploy\\deploy-config.json",
-  "crashRecovery": {
-    "serviceConfig": "C:\\Users\\me\\.dsh-superagent\\service.json",
-    "recoveryScript": "C:\\path\\to\\checkout\\scripts\\recover-superagent.ps1",
-    "retrySeconds": 30
-  },
-  "agentConfig": "agent.json",
-  "agentTimeoutSeconds": 900
-}
-```
+The launcher runs only the currently installed Watchdog version and does not fetch, build or switch versions at startup or after an exit. These are the intended new semantics, not a claim about an existing production installation: a separate Watchdog artifact and launcher deployment is required before they take effect. A normal Superagent deployment does not update an independently installed Watchdog. Until independently deployed and verified, an old observer, launcher, or separate scheduled task may retain its old behavior; check their configuration and installation separately.
 
-The standing observer runs at logon under a scheduled task, or in the foreground under a process manager: `node scripts/watchdog --config watchdog.json`. `--status` prints the last recorded state; the process writes `state.json` and `watchdog.log` under `stateDir` and holds `watchdog.pid` while it runs. It records a run every cycle, so `GET watchdog`'s `lastRun` and `watchdog runs` show that it is alive. A long-running process holds one versioned wait request instead of sleeping for `intervalSeconds`; the wait returns on a Ticket, health, pause or setup change, at the next silence or review deadline, or at the API's 240-second cap. A change or a deadline runs the full cycle at once; a cap only reconnects the wait, and the process runs a fallback cycle once `intervalSeconds` has passed, so `intervalSeconds` is the maximum gap between cycles. With `agentConfig`, new mechanical risk (a Ticket signal, a part in error, incomplete setup, a ready result waiting more than a day, or two failed attempts) runs the full DSH agent from the same artifact; the observer records an `agentFingerprint`, so an unchanged finding spends no second model call, a cleared risk re-arms it, and a failed agent is reported once without retrying. Without `agentConfig` it stays purely mechanical. With `dailyReport`, it also sends one quiet report in the morning when nothing is wrong; the report is sent once per local date (within the fallback gap). While the service is unreachable it logs the failure and writes the independent alert file. With `crashRecovery` configured, the standing observer also checks mechanically for a confirmed process crash; it cannot send a Feishu report while the service's bot is down.
-
-The `deployConfig` and `crashRecovery` entries are optional; each feature is disabled when its entry is absent. The standing observer checks for deployment requests every five seconds and starts the independent executor asynchronously, without blocking its heartbeat. It does not repeatedly retry the same failed request; inspect the configured `resultFile` and submit a different request to retry. An observer exit just before it spawns the executor or during lock contention can leave a `<resultFile>.watchdog-<request SHA-256>.attempt` claim; after confirming no executor is running, remove the claim or submit a different request. The older scheduled task's own manual retries are not subject to this deduplication. Claims can contain deployment error output and should be treated as sensitive logs.
-
-With `crashRecovery`, an unreachable service is checked every `retrySeconds` (30 by default). Recovery starts the installed version only when the last recorded service process is gone, no other target process or listener exists, and no intentional stop is active; an API failure alone does not cause a start. Deployment and recovery share a lifecycle mutex keyed by DSH home and profile. There is no persistent deployment maintenance marker. After a failed update or an interrupted deployment, a subsequent crash recovery can start the installed version even if the installation is incomplete; inspect the failure and installation before relying on recovery. Old maintenance marker files are ignored. Use `dsh-superagent.ps1 stop` for a persistent intentional stop; an HTTP stop alone does not set the stop marker. Neither recovery nor deployment requires a model or administrator privileges.
-
-`--once` remains a diagnostic entry and does not deploy or recover. Operate the observer with `node scripts/watchdog-control.mjs status|start|stop|deploy`; `deploy` here updates Watchdog itself, not Superagent. Both new capabilities require configuration and installation of a new Watchdog artifact.
+The candidate disables dangerous PID-only force killing; an existing production installation may still use it until the new Watchdog is separately deployed. Without administrator access, process identity and permissions can be unavailable: verify PID together with creation time, or use the same process handle for identification and the operation. Reject the operation when identity or required permissions cannot be established; PID alone can be reused and is not proof of identity. These checks are not an OS isolation boundary.
 
 ### Starting the service outside a Windows Job
 
@@ -329,7 +290,7 @@ Node puts a long-running service into its own kill-on-close Job the first time i
 
 The versioned `scripts\dsh-superagent.ps1` is the service entry point: it validates the machine configuration and calls the control script, so the service keeps its own profile home and credentials while its process is outside the Job. The operator's `C:\Users\dd\.dsh-superagent\service.ps1` remains the compatibility entry for existing tools; after cutover it should be reduced to a shim to that entry. `scripts/service-start.ps1` can also run directly from an independent scheduled task; it receives the same `-DshHome` as the parent. Start that task through `wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\service-start.ps1 ...` so the wrapper and the node control script it runs stay windowless.
 
-A scheduled task has no console to inherit, so Windows gives the first console program it starts (`node` or `pwsh`) a visible console window. Every non-interactive entry point therefore goes through `scripts/launch-hidden.vbs`: `wscript.exe` itself has no console, the launcher starts the command in a hidden window, waits for it and returns its exit code, and all console children of that command share the hidden console. This covers the deployment, Watchdog update, service-start and scheduled one-shot `scripts/watchdog --once`/`--gate` tasks; the Watchdog agent launcher (`launch-agent.vbs`) follows the same pattern. Run a command directly only when a person is watching it interactively. The control script also hides its own PowerShell, `git` and Windows ACL helper processes, so a background `status`, `start` or `stop` never flashes them either.
+A scheduled task has no console to inherit, so Windows gives the first console program it starts (`node` or `pwsh`) a visible console window. Every non-interactive entry point therefore goes through `scripts/launch-hidden.vbs`: `wscript.exe` itself has no console, the launcher starts the command in a hidden window, waits for it and returns its exit code, and all console children of that command share the hidden console. This covers deployment and service-start tasks; separately installed legacy Watchdog tasks must be checked independently. Run a command directly only when a person is watching it interactively. The control script also hides its own PowerShell, `git` and Windows ACL helper processes, so a background `status`, `start` or `stop` never flashes them either.
 
 `node scripts/dsh-superagent verify --profile superagent --url <url> --survival-seconds 30` proves a release after its executor has exited: exactly one process serves the profile, the management API answers ready (or paused), the process belongs to no Windows Job it did not create, and the same process is alive after the survival window. Exit 1 names the failed condition.
 
@@ -341,7 +302,7 @@ The main Session can queue the operator's explicit deployment request without re
 
 `-Validate` prints resolved configuration; `-Plan` displays the target and script without starting a deployment. The executor does not use a persistent deployment lock file; old `<resultFile>.lock` files are ignored. The service lifecycle mutex still prevents overlapping stop, update and start operations, but concurrent executors can race while recording results or deduplicating requests. This minimal in-place path does not create a database backup or roll back on failure. An update failure can leave the service stopped, and Feishu messages received while it is offline may be lost.
 
-A Watchdog server-crash recovery is distinct from a normal deployment: `scripts/recover-superagent.ps1` starts the installed version without pulling or building and honors the intentional-stop marker. The helper is an entry point; installing or scheduling a Watchdog caller is a separate operator action.
+The separate `scripts/recover-superagent.ps1` helper starts the installed version without pulling or building and honors the intentional-stop marker; the intended observer does not invoke it. Any separately scheduled legacy caller must be assessed independently.
 
 #### Configuration
 
@@ -351,62 +312,11 @@ The deployment configuration names `checkout`, `requestPath`, `resultFile`, `ser
 
 The `dsh-superagent-deploy` task runs the entry in the background through `scripts/launch-hidden.vbs`. Its result file records whether the restart completed. Historical production version and readiness observations are not evidence that this revised script has been deployed; the task and its configuration must be checked separately when installing it.
 
-### Versioned Watchdog artifact and update task
+### Versioned Watchdog artifact and installation
 
-The Watchdog is distributed as an immutable artifact whose observer, agent wrapper and gate import only from the same version. `node scripts/watchdog-control.mjs deploy` and the public `start` command build from the configured remote's latest `origin/main` in a temporary clone, install it, switch the pointer, and start the observer. `--build` is accepted for compatibility; `--artifact` is rejected so a normal deployment cannot silently install an older artifact. The manifest records file hashes, digest, `apiVersion` and `minServiceVersion`; `node scripts/watchdog-smoke.mjs <dir>` verifies an artifact without the production service or Feishu.
+A Watchdog installation is independent of the Superagent installation. Its active artifact is selected by `<watchdogHome>\current.txt`; the intended launcher runs that installed version without automatically updating it. Installing a new observer and launcher is a separate operator-controlled deployment, not a consequence of editing this checkout or deploying Superagent. In the candidate, `watchdog-control` provides read-only `status`; its `start`, `stop` and `deploy` commands and the Watchdog update entry are disabled for safety. Verify the installed version, local state, logs and heartbeat after a separately authorized installation; do not infer success from a queued request or a service-side observation.
 
-Install the artifact under `<watchdogHome>\versions\<version>` and keep `<watchdogHome>\current.txt` as the active version; `previous.txt` is the rollback point. The standing observer runs through `wscript.exe` as `<watchdogHome>\launch-observer.vbs -Config <observer.json>`; the VBS starts `launch-observer.ps1` hidden. On normal startup and each non-zero observer exit, the launcher prepares the latest remote artifact before running it; during an updater transaction it uses the transaction's just-prepared version without waiting on its own lock. Changing the version never rewrites the task action and never restarts the superagent service. The observer configuration (service URL, chat id, state/log, agentConfig) and the agent configuration (checkout, workspace, DSH home, model patch) stay outside the repository; `scripts/watchdog-agent/config.example.json` and `model.patch.example.yml` are agent templates. A one-shot agent no longer has a separate launcher; diagnose by calling the artifact's `agent\run.ps1` directly.
-
-The agent must run in its own workspace, never the checkout. No manual path is needed: without `workspace`, the wrapper uses `<config directory>\workspaces\watchdog_<service profile>` — `watchdog_superagent` for this deployment, or `watchdog_sheepdoku` for a `sheepdoku` service profile — so Watchdogs on one host do not share a workspace. Set `workspace` only to choose another name or location. `run.ps1` creates the directory when missing, refuses one that is the checkout or inside it, and changes into it before running the gate and the full agent. The prompt addresses the checkout with absolute paths, so the agent still reads the deployment document and runs `node <checkout>\scripts\dsh-superagent ...`. DSH groups a Session under the workspace of its working directory, so the Watchdog's Sessions no longer join the checkout's Desktop DSH workspace; add the workspace directory as a DSH project to see them under their own workspace, otherwise they stay ungrouped. Existing installs must use a rebuilt artifact; the currently deployed local wrapper is not updated by a superagent release. This is workspace separation, not an isolation boundary: the agent still has full access to the checkout, and a shared DSH home still shares its session and workspace storage.
-
-The control and update scripts read `stateDir` from `<watchdogHome>/observer.json`, relative to that file (default `.watchdog`); if the file is absent they retain the historical `observer-state` path, and an unreadable or invalid configuration stops the operation. The independent `dsh-superagent-watchdog-update` task runs `node scripts/watchdog-update.mjs --config <update.json>` through the hidden launcher. For compatibility it still accepts the existing request structure, but its CLI rebuilds the latest remote artifact instead of deploying the supplied artifact. It installs and switches that artifact, starts the observer and checks its heartbeat; startup failure leaves the new pointer in place and does not automatically restart the old version. The update does not restart or replace superagent and does not call a model. For a one-off deployment, use `watchdog-control deploy` without a hand-written request. The configured request is atomically claimed and archived before building, so another invocation cannot reuse it; a failed build requires a new request. Invalid requests are restored unless a newer request already exists, in which case the invalid claim is retained with a `.claimed` suffix for manual recovery. An interrupted process can also leave a `.claimed` file. An explicitly supplied `--request` outside the configured path remains reusable and is not archived.
-
-```json
-{
-  "watchdogHome": "C:\\Users\\dd\\.dsh\\watchdog-independent",
-  "stagingRoot": "C:\\Users\\dd\\.dsh\\watchdog-independent\\staging",
-  "requestPath": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update-request.json",
-  "serviceUrl": "http://127.0.0.1:3083",
-  "observerStopCommand": "schtasks /end /tn dsh-superagent-watchdog-observer",
-  "observerStartCommand": "schtasks /run /tn dsh-superagent-watchdog-observer",
-  "logFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update.log",
-  "resultFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\watchdog-update-result.json",
-  "heartbeatTimeoutSeconds": 180,
-  "pollSeconds": 5,
-  "lockStaleSeconds": 900
-}
-```
-
-The first installation is an operator step: configure the observer and agent, install the launcher and bootstrap dependencies, write `source-checkout.txt` with the Git checkout path, point the scheduled task's `wscript.exe` at `launch-observer.vbs -Config observer.json`, and write `current.txt`. A normal Watchdog deployment installs the launcher, bootstrap dependencies and source path from the latest artifact; existing installations must be updated before the new bootstrap can run. The task should start at logon and restart on failure; the old 30-minute `dsh-superagent-watchdog-agent` task should be deleted and is not a monitoring entry. After installation use `node scripts/watchdog-control.mjs status` to check the task, process, active version and heartbeat; use `start`/`stop` for the lifecycle and `deploy --build` for a deployment. The Execution page now shows the Superagent version, the Watchdog artifact version from its latest recorded run, and that run's heartbeat; a missing or stale heartbeat is shown as a warning. The deployment can name the running build with DSH_SUPERAGENT_VERSION; the package version is the fallback.
-
-The updater checks for a fresh local `<watchdogHome>\observer-state\heartbeat.json` and live PID when starting a new artifact. There is no fixed 75-second survival wait; a startup or heartbeat failure leaves the new pointer in place and is reported without automatically starting the old version.
-
-For stall diagnosis, the standing observer also writes `<stateDir>\heartbeat.json` every 30 seconds independently of the service API, with its PID and UTC timestamp. It is not an external monitor: an event-loop stall or stopped process leaves the last timestamp behind, and PID reuse or a write error must be considered. One-shot runs do not replace it. The launcher log records its PID and Windows session at startup, the observer's stdout and stderr, and its exit code when the launcher survives to see it. Launcher exceptions are logged with their PowerShell stack when the log is writable; a log write failure does not stop the observer or replace a configuration error. These logs may contain sensitive details and should be access-controlled; if the launcher and observer are both terminated externally, the final exit code may still be unavailable. Run `powershell.exe -NoProfile -File scripts\watchdog-diagnostics.ps1 -TaskName dsh-superagent-watchdog-observer -Hours 24` to collect local Task Scheduler Operational events and Security log process-termination and logoff events as JSON. Each channel scans at most its newest 500 matching event IDs before task or process filtering; absent events are not proof of absence. Disabled channels, missing audit policy, insufficient Security-log access, retention and unrelated activity can leave gaps. The command does not enable logging or change audit policy; its output can contain account and process details and should be handled as sensitive local evidence.
-
-The panel also shows the installed current and previous versions, the candidate from the last update request, and that update's time and result. The install facts come from `DSH_SUPERAGENT_WATCHDOG_HOME` and its `current.txt`, `previous.txt` and `watchdog-update-result.json` (override the result with `DSH_SUPERAGENT_WATCHDOG_UPDATE_RESULT`); without the home the panel says the install is not configured. This host installs under `C:\Users\dd\.dsh\watchdog-independent`, so the service environment should point `DSH_SUPERAGENT_WATCHDOG_HOME` there; otherwise the install facts are null. Set `observerStopCommand` and `observerStartCommand` in the Watchdog update configuration: the updater stops the old observer before switching the pointer and starts the new version; a failed start is reported without automatically starting the previous version. The commands receive `DSH_WATCHDOG_VERSION` and `DSH_WATCHDOG_SERVICE_URL`, and run outside the superagent service.
-
-### Independent alerts and Session observation
-
-The independent observer can leave a local alert when the management API stays unreachable, without the service or Feishu. Set `alertFile` (and optionally `alertAfterFailures`, default 2) in the Watchdog configuration: after that many consecutive failed reads it appends one JSON line `{schema, at, kind: "unreachable", url, failures, since, message}` to the file, and one `{kind: "recovered"}` line when the service answers again. It writes at most one unreachable record until recovery, so an external scheduled task can send or escalate the file without duplicating messages. The same state and log are still written while the service is down, so a stopped service is visible instead of silent.
-
-```json
-{
-  "url": "http://127.0.0.1:3083",
-  "report": false,
-  "stateDir": "C:\\Users\\dd\\.dsh\\watchdog-independent\\observer-state",
-  "alertFile": "C:\\Users\\dd\\.dsh\\watchdog-independent\\alerts.jsonl",
-  "alertAfterFailures": 2
-}
-```
-
-The Watchdog snapshot also reports `session-missing` when a running Assignment has no live worker Session in the service. Recovery is disabled by default; set `DSH_SUPERAGENT_WATCHDOG_RECOVERY=enforce` in the service environment (then restart the service once) to let the full Watchdog agent request one retry for such a Ticket:
-
-```
-node scripts\dsh-superagent --profile superagent --url http://127.0.0.1:3082 watchdog recover ^
-  --ticket <ticket id> --reason "<one-sentence evidence>" --snapshot-at "<snapshot.at>"
-```
-
-The server rechecks the live Session registry, the snapshot freshness (ten minutes), the executor pause and the per-Session ceiling of one retry, records an audit row, and never restarts the service. A refused or failed attempt is reported and must not be retried; the agent prompt allows exactly this command for `session-missing`, never the raw retry/stop API. The prompt and wrapper are versioned in the Watchdog artifact, so rebuild and install the artifact after changing this behavior. P3's service/host checks and independent Feishu delivery are still open; monitoring runs from the standing observer, not a 30-minute gate task.
+The observer uses an atomically exclusive PID lock. An abnormal exit can leave the lock behind; it is not automatically removed. Before manually removing a leftover lock, confirm that its corresponding observer process no longer exists, taking PID reuse and process identity into account. Local logs and heartbeat can be stale or unavailable after an event-loop stall, process exit, PID reuse or write failure; handle logs as sensitive evidence. There is no built-in proactive notification in the intended mode. The new artifact excludes the agent, bootstrap and deployment modules; separately installed legacy tasks may still run.
 
 ## Settings
 

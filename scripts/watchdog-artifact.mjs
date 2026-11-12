@@ -2,10 +2,8 @@
 /**
  * Build an immutable Watchdog artifact from this checkout.
  *
- * The artifact contains the observer (`watchdog`), the agent wrapper and gate, the prompt/config/model templates, the
- * stable launcher and a manifest whose digest covers every file. A host installs it under `watchdog\versions\<version>`
- * and switches `current.txt`; the agent imports `../watchdog` from the artifact, never source from the superagent
- * checkout. Build output is written only under `--out`; this script does not install or switch anything.
+ * The artifact contains the read-only observer, its launcher and inspection tools, and a manifest whose digest covers
+ * every file. Build output is written only under `--out`; this script does not install or switch anything.
  */
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
@@ -19,16 +17,9 @@ export const API_VERSION = 1
 /** Files copied into every artifact, with the path they take inside it. */
 const FILES = [
   ['scripts/watchdog', 'watchdog'],
-  ['scripts/watchdog-agent/gate.mjs', 'agent/gate.mjs'],
-  ['scripts/watchdog-agent/run.ps1', 'agent/run.ps1'],
-  ['scripts/watchdog-agent/prompt.md', 'agent/prompt.md'],
-  ['scripts/watchdog-agent/config.example.json', 'agent/config.example.json'],
-  ['scripts/watchdog-agent/model.patch.example.yml', 'agent/model.patch.example.yml'],
   ['scripts/watchdog-launch-observer.ps1', 'launch-observer.ps1'],
   ['scripts/watchdog-launch-observer.vbs', 'launch-observer.vbs'],
-  ['scripts/watchdog-bootstrap.mjs', 'watchdog-bootstrap.mjs'],
   ['scripts/watchdog-control.mjs', 'watchdog-control.mjs'],
-  ['scripts/watchdog-deployment.mjs', 'watchdog-deployment.mjs'],
   ['scripts/watchdog-update.mjs', 'watchdog-update.mjs'],
   ['scripts/watchdog-artifact.mjs', 'watchdog-artifact.mjs'],
   ['scripts/watchdog-smoke.mjs', 'watchdog-smoke.mjs'],
@@ -66,8 +57,8 @@ export function verifyArtifact(directory) {
 
 /** Build an artifact from `root` into `out`; `out` must not already contain files. */
 export function buildArtifact(root, out, options = {}) {
-  const commit = options.commit ?? gitCommit(root) ?? ''
-  const version = options.version ?? commit
+  const commit = options.commit || gitCommit(root) || ''
+  const version = options.version || commit
   if (!/^[A-Za-z0-9._-]+$/.test(version)) throw new Error(`Invalid artifact version: ${version}`)
   if (existsSync(out) && readdirSync(out).length) throw new Error(`The artifact output is not empty: ${out}`)
   mkdirSync(out, { recursive: true })
@@ -90,7 +81,7 @@ export function buildArtifact(root, out, options = {}) {
       version,
       commit,
       sha256: artifactDigest(files),
-      builtAt: options.builtAt ?? new Date().toISOString(),
+      builtAt: options.builtAt || new Date().toISOString(),
       apiVersion: API_VERSION,
       minServiceVersion: options.minServiceVersion || packageVersion(root),
       files,

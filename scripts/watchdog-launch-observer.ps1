@@ -38,11 +38,7 @@ try {
   $node = (Get-Command node -ErrorAction Stop).Source
   $session = try { (Get-Process -Id $PID -ErrorAction Stop).SessionId } catch { 'unknown' }
   Log "observer launcher start pid=$PID session=$session config=$Config node=$node"
-  $bootstrap = Join-Path $WatchdogHome 'watchdog-bootstrap.mjs'
-  if (-not (Test-Path -LiteralPath $bootstrap)) { Fail "The Watchdog bootstrap is missing: $bootstrap" }
   while ($true) {
-    & $node $bootstrap $WatchdogHome 2>&1 | ForEach-Object { Log "bootstrap $_" }
-    if ($LASTEXITCODE -ne 0) { Fail "Watchdog bootstrap failed (exit $LASTEXITCODE); observer was not started." }
     # Re-read the pointer on every restart: a switch performed while the old observer was stopped must start the new version.
     $target = CurrentObserver
     Log "observer start version=$($target.Version)"
