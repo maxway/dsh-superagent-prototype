@@ -114,8 +114,9 @@ export async function main(argv = process.argv.slice(2)) {
     if (requestDigest && existsSync(config.resultFile)) {
       try {
         const previous = readJson(config.resultFile)
-        if (previous.requestDigest === requestDigest && (previous.ok || expectedRequest)) {
-          process.stdout.write(previous.ok ? 'Deploy request already completed; nothing to do.\n' : 'Deploy request already failed; nothing to do.\n')
+        if (previous.requestDigest === requestDigest && (previous.ok || previous.phase === 'started_needs_attention' || expectedRequest)) {
+          process.stdout.write(previous.ok ? 'Deploy request already completed; nothing to do.\n' : previous.phase === 'started_needs_attention'
+            ? 'Deploy request already started and needs attention; nothing to do.\n' : 'Deploy request already failed; nothing to do.\n')
           return previous.ok ? 0 : 1
         }
       } catch {}

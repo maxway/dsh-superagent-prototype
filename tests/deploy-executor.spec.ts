@@ -97,11 +97,24 @@ it('preserves the request and reports failure if the restart fails', async () =>
   expect(existsSync(value.request)).toBe(true)
 })
 
-it.each([2, 3])('reports started service needing attention for restart exit %i', async code => {
+it.each([2, 3])('does not repeat a started service needing attention for restart exit %i', async code => {
   const value = fixture()
-  writeFileSync(value.restart, `param($Config, $ServiceScript)\nexit ${code}\n`)
+  writeFileSync(value.restart, `param($Config, $ServiceScript)\nSet-Content -LiteralPath '${value.record.replaceAll("'", "''")}' -Value 'called'\nexit ${code}\n`)
   expect((await run(value.config)).code).toBe(1)
-  expect(JSON.parse(readFileSync(value.settings.resultFile, 'utf8'))).toMatchObject({ ok: false, phase: 'started_needs_attention', exitCode: code })
+  const originalResult = readFileSync(value.settings.resultFile, 'utf8')
+  expect(JSON.parse(originalResult)).toMatchObject({ ok: false, phase: 'started_needs_attention', exitCode: code })
+  rmSync(value.record)
+  const digest = createHash('sha256').update(readFileSync(value.request)).digest('hex')
+  for (const env of [{}, { DSH_WATCHDOG_REQUEST_SHA256: digest }] as Record<string, string>[]) {
+    const repeated = await run(value.config, [], env)
+    expect(repeated.code).toBe(1)
+    expect(repeated.stdout).toContain('already started and needs attention')
+    expect(existsSync(value.record)).toBe(false)
+    expect(readFileSync(value.settings.resultFile, 'utf8')).toBe(originalResult)
+  }
+  writeFileSync(value.request, JSON.stringify({ confirmation: 'new request', target: 'latest' }))
+  expect((await run(value.config)).code).toBe(1)
+  expect(existsSync(value.record)).toBe(true)
 })
 
 it('does not repeat a failed scheduled deployment through the Watchdog', async () => {
