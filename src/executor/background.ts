@@ -15,9 +15,10 @@ interface Jobs {
 }
 /** What the Executor uses of DSH's subagents: joining a worker's subagents that work, its subagents, and releasing them. */
 interface Subagents {
-  waitForChildren(parent: Agent): Promise<boolean>
-  listChildren(parentSessionId: string): Promise<readonly { id: string }[]>
-  drainChildren(parent: Agent, childIds: readonly string[]): Promise<void>
+  waitForChildren?(parent: Agent): Promise<boolean>
+  waitForTreeWork?(root: Agent): Promise<boolean>
+  listChildren?(parentSessionId: string): Promise<readonly { id: string }[]>
+  drainChildren?(parent: Agent, childIds: readonly string[]): Promise<void>
 }
 /** How long a stop waits for a killed job to end, collecting its end so the worker is not woken to hear of it. */
 const KILL_WAIT_MS = 10_000
@@ -49,7 +50,9 @@ const joins = new WeakMap<Agent, Promise<boolean>>()
 function childrenEnd(subagents: Subagents, agent: Agent): Promise<boolean> {
   let join = joins.get(agent)
   if (!join) {
-    join = subagents.waitForChildren(agent).finally(() => { joins.delete(agent) })
+    const wait = subagents.waitForChildren ?? subagents.waitForTreeWork
+    if (!wait) throw new Error('DSH subagent service does not provide a supported background-work wait')
+    join = wait.call(subagents, agent).finally(() => { joins.delete(agent) })
     joins.set(agent, join)
   }
   return join
@@ -141,6 +144,9 @@ export async function collectJob(ctx: Context, sessionId: string, job: { id: str
 export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = false): Promise<void> {
   const subagents = subagentsOf(ctx)
   if (!subagents) return
+  if (!subagents.listChildren || !subagents.drainChildren) {
+    throw new Error('DSH subagent service cannot release children without closing the reusable worker; this runtime is not supported for subagent cleanup')
+  }
   // The catalog lists every subagent the Session had; one that ended has no agent.
   const live = (await subagents.listChildren(agent.id)).map(child => child.id).filter(id => ctx.agents.get(id as SessionId))
   if (!live.length) return

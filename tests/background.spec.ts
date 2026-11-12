@@ -62,6 +62,23 @@ it('joins a worker\'s subagents once for the looks that wait on them, as DSH can
   expect(subagents.waitForChildren).toHaveBeenCalledTimes(1)
 })
 
+it('waits for tree work on a DSH runtime that no longer exposes waitForChildren', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  const waitForTreeWork = vi.fn(async () => false)
+  Reflect.deleteProperty(subagents, 'waitForChildren')
+  Reflect.set(subagents, 'waitForTreeWork', waitForTreeWork)
+  expect(await untilQuiet(ctx, agent, new AbortController().signal)).toBe(true)
+  expect(waitForTreeWork).toHaveBeenCalledWith(agent)
+})
+
+it('reports when the runtime cannot release children without closing the worker', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  Reflect.deleteProperty(subagents, 'listChildren')
+  Reflect.deleteProperty(subagents, 'drainChildren')
+  await expect(stopSubagents(ctx, agent)).rejects.toThrow('cannot release children without closing the reusable worker')
+  expect(agent.cancel).not.toHaveBeenCalled()
+})
+
 it('gives up a release of subagents that does not end within 10 seconds, and cancels the turn their ends woke', async () => {
   const { ctx, agent } = setup(async () => false, () => new Promise(() => {}))
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
