@@ -448,6 +448,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/admission-context.spec.ts` | The Thread window of assessments |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
+| `tests/cleanup.spec.ts` | Finished workspaces and branches stay untouched, including legacy cleanup effects |
 | `tests/bundle-patch.spec.ts` | The bundle's patch, read as DeepSeek Harness reads it, and the agent preset of Executor Sessions it defines |
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, a handler's own deferral delay, health and shutdown |
 | `tests/offpeak.spec.ts` | The off-peak window: defaults, daytime and overnight periods, time zones, the source default, and schema refusals |
