@@ -14,7 +14,7 @@ beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-watchdog-recovery-'))
   store = new Store(join(directory, 'orchestrator.sqlite'))
 })
-afterEach(() => { store.close(); rmSync(directory, { recursive: true, force: true }) })
+afterEach(() => { vi.unstubAllEnvs(); store.close(); rmSync(directory, { recursive: true, force: true }) })
 
 function ticket(id: string, state: 'running' | 'failed' = 'running'): Ticket {
   return { id, title: id, decisionId: 'd', channels: [], inputs: [], undelivered: [], createdAt: NOW, updatedAt: NOW,
@@ -29,7 +29,10 @@ const request = (ticketId: string, key: string, snapshotAt = NOW) => ({ ticketId
 
 it('executes at most one audited retry for an absent Session and never retries a present one', () => {
   expect(recoveryMode('enforce')).toBe('enforce')
-  expect(recoveryMode(undefined)).toBe('off')
+  vi.stubEnv('DSH_SUPERAGENT_WATCHDOG_RECOVERY', undefined)
+  expect(recoveryMode()).toBe('off')
+  vi.stubEnv('DSH_SUPERAGENT_WATCHDOG_RECOVERY', 'enforce')
+  expect(recoveryMode()).toBe('enforce')
   store.tickets.save(ticket('t1'))
   const off = recoverWatchdogSession(host('off'), request('t1', 'off-1'))
   expect(off).toMatchObject({ result: 'refused' })
