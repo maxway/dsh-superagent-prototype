@@ -359,6 +359,8 @@ Setup must succeed before polling or work starts. Overview lists missing require
    ```
 
    List personal CLIs, such as one signed in to your own account, as blocked commands. Ending a Ticket does not automatically delete its worktree or local or remote branch. Before resuming, verify the original workspace and Session directory; ask an operator to recover a missing directory.
+
+   The rc.2 compatibility candidate interrupts catalogued descendants rather than releasing their activations. This is best effort: pending inboxes or local activations may remain and wake later, and the catalog can miss work. It is not confirmation of a complete stop or evidence of production deployment; see `013-dsh-rc2-subagent-lifecycle.md`.
 4. **Prompts.** Set the team sections: the GitHub disclosure line, review bots, the commit author and the auto-merge condition.
 
 ### Management API

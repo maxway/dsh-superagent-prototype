@@ -19,6 +19,8 @@ interface Subagents {
   waitForTreeWork?(root: Agent): Promise<boolean>
   listChildren?(parentSessionId: string): Promise<readonly { id: string }[]>
   drainChildren?(parent: Agent, childIds: readonly string[]): Promise<void>
+  listDescendants?(parentSessionId: SessionId): Promise<readonly { kind: string; id: SessionId }[]>
+  interrupt?(childId: SessionId, authority: { kind: 'ancestor'; agent: Agent }): void
 }
 /** How long a stop waits for a killed job to end, collecting its end so the worker is not woken to hear of it. */
 const KILL_WAIT_MS = 10_000
@@ -137,21 +139,33 @@ export async function collectJob(ctx: Context, sessionId: string, job: { id: str
 }
 
 /**
- * Release the worker's live subagents, for a bounded time. DSH delivers each one's end to the worker before the release
- * returns, which wakes it, so the worker's turn is cancelled after, keeping its inbox when `keepInbox`, and the stop ends
- * with that turn. Its Session still admits subagents.
+ * Stop the worker's subagents for a bounded time. rc.1 releases live children; rc.2 interrupts catalogued descendants
+ * and waits for tree work. Interrupt does not release local activations or clear their inboxes. The worker's turn is
+ * cancelled after, keeping its inbox when `keepInbox`; its Session still admits subagents.
  */
 export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = false): Promise<void> {
   const subagents = subagentsOf(ctx)
   if (!subagents) return
-  if (!subagents.listChildren || !subagents.drainChildren) {
-    throw new Error('DSH subagent service cannot release children without closing the reusable worker; this runtime is not supported for subagent cleanup')
+  if (subagents.listChildren && subagents.drainChildren) {
+    const live = (await subagents.listChildren(agent.id)).map(child => child.id).filter(id => ctx.agents.get(id as SessionId))
+    if (!live.length) return
+    try { await until(subagents.drainChildren(agent, live), undefined, DRAIN_LIMIT_MS) }
+    finally {
+      if (agent.status !== 'idle') cancelled.add(agent)
+      agent.cancel({ kind: 'user' }, { keepInbox })
+      await until(agent.whenIdle(), undefined, DRAIN_LIMIT_MS)
+    }
+    return
   }
-  // The catalog lists every subagent the Session had; one that ended has no agent.
-  const live = (await subagents.listChildren(agent.id)).map(child => child.id).filter(id => ctx.agents.get(id as SessionId))
-  if (!live.length) return
-  try { await until(subagents.drainChildren(agent, live), undefined, DRAIN_LIMIT_MS) }
-  finally {
+  if (!subagents.listDescendants || !subagents.interrupt || !subagents.waitForTreeWork) {
+    throw new Error('DSH subagent service does not provide supported background-work controls')
+  }
+  const descendants = (await subagents.listDescendants(agent.id as SessionId)).filter(entry => entry.kind === 'child')
+  if (!descendants.length) return
+  try {
+    for (const child of descendants) subagents.interrupt(child.id, { kind: 'ancestor', agent })
+    await until(subagents.waitForTreeWork(agent), undefined, DRAIN_LIMIT_MS)
+  } finally {
     if (agent.status !== 'idle') cancelled.add(agent)
     agent.cancel({ kind: 'user' }, { keepInbox })
     await until(agent.whenIdle(), undefined, DRAIN_LIMIT_MS)

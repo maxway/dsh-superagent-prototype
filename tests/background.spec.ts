@@ -71,11 +71,45 @@ it('waits for tree work on a DSH runtime that no longer exposes waitForChildren'
   expect(waitForTreeWork).toHaveBeenCalledWith(agent)
 })
 
-it('reports when the runtime cannot release children without closing the worker', async () => {
+it('reports when the runtime has no supported subagent controls', async () => {
   const { ctx, agent, subagents } = setup(async () => false)
   Reflect.deleteProperty(subagents, 'listChildren')
   Reflect.deleteProperty(subagents, 'drainChildren')
-  await expect(stopSubagents(ctx, agent)).rejects.toThrow('cannot release children without closing the reusable worker')
+  await expect(stopSubagents(ctx, agent)).rejects.toThrow('does not provide supported background-work controls')
+  expect(agent.cancel).not.toHaveBeenCalled()
+})
+
+it('interrupts rc.2 descendants and waits without closing the root', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  const interrupt = vi.fn(), wait = vi.fn(async () => false), drain = vi.fn()
+  Reflect.deleteProperty(subagents, 'listChildren')
+  Reflect.deleteProperty(subagents, 'drainChildren')
+  Reflect.set(subagents, 'listDescendants', vi.fn(async () => [
+    { kind: 'child', id: 'child-1' }, { kind: 'child', id: 'grandchild' }, { kind: 'diagnostic', id: 'unreadable' },
+  ]))
+  Reflect.set(subagents, 'interrupt', interrupt)
+  Reflect.set(subagents, 'waitForTreeWork', wait)
+  Reflect.set(subagents, 'drainDescendants', drain)
+  await stopSubagents(ctx, agent, true)
+  expect(interrupt.mock.calls).toEqual([
+    ['child-1', { kind: 'ancestor', agent }], ['grandchild', { kind: 'ancestor', agent }],
+  ])
+  expect(wait).toHaveBeenCalledWith(agent)
+  expect(drain).not.toHaveBeenCalled()
+  expect(agent.cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: true })
+})
+
+it('does not cancel the worker when rc.2 has no catalogued children', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  const interrupt = vi.fn(), wait = vi.fn(async () => false)
+  Reflect.deleteProperty(subagents, 'listChildren')
+  Reflect.deleteProperty(subagents, 'drainChildren')
+  Reflect.set(subagents, 'listDescendants', vi.fn(async () => []))
+  Reflect.set(subagents, 'interrupt', interrupt)
+  Reflect.set(subagents, 'waitForTreeWork', wait)
+  await stopSubagents(ctx, agent)
+  expect(interrupt).not.toHaveBeenCalled()
+  expect(wait).not.toHaveBeenCalled()
   expect(agent.cancel).not.toHaveBeenCalled()
 })
 
