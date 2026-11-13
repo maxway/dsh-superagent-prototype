@@ -358,7 +358,7 @@ Setup must succeed before polling or work starts. Overview lists missing require
    git -C C:\src\widgets worktree add -b "agent/$($env:DSH_SUPERAGENT_NAME)" "$($env:DSH_SUPERAGENT_DIR)" "refs/dsh-superagent/$($env:DSH_SUPERAGENT_TICKET)"
    ```
 
-   List personal CLIs, such as one signed in to your own account, as blocked commands. When a Ticket ends, the Executor reclaims its linked worktree and deletes its local `agent/<name>` branch once the worktree is clean and every commit is on a remote (or on the ref the prepare command fetched); a directory with uncommitted or unpushed work is kept, and a resumed Ticket runs the prepare command again. When the Ticket's own pull requests all merged, it also deletes the remote branch, but only while the remote tip is still the local HEAD; otherwise the remote branch stays.
+   List personal CLIs, such as one signed in to your own account, as blocked commands. Ending a Ticket does not automatically delete its worktree or local or remote branch. Before resuming, verify the original workspace and Session directory; ask an operator to recover a missing directory.
 4. **Prompts.** Set the team sections: the GitHub disclosure line, review bots, the commit author and the auto-merge condition.
 
 ### Management API
@@ -392,7 +392,7 @@ Health entries are grouped by responsibility:
 | `models` | Sessions waiting on a model-budget retry |
 | `evals` | Unavailable Evals from the last hour with no later judgement or dismissal |
 | `assessment`, `launch`, `delivery`, `relay`, `notice`, `reply` | Stored work described in [003 Execution](003-execution.md); delivery counts waiting work, while reply covers Channel messages |
-| `cleanup` | Finished Ticket workspace cleanup; its failures stay off the health board because only a clean, fully remote checkout is removed |
+| `cleanup` | Drains legacy workspace cleanup effects without deleting workspaces or branches |
 | `worker` | Executor Session event handling; appears after its first failure |
 | `github`, `gitlab`, `feishu` | Source polling, webhook and events |
 | `sync:<source id>` | Allowed-list synchronization |
@@ -474,7 +474,7 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `@… cannot read …` or `@… cannot push to …` | Give the agent account write access to the repository |
 | `The GitHub Source names no repository.` | Set the repository, `owner/name`, on the GitHub card |
 | A Ticket fails with `The prepare command failed: …` | The output names the cause, such as a wrong clone path; fix the command, then retry the Ticket |
-| A finished Ticket's worktree stays at `<stateDir>/work/…` | It has uncommitted or untracked changes, commits not on a remote, another checked-out branch, or is not a linked worktree. Commit and push or discard the work; the next host start tries the cleanup again |
+| A finished Ticket's worktree stays at `<stateDir>/work/…` | Expected: ending a Ticket does not automatically delete its worktree or branches. Preserve work and verify ownership before any manual cleanup |
 | `pwsh` is not found, or the prepare command fails with a PowerShell error | Install PowerShell 7 and put `pwsh` on `PATH`; Windows PowerShell 5.1 is not used for the prepare command |
 | `dsh must be on PATH.` when starting on Windows | Install DSH globally and open a new shell; `start` resolves the npm `dsh.cmd` |
 | PowerShell or `cmd.exe` cannot run `scripts\dsh-superagent` | The script has no `.cmd` shim on Windows; run `pwsh scripts\dsh-superagent.ps1 <action>`, or `node scripts\dsh-superagent <command>` when the environment is already set |

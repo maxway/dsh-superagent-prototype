@@ -174,12 +174,12 @@ Failures retry with exponential backoff. Throwing `Later` defers work without co
 | `assessment` | MasterAssessor | Steers an Eval's candidate card into the main Session's turn, then tells the Engine it was delivered, which starts the Eval's deadline | 4, none while paused | 2 s doubling to 60 s |
 | `launch` | DshExecutor | Launches a pending Assignment: prepare command, Executor Session, assignment message | The free worker slots, none while paused; an off-peak Ticket only inside its window | A passing failure of the model provider or the network runs again after 5 s doubling to 300 s, three times; any other failure, and a failed prepare command, fails its Ticket. One held by a pause, by full worker slots or by the off-peak window tries again after 5 s, or when the window may have opened |
 | `delivery` | DshExecutor | Hands a Ticket's waiting Inputs to its running Assignment, in order | 4, none while paused | 2 s doubling to 60 s; one that waits for a worker slot tries again after 2 s |
-| `cleanup` | DshExecutor | Reclaims a finished Ticket's clean, fully remote linked worktree and its local branch, after the Ticket's background work stopped | 1, none while paused | 30 s doubling to 1 h; repeated failures stay off the health board |
+| `cleanup` | DshExecutor | Discards legacy queued cleanup effects without touching workspaces or branches | 1 | 2 s doubling to 60 s |
 | `relay` | Sessions | Steers a worker's report or question, or a person's follow-up, into the main Session's turn | 1, in queue order | 2 s doubling to 60 s |
 | `notice` | Sessions | Injects a notice into the main Session without waking it | 1, in queue order | 2 s doubling to 60 s |
 | `reply` | Outbox | Sends a message for a Channel through its Source, after the earlier messages of its Ticket to its conversation that have not failed three times; withdrawing the message cancels it | 1, none while paused | 5 s doubling to 300 s; one whose Source is off, or behind an earlier message, tries again after 5 s |
 
-Each kind has a health entry under its name. It reports an error once one of its effects failed three times in a row, except `delivery` and `cleanup`, whose failures show on their Ticket or stay quiet; relays keep their order, and so do notices, and a failed one holds back the later ones of its kind.
+Each kind has a health entry under its name. It reports an error once one of its effects failed three times in a row, except `delivery`, whose failures show on its Ticket; relays keep their order, and so do notices, and a failed one holds back the later ones of its kind.
 
 ### Sources
 
@@ -207,7 +207,7 @@ Transient provider and network failures get three retries. Launches use effect b
 
 `install` subscribes to Session events; `dispose` unsubscribes. A turn end normally reports waiting, except after readiness or while human action is required. Errors report failed. At startup, `resume` reports interrupted Assignments through `assignmentInterrupted` and requeues pending launches that do not wait for a person, oldest Ticket first.
 
-`stop` also queues a `cleanup` effect for a Ticket that ended, and `resume` queues one for every finished Ticket it finds, so a Ticket that ended before an upgrade is reclaimed too. `cleanupQueued` waits for the Ticket's background work to stop, lets a launch of the same Ticket wait so the two cannot overlap, and calls `reclaimWorkspace` (`src/executor/workspace.ts`). That helper removes a linked worktree only when it is on the Ticket's `agent/<name>` branch, `git status --porcelain` is empty, and `git rev-list HEAD --not --remotes refs/dsh-superagent/<ticket>` is zero; it then deletes the local branch and the fetched ref. A dirty, unpushed or differently checked-out directory stays. When the Ticket's own pull requests all merged, it also deletes the remote branch, but only while the remote tip is exactly the local HEAD; the pull request and main checkout are never changed. A resumed Ticket that finds its directory missing runs the prepare command again.
+Ending a Ticket does not automatically delete its worktree or local or remote branch. Verify the original workspace and Session directory before resuming; ask an operator to recover a missing directory.
 
 ### MasterAssessor
 
@@ -374,7 +374,6 @@ Some generic modules still need provider-specific behavior:
 | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
 | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
-| `src/executor/workspace.ts` | Reclaims a finished Ticket's linked git worktree and local branch when the checkout is clean and every commit is remote (`reclaimWorkspace`) |
 | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
 | `src/infra/launch.ts` | The Windows CLI launcher: resolves an npm `.cmd` shim to the Node entry named by its `%dp0%` path and runs it with Node, so argv never passes through `cmd.exe`; a `.cmd` without a Node entry is refused |
 | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
@@ -449,8 +448,6 @@ Some generic modules still need provider-specific behavior:
 | `tests/admission-context.spec.ts` | The Thread window of assessments |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
-| `tests/workspace.spec.ts` | Reclaiming a Ticket's git worktree and branch against real repositories: clean and pushed, dirty, unpushed, another branch, a main worktree, a resumed Ticket and an absent directory |
-| `tests/cleanup.spec.ts` | The Executor queues a workspace cleanup after a Ticket ends |
 | `tests/bundle-patch.spec.ts` | The bundle's patch, read as DeepSeek Harness reads it, and the agent preset of Executor Sessions it defines |
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, a handler's own deferral delay, health and shutdown |
 | `tests/offpeak.spec.ts` | The off-peak window: defaults, daytime and overnight periods, time zones, the source default, and schema refusals |

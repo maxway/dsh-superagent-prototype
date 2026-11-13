@@ -15,6 +15,7 @@ Recheck live process, profile, bundle link, state, worktrees and changes; dated 
 ### Development and candidate tests
 
 - Work in the assigned task worktree; verify its Git common directory and branch before editing. Never treat the stable checkout, production state directory, or another task's worktree as scratch space. Preserve existing uncommitted work.
+- The current candidate does not automatically delete ended Tickets' worktrees or local or remote branches. Existing deployments may still run older cleanup behavior until upgraded; verify the deployed version before relying on retention.
 - Do not run install, build, clean, checkout, reset, pull, or other mutations in the stable checkout as part of development or testing. A linked bundle can read files from that checkout; changing it while the service runs is not a safe deployment mechanism.
 - Use one non-production server for development and candidate validation, separate from production in profile, DSH home, state and database, control files, logs, port, working directory, credentials and sources. Do not consume or mutate production tickets, accounts, notifications or external repositories; use mocks or a dedicated test repository.
 - Only production may enable Feishu. The non-production server must have Feishu disabled and no production bot credentials or CLI configuration. Do not copy production profiles or databases into it; a disabled Source alone does not prevent setup from checking a saved bot configuration.

@@ -61,7 +61,7 @@
 
 - **中文优先。** 官方仓库的文档只有英文；本 fork 增加了编号文档和 SETUP 的简体中文翻译，并把默认 README 改为简体中文（英文版见 [README.en.md](README.en.md)）。GitHub 与 GitLab 上的标题、描述、评论和评审回复跟随请求语言。
 - **服务生命周期与运维。** 增加 `POST service/stop`：先排空执行器（最多十秒），再通过 DSH 启动器退出；服务脚本为每个 profile 使用独立 tmux socket，并在启动前清除继承的 `TMUX`/`TMUX_PANE`；面板部署页显示启动问题、状态目录和本机上限，并可重新运行安装检查。
-- **工单工作目录回收。** 工单结束后，干净且提交都在远端的链接 worktree 和本地分支会被自动回收；工单自己打开的合并请求全部合并后，若远端分支顶端仍是本地 HEAD，也会删除远端分支。有未提交或未推送工作的目录会保留。
+- **工单工作目录保留。** 工单结束不会自动删除其 worktree、本地分支或远端分支。
 - **执行器上下文压缩。** worker 会话在上下文达到窗口的 40%（`thresholdRatio: 0.4`）时压缩，避免长工单的后续请求长时间贴着窗口上限。
 
 ## 部署
@@ -79,7 +79,7 @@
 - [003 执行](docs/zh/003-execution.md)：工单类别、模型选择、接力及运行恢复。
 - [012 Worker 交接设计](docs/zh/012-worker-handoff.md)：更广泛的交接方案，尚未实现；不要与现有能力接力混淆。
 - [009 Windows 部署](docs/zh/009-windows-deployment.md)：必要性、适配方案、分阶段实施与验证记录。
-- [010 Session 保留机制](docs/zh/010-session-retention.md)：Session、工作目录和数据库的增长测量、已实现的工作目录与分支回收，以及后续清理提案。
+- [010 Session 保留机制](docs/zh/010-session-retention.md)：Session、工作目录和数据库的增长测量，以及保留机制提案。
 - [011 多 Git 来源](docs/zh/011-multi-git-sources.md)：一个部署使用多个 Git 来源或项目的现状、可行性评估与分阶段建议。
 - 全部编号文档的简体中文翻译，位于 `docs/zh/`。
 

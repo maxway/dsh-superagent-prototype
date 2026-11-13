@@ -61,7 +61,7 @@ Lets people or bots outside the allowed lists ask questions in a designated grou
 
 - **Chinese first.** The official repository documents are English only; this fork adds Simplified Chinese translations of the numbered documents and SETUP, and makes the default README Simplified Chinese, with the English version in [README.en.md](README.en.md). GitHub and GitLab titles, descriptions, comments and review replies follow the language of the request.
 - **Service lifecycle and operations.** This fork adds `POST service/stop`: it drains Executors for up to ten seconds, then exits through the DSH launcher; the service script gives each profile its own tmux socket and clears inherited `TMUX` and `TMUX_PANE` before starting; and the panel's Deployment tab shows startup problems, the state directory and host limits, and can run the setup check again.
-- **Ticket workspace reclamation.** When a Ticket ends, its linked worktree and local branch are reclaimed if the checkout is clean and every commit is on a remote; when all pull requests the Ticket opened have merged and the remote branch still points at local HEAD, the remote branch is deleted too. Directories with uncommitted or unpushed work are kept.
+- **Ticket workspace retention.** Ending a Ticket does not automatically delete its worktree or local or remote branch.
 - **Executor context compaction.** A worker session compacts when the context reaches 40% of the window (`thresholdRatio: 0.4`), so a long Ticket's later requests do not stay near the window limit.
 
 ## Deployment
@@ -79,7 +79,7 @@ For general background, see the [official README](https://github.com/deepseek-ai
 - [003 Execution](docs/003-execution.md): Ticket categories, model selection, handoff and recovery.
 - [012 Worker handoff design](docs/012-worker-handoff.md): a broader proposal, not implemented; distinct from the existing capability handoff.
 - [009 Windows deployment](docs/009-windows-deployment.md): necessity, adaptation plan, staged implementation and verification record.
-- [010 Session retention](docs/010-session-retention.md): measuring the growth of sessions, workspaces and the database, the implemented workspace and branch reclamation, and a cleanup proposal for the rest.
+- [010 Session retention](docs/010-session-retention.md): measurements of session, workspace and database growth and a proposed retention mechanism.
 - [011 Multiple Git Sources](docs/011-multi-git-sources.md): the current state, feasibility assessment and staged recommendation for several Git sources or projects in one deployment.
 - Simplified Chinese translations of every numbered document, under `docs/zh/`.
 
