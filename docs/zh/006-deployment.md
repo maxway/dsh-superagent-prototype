@@ -320,7 +320,7 @@ observer 使用原子独占 PID 锁。异常退出可能留下锁，系统不会
    git -C C:\src\widgets worktree add -b "agent/$($env:DSH_SUPERAGENT_NAME)" "$($env:DSH_SUPERAGENT_DIR)" "refs/dsh-superagent/$($env:DSH_SUPERAGENT_TICKET)"
    ```
 
-   把个人 CLI（例如登录你自己账号的 CLI）列为禁止调用的命令。工单结束后，只要它的 worktree 干净且每个提交都在远端（或 prepare 命令取回的 ref 上），执行器就会回收该链接 worktree 并删除本地 `agent/<name>` 分支；有未提交或未推送工作的目录会保留，恢复工单时会再次运行 prepare 命令。当工单自己打开的 pull request 全部合并时，执行器也会删除远端分支，但只限远端分支的顶端仍是本地 HEAD 的情况；否则远端分支保留。
+   把个人 CLI（例如登录你自己账号的 CLI）列为禁止调用的命令。工单结束不会自动删除其 worktree、本地分支或远端分支。恢复前核验原工作区和 Session 目录；目录缺失时请运维恢复。
 4. **提示词。** 设置团队段落：GitHub 声明行、评审机器人、提交作者和自动合并条件。
 
 ### 管理 API
@@ -354,7 +354,7 @@ observer 使用原子独占 PID 锁。异常退出可能留下锁，系统不会
 | `models` | 等待模型预算重试的 Session |
 | `evals` | 过去一小时内未完成、之后没有得到研判或不再提示的评估 |
 | `assessment`、`launch`、`delivery`、`relay`、`notice`、`reply` | 在 [003 执行](003-execution.md) 中描述的已存储工作；送达统计等待中的工作，而回复涵盖渠道消息 |
-| `cleanup` | 结束工单的目录清理；它只删除干净且提交全在远端的检出，因此失败不会出现在健康面板上 |
+| `cleanup` | 丢弃旧版排队的工作目录清理副作用，不删除工作目录或分支 |
 | `worker` | 执行器 Session 的事件处理；在首次失败后出现 |
 | `github`、`gitlab`、`feishu` | 来源轮询、webhook 和事件 |
 | `sync:<source id>` | 允许名单同步 |
@@ -427,7 +427,7 @@ Windows 上使用当前 Windows 版本自带的 `curl.exe`，把 `cli` 设为 `g
 | `@… cannot read …` 或 `@… cannot push to …` | 给智能体账号授予仓库写权限 |
 | `The GitHub Source names no repository.` | 在 GitHub 卡片上设置仓库，`owner/name` |
 | 工单失败并报 `The prepare command failed: …` | 输出会指出原因，例如错误的克隆路径；修正命令，然后重试该工单 |
-| 已结束工单的 worktree 仍留在 `<stateDir>/work/…` | 它有未提交或未跟踪改动、提交不在远端、检出了其他分支，或不是链接 worktree。提交并推送，或丢弃这些工作；下次宿主启动时会再次尝试清理 |
+| 已结束工单的 worktree 仍留在 `<stateDir>/work/…` | 这是预期行为：工单结束不会自动删除 worktree 或分支。手动清理前须保留工作并核验归属 |
 | 找不到 `pwsh`，或准备命令报 PowerShell 错误 | 安装 PowerShell 7 并把 `pwsh` 放到 `PATH` 上；准备命令不使用 Windows PowerShell 5.1 |
 | Windows 上启动时报 `dsh must be on PATH.` | 全局安装 DSH 并打开新的 shell；`start` 会解析 npm 的 `dsh.cmd` |
 | PowerShell 或 `cmd.exe` 无法运行 `scripts\dsh-superagent` | 该脚本在 Windows 上没有 `.cmd` shim；请运行 `pwsh scripts\dsh-superagent.ps1 <action>`，环境已设置好时也可 `node scripts\dsh-superagent <command>` |

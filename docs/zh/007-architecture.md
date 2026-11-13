@@ -176,12 +176,12 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `assessment` | MasterAssessor | 把评估的候选卡片送入主 Session 的回合，然后告诉 Engine 它已投递，从而启动评估的截止时间 | 4，暂停时为 0 | 2 秒起逐次翻倍至 60 秒 |
 | `launch` | DshExecutor | 启动待启动的派工：准备命令、执行器 Session、派工消息 | 空闲的 worker 槽位，暂停时为 0 | 模型提供方或网络的暂时性失败会在 5 秒后重试，逐次翻倍至 300 秒，共三次；其他任何失败，以及准备命令失败，都会使其工单失败。因暂停或 worker 槽位已满而被拦下的会尝试在 5 秒后重试 |
 | `delivery` | DshExecutor | 按顺序把工单等待中的输入交给其运行中的派工 | 4，暂停时为 0 | 2 秒起逐次翻倍至 60 秒；等待 worker 槽位的会在 2 秒后重试 |
-| `cleanup` | DshExecutor | 在工单的后台工作停止后，回收其干净且提交全在远端的链接 worktree 和本地分支 | 1，暂停时为 0 | 30 秒起逐次翻倍至 1 小时；反复失败不会出现在健康面板上 |
+| `cleanup` | DshExecutor | 丢弃旧版排队的清理副作用，不触碰工作目录或分支 | 1 | 2 秒起逐次翻倍至 60 秒 |
 | `relay` | Sessions | 把 worker 的报告或问题，或人的跟进，送入主 Session 的回合 | 1，按队列顺序 | 2 秒起逐次翻倍至 60 秒 |
 | `notice` | Sessions | 在不唤醒主 Session 的情况下向其注入一条通知 | 1，按队列顺序 | 2 秒起逐次翻倍至 60 秒 |
 | `reply` | Outbox | 通过来源为某个渠道发送消息，排在其工单发往该会话的、失败未满三次的较早消息之后；撤回该消息会取消它 | 1，暂停时为 0 | 5 秒起逐次翻倍至 300 秒；来源关闭的，或排在较早消息之后的，会在 5 秒后重试 |
 
-每个种类在其名称下有一个健康条目。一旦它的某个副作用连续失败三次，它就报告错误，但 `delivery` 和 `cleanup` 除外——前者的失败显示在其工单上，后者不报告错误；转发保持顺序，通知也是如此；一个失败的会挡住同种类中较晚的那些。
+每个种类在其名称下有一个健康条目。一旦它的某个副作用连续失败三次，它就报告错误，但 `delivery` 除外——它的失败显示在其工单上；转发保持顺序，通知也是如此；一个失败的会挡住同种类中较晚的那些。
 
 ### 来源
 
@@ -209,7 +209,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 
 `install` 订阅 Session 事件；`dispose` 取消订阅。回合结束通常报告等待，但就绪之后或需要人行动时除外。错误报告失败。启动时，`resume` 通过 `assignmentInterrupted` 报告被中断的派工，并重新排队不等待人工的待启动派工，最早的工单优先。
 
-`stop` 还会为已结束的工单排队一个 `cleanup` 副作用，`resume` 会为它找到的每个已结束工单排队一个，因此升级前结束的工单也会被回收。`cleanupQueued` 等待工单的后台工作停止，让同一工单的启动等待，避免两者重叠，然后调用 `reclaimWorkspace`（`src/executor/workspace.ts`）。该辅助函数只在 worktree 位于工单的 `agent/<name>` 分支、`git status --porcelain` 为空，且 `git rev-list HEAD --not --remotes refs/dsh-superagent/<ticket>` 为零时移除链接 worktree，然后删除本地分支和取回的 ref。有改动、未推送或检出了其他分支的目录会保留。当工单自己打开的 pull request 全部合并时，它也会删除远端分支，但只限远端分支的顶端仍是本地 HEAD 的情况；pull request 和主检出始终不变。恢复的工单如果发现目录已不存在，会再次运行 prepare 命令。
+工单结束不会自动删除其 worktree、本地分支或远端分支。恢复前核验原工作区和 Session 目录；目录缺失时请运维恢复。
 
 ### MasterAssessor
 
@@ -375,7 +375,6 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/views/settings.ts` | 设置页面的视图：每个块及其修订版本、每个来源的设置及其种类的表单，以及执行环境 |
 | `src/app/views/overview.ts` | 概览：需要人的工单、问题、最后一天的流转和执行器负载 |
 | `src/executor/dsh.ts` | DshExecutor、`WorkerSlots`、`ticketExecution`、`inputMessage` 和 `mandateInstructions` |
-| `src/executor/workspace.ts` | 回收已结束工单的链接 git worktree 和本地分支，前提是检出干净且每个提交都在远端（`reclaimWorkspace`） |
 | `src/executor/background.ts` | worker 在 DeepSeek Harness 中的后台工作、其 Session 拥有的 shell 作业（`ctx.jobs`）和子智能体（`ctx.subagents`）：`runningJobs`、`untilQuiet`、`killJobs`、`collectJobs`、`stopSubagents`、`stopBackground`、`until`，以及 `cancelled`，即因停止其子智能体而取消当轮执行的 worker |
 | `src/infra/commands.ts` | `Commands`，CLI 传输：`run`；`api` 和 `pages`，限于已配置的仓库并经过校验；以机器人身份运行的 `lark`；`git`。`CliError` 携带命令输出报告的代码，例如 GitHub HTTP 状态；什么也不打印的命令以它的结束方式失败，绝不带出其参数；`validItems` 跳过并统计列表中的畸形条目 |
 | `src/infra/launch.ts` | Windows CLI 启动器：把 npm `.cmd` shim 解析到它 `%dp0%` 路径所指的 Node 入口并用 Node 运行，因此 argv 从不经过 `cmd.exe`；没有 Node 入口的 `.cmd` 会被拒绝 |
@@ -451,8 +450,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/admission-context.spec.ts` | 研判的线程窗口 |
 | `tests/assessment.spec.ts` | MasterAssessor 为每个评估保留什么，以及何时放手 |
 | `tests/background.spec.ts` | 等待 worker 的 shell 作业和子智能体：唤醒它的结束，以及宿主机停止 |
-| `tests/workspace.spec.ts` | 针对真实仓库回收工单的 git worktree 和分支：干净且已推送、有未提交改动、未推送、其他分支、主 worktree、恢复的工单和不存在的目录 |
-| `tests/cleanup.spec.ts` | 执行器在工单结束后排队目录清理 |
+| `tests/cleanup.spec.ts` | 已结束工单的工作目录和分支保持不变，包括处理旧清理副作用时 |
 | `tests/bundle-patch.spec.ts` | 打包产物的补丁，按 DeepSeek Harness 读取它的方式读取，以及它定义的执行器 Session 智能体预设 |
 | `tests/effects.spec.ts` | 副作用队列：合并、限制、带退避的重试、处理者自定的推迟延迟、健康和关停 |
 | `tests/offpeak.spec.ts` | 谷价时段：默认值、日间和跨午夜时段、时区、来源默认，以及 schema 的拒绝 |
