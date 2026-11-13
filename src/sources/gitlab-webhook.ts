@@ -8,7 +8,7 @@ import { KV } from '../kv.ts'
 import type { SourceContext } from './host.ts'
 
 /** The project hook this Source manages; `hookId` is absent until the first successful registration. */
-export interface WebhookRecord { secret: string; url: string; hookId?: number }
+export interface WebhookRecord { secret: string; url: string; hookId?: number; host?: string; project?: string }
 /** The subset of a GitLab project hook this module reads when reconciling its own hook. */
 const HookSchema = z.looseObject({ id: z.number(), url: z.string() })
 const CreatedSchema = z.looseObject({ id: z.number() })
@@ -130,18 +130,21 @@ function actionable(error: unknown): Error {
 
 /**
  * Creates, adopts or updates the project hook that delivers events to `url`, using the token the listener verifies.
- * A stored hook is updated in place, a hook with the same URL is adopted, and otherwise a new hook is created.
+ * A stored hook is updated only for its recorded host and project; a hook with the same URL is adopted otherwise, or a new hook is created.
  * The selected events mirror what the polling round reads; push events are not needed because the source never follows plain pushes.
  */
 export async function reconcileWebhook(commands: Commands, project: string, url: string, secret: string,
   state: Pick<SourceContext['state'], 'get' | 'set'>): Promise<WebhookRecord> {
   const stored = state.get(KV.gitlab.webhook)
+  const host = commands.deployment.gitlab?.host
+  if (!host) throw new Error('The GitLab Source has no working host')
   const fields = ['--field', `url=${url}`, '--field', `token=${secret}`, '--field', 'issues_events=true',
     '--field', 'merge_requests_events=true', '--field', 'note_events=true', '--field', 'pipeline_events=true',
     '--field', 'push_events=false']
   try {
     const hooks = await commands.glabApi(z.array(HookSchema), `${project}/hooks?per_page=100`)
-    let hookId = stored?.hookId !== undefined && hooks.some(hook => hook.id === stored.hookId) ? stored.hookId
+    let hookId = stored?.host === host && stored.project === project && stored.hookId !== undefined
+      && hooks.some(hook => hook.id === stored.hookId) ? stored.hookId
       : hooks.find(hook => hook.url === url)?.id
     if (hookId === undefined) {
       const created = await commands.glabApi(CreatedSchema, `${project}/hooks`, '--method', 'POST', ...fields)
@@ -149,16 +152,20 @@ export async function reconcileWebhook(commands: Commands, project: string, url:
     } else {
       await commands.glabApi(z.unknown(), `${project}/hooks/${hookId}`, '--method', 'PUT', ...fields)
     }
-    const record: WebhookRecord = { secret, url, hookId }
+    const record: WebhookRecord = { secret, url, hookId, host, project }
     state.set(KV.gitlab.webhook, record)
     return record
   } catch (error) { throw actionable(error) }
 }
 
-/** Deletes the project hook this Source created after the webhook URL is cleared; a hook already deleted remotely is forgotten. */
+/** Deletes the managed hook only for its recorded host and project; legacy or mismatched records are forgotten without deleting. */
 export async function removeWebhook(commands: Commands, project: string, state: Pick<SourceContext['state'], 'get' | 'set'>): Promise<void> {
   const stored = state.get(KV.gitlab.webhook)
-  if (!stored?.hookId) return
+  if (!stored) return
+  if (stored.host !== commands.deployment.gitlab?.host || !stored.host || stored.project !== project || stored.hookId === undefined) {
+    state.set(KV.gitlab.webhook, undefined)
+    return
+  }
   try {
     await commands.glabApi(`${project}/hooks/${stored.hookId}`, '--method', 'DELETE')
   } catch (error) {
