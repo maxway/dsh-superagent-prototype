@@ -31,6 +31,9 @@ export const KV = {
     builtIn: family<string, [base: string]>('prompt-built-in:') },
   /** Runtime: the main Session's ID. */
   runtime: { masterId: record<string>('master-id') },
+  executor: { stopFailure: family<{ at: string; error: string }, [ticket: string]>('executor-stop-failure:'),
+    stopPending: family<{ at: string }, [ticket: string, token: string]>('executor-stop-pending:',
+      (ticket, token) => `${encodeURIComponent(ticket)}:${token}`) },
   /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
   sessions: { prompts: family<number[], [session: string]>('session-prompts:') },
   /** Schema 11 migration: legacy main-Session queues imported into the effect table. */

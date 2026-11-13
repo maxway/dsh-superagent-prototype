@@ -17,7 +17,7 @@ interface Jobs {
 interface Subagents {
   waitForChildren?(parent: Agent): Promise<boolean>
   waitForTreeWork?(root: Agent): Promise<boolean>
-  listChildren?(parentSessionId: string): Promise<readonly { id: string }[]>
+  listChildren?(parentSessionId: string): Promise<readonly { id: string; mode?: string }[]>
   drainChildren?(parent: Agent, childIds: readonly string[]): Promise<void>
   listDescendants?(parentSessionId: SessionId): Promise<readonly { kind: string; id: SessionId }[]>
   interrupt?(childId: SessionId, authority: { kind: 'ancestor'; agent: Agent }): void
@@ -117,7 +117,14 @@ export async function killJobs(ctx: Context, sessionId: string, reason: string, 
   const live = jobs ? owned(jobs, sessionId, except) : []
   const failures: unknown[] = []
   // The waits start before the kills, so each end counts as collected.
-  const collected = live.map(job => jobs!.wait(job.id, KILL_WAIT_MS, sessionId).catch(() => undefined))
+  const collected: Promise<void>[] = []
+  for (const job of live) {
+    try {
+      collected.push(jobs!.wait(job.id, KILL_WAIT_MS, sessionId).then(result => {
+        if (running(result.status)) throw new Error(`Job ${job.id} is still ${result.status} after kill`)
+      }).catch((error: unknown) => { failures.push(error) }))
+    } catch (error) { failures.push(error) }
+  }
   for (const job of live) try { jobs!.kill(job.id, sessionId, reason) } catch (error) { failures.push(error) }
   await Promise.all(collected)
   if (failures.length) throw new AggregateError(failures, `Killing the shell jobs of ${sessionId} failed`)
@@ -143,43 +150,102 @@ export async function collectJob(ctx: Context, sessionId: string, job: { id: str
  * and waits for tree work. Interrupt does not release local activations or clear their inboxes. The worker's turn is
  * cancelled after, keeping its inbox when `keepInbox`; its Session still admits subagents.
  */
-export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = false): Promise<void> {
+export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = false, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted()
   const subagents = subagentsOf(ctx)
   if (!subagents) return
   if (subagents.listChildren && subagents.drainChildren) {
-    const live = (await subagents.listChildren(agent.id)).map(child => child.id).filter(id => ctx.agents.get(id as SessionId))
+    const live = (await subagents.listChildren(agent.id)).filter(child => child.mode === 'external' || ctx.agents.get(child.id as SessionId))
+      .map(child => child.id)
+    signal?.throwIfAborted()
+    if (ctx.agents.get(agent.id as SessionId) !== agent) throw new Error(`Worker ${agent.id} was replaced during subagent cleanup`)
     if (!live.length) return
-    try { await until(subagents.drainChildren(agent, live), undefined, DRAIN_LIMIT_MS) }
-    finally {
+    const failures: unknown[] = []
+    try {
+      const drained = await until(subagents.drainChildren(agent, live).then(() => true), undefined, DRAIN_LIMIT_MS)
+      if (!drained) throw new Error(`Releasing subagents of ${agent.id} timed out`)
+    } catch (error) { failures.push(error) }
+    signal?.throwIfAborted()
+    if (ctx.agents.get(agent.id as SessionId) !== agent) throw new Error(`Worker ${agent.id} was replaced during subagent cleanup`)
+    try {
       if (agent.status !== 'idle') cancelled.add(agent)
       agent.cancel({ kind: 'user' }, { keepInbox })
-      await until(agent.whenIdle(), undefined, DRAIN_LIMIT_MS)
-    }
+    } catch (error) { failures.push(error) }
+    try {
+      const idle = await until(agent.whenIdle().then(() => true), undefined, DRAIN_LIMIT_MS)
+      if (!idle) throw new Error(`Waiting for ${agent.id} to become idle timed out`)
+    } catch (error) { failures.push(error) }
+    if (failures.length) throw new AggregateError(failures, `Releasing subagents of ${agent.id} failed`)
     return
   }
   if (!subagents.listDescendants || !subagents.interrupt || !subagents.waitForTreeWork) {
     throw new Error('DSH subagent service does not provide supported background-work controls')
   }
   const descendants = (await subagents.listDescendants(agent.id as SessionId)).filter(entry => entry.kind === 'child')
-  if (!descendants.length) return
-  try {
-    for (const child of descendants) subagents.interrupt(child.id, { kind: 'ancestor', agent })
-    await until(subagents.waitForTreeWork(agent), undefined, DRAIN_LIMIT_MS)
-  } finally {
-    if (agent.status !== 'idle') cancelled.add(agent)
-    agent.cancel({ kind: 'user' }, { keepInbox })
-    await until(agent.whenIdle(), undefined, DRAIN_LIMIT_MS)
+  signal?.throwIfAborted()
+  if (ctx.agents.get(agent.id as SessionId) !== agent) throw new Error(`Worker ${agent.id} was replaced during subagent cleanup`)
+  let cancelWorker = descendants.length > 0
+  const failures: unknown[] = []
+  for (const child of descendants) {
+    signal?.throwIfAborted()
+    if (ctx.agents.get(agent.id as SessionId) !== agent) throw new Error(`Worker ${agent.id} was replaced during subagent cleanup`)
+    try { subagents.interrupt(child.id, { kind: 'ancestor', agent }) } catch (error) { failures.push(error) }
   }
+  try {
+    const settled = await until(subagents.waitForTreeWork(agent).then(joined => ({ joined })), undefined, DRAIN_LIMIT_MS)
+    if (!settled) throw new Error(`Waiting for subagent tree of ${agent.id} timed out`)
+    cancelWorker ||= settled.joined
+  } catch (error) { cancelWorker = true; failures.push(error) }
+  signal?.throwIfAborted()
+  if (ctx.agents.get(agent.id as SessionId) !== agent) throw new Error(`Worker ${agent.id} was replaced during subagent cleanup`)
+  if (cancelWorker) {
+    try {
+      if (agent.status !== 'idle') cancelled.add(agent)
+      agent.cancel({ kind: 'user' }, { keepInbox })
+    } catch (error) { failures.push(error) }
+    try {
+      const idle = await until(agent.whenIdle().then(() => true), undefined, DRAIN_LIMIT_MS)
+      if (!idle) throw new Error(`Waiting for ${agent.id} to become idle timed out`)
+    } catch (error) { failures.push(error) }
+  }
+  if (failures.length) throw new AggregateError(failures, `Stopping subagent tree of ${agent.id} failed`)
 }
 
 /**
  * Stop what a worker runs in the background once its Assignment ends: kill its shell jobs and release its subagents (see
  * `stopSubagents`). A Session not loaded has no subagent at work. One failure stops nothing else.
  */
-export async function stopBackground(ctx: Context, sessionId: string, reason: string, keepInbox = false): Promise<void> {
+export async function stopBackground(ctx: Context, sessionId: string, reason: string, keepInbox = false, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted()
   const failures: unknown[] = []
-  await killJobs(ctx, sessionId, reason).catch((error: unknown) => { failures.push(error) })
   const agent = ctx.agents.get(sessionId as SessionId)
-  if (agent) await stopSubagents(ctx, agent, keepInbox).catch((error: unknown) => { failures.push(error) })
+  let idleBefore = true
+  if (agent) {
+    try {
+      idleBefore = await until(agent.whenIdle().then(() => true), undefined, DRAIN_LIMIT_MS)
+      if (!idleBefore) throw new Error(`Waiting for ${sessionId} to become idle timed out`)
+    } catch (error) { idleBefore = false; failures.push(error) }
+  }
+  signal?.throwIfAborted()
+  if (ctx.agents.get(sessionId as SessionId) !== agent) {
+    failures.push(new Error(`Worker ${sessionId} was replaced during background cleanup`))
+  } else {
+    await killJobs(ctx, sessionId, reason).catch((error: unknown) => { failures.push(error) })
+    signal?.throwIfAborted()
+    if (ctx.agents.get(sessionId as SessionId) !== agent) {
+      failures.push(new Error(`Worker ${sessionId} was replaced during background cleanup`))
+    } else if (agent) {
+      await stopSubagents(ctx, agent, keepInbox, signal).catch((error: unknown) => { failures.push(error) })
+      signal?.throwIfAborted()
+      if (idleBefore) {
+        try {
+          const idle = await until(agent.whenIdle().then(() => true), undefined, DRAIN_LIMIT_MS)
+          if (!idle) throw new Error(`Waiting for ${sessionId} to become idle timed out`)
+        } catch (error) { failures.push(error) }
+      }
+      if (ctx.agents.get(sessionId as SessionId) !== agent) failures.push(new Error(`Worker ${sessionId} was replaced during background cleanup`))
+      else if (runningJobs(ctx, sessionId).length) failures.push(new Error(`Worker ${sessionId} still has running background jobs`))
+    }
+  }
   if (failures.length) throw new AggregateError(failures, `Stopping the background work of ${sessionId} failed`)
 }

@@ -2,7 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { expect, it, vi } from 'vitest'
-import { stopSubagents, untilQuiet } from '../src/executor/background.ts'
+import { killJobs, stopBackground, stopSubagents, untilQuiet } from '../src/executor/background.ts'
 import { jobRegistry } from './fixtures/host.ts'
 
 /** A context with DSH's job registry and subagents, and an idle worker agent with one live subagent, `child-1`. */
@@ -49,6 +49,21 @@ it('looks at the jobs only when one ends, not at each output of a noisy one', as
   expect(jobs.service.list.mock.calls.length).toBe(looked)
   jobs.end(id)
   expect(await quiet).toBe(true)
+})
+
+it('reports jobs that remain running or cannot be collected after kill', async () => {
+  const { ctx, jobs } = setup(async () => false)
+  const first = jobs.run('worker-t1'), second = jobs.run('worker-t1')
+  jobs.service.wait.mockImplementation(async id => {
+    if (id === first) return { id, owner: 'worker-t1', status: 'running' }
+    throw new Error('wait failed')
+  })
+  jobs.service.kill.mockImplementation(() => 'requested')
+  await expect(killJobs(ctx, 'worker-t1', 'stop')).rejects.toMatchObject({
+    errors: [expect.objectContaining({ message: `Job ${first} is still running after kill` }),
+      expect.objectContaining({ message: 'wait failed' })],
+  })
+  expect(jobs.service.kill.mock.calls.map(([id]) => id)).toEqual([first, second])
 })
 
 it('joins a worker\'s subagents once for the looks that wait on them, as DSH cannot cancel the join', async () => {
@@ -109,20 +124,175 @@ it('does not cancel the worker when rc.2 has no catalogued children', async () =
   Reflect.set(subagents, 'waitForTreeWork', wait)
   await stopSubagents(ctx, agent)
   expect(interrupt).not.toHaveBeenCalled()
-  expect(wait).not.toHaveBeenCalled()
+  expect(wait).toHaveBeenCalledWith(agent)
   expect(agent.cancel).not.toHaveBeenCalled()
 })
 
-it('gives up a release of subagents that does not end within 10 seconds, and cancels the turn their ends woke', async () => {
+it('attempts to interrupt remaining rc.2 descendants after an interrupt fails', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  const interrupt = vi.fn((id: string) => { if (id === 'child-1') throw new Error('interrupt failed') })
+  const wait = vi.fn(async () => false)
+  Reflect.deleteProperty(subagents, 'listChildren')
+  Reflect.deleteProperty(subagents, 'drainChildren')
+  Reflect.set(subagents, 'listDescendants', vi.fn(async () => [
+    { kind: 'child', id: 'child-1' }, { kind: 'child', id: 'child-2' },
+  ]))
+  Reflect.set(subagents, 'interrupt', interrupt)
+  Reflect.set(subagents, 'waitForTreeWork', wait)
+  await expect(stopSubagents(ctx, agent)).rejects.toMatchObject({
+    errors: [expect.objectContaining({ message: 'interrupt failed' })],
+  })
+  expect(interrupt).toHaveBeenCalledTimes(2)
+  expect(wait).toHaveBeenCalledWith(agent)
+})
+
+it('does not interrupt descendants after its stop lease is revoked during catalog lookup', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  const catalog = Promise.withResolvers<{ kind: string; id: string }[]>()
+  const interrupt = vi.fn()
+  Reflect.deleteProperty(subagents, 'listChildren')
+  Reflect.deleteProperty(subagents, 'drainChildren')
+  Reflect.set(subagents, 'listDescendants', () => catalog.promise)
+  Reflect.set(subagents, 'interrupt', interrupt)
+  Reflect.set(subagents, 'waitForTreeWork', vi.fn(async () => false))
+  const lease = new AbortController()
+  const stopping = stopSubagents(ctx, agent, false, lease.signal)
+  lease.abort(new Error('stop lease revoked'))
+  catalog.resolve([{ kind: 'child', id: 'child-1' }])
+  await expect(stopping).rejects.toThrow('stop lease revoked')
+  expect(interrupt).not.toHaveBeenCalled()
+  expect(agent.cancel).not.toHaveBeenCalled()
+})
+
+it('does not cancel the worker after its stop lease is revoked while waiting', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  const tree = Promise.withResolvers<boolean>()
+  const wait = vi.fn(() => tree.promise)
+  Reflect.deleteProperty(subagents, 'listChildren')
+  Reflect.deleteProperty(subagents, 'drainChildren')
+  Reflect.set(subagents, 'listDescendants', async () => [{ kind: 'child', id: 'child-1' }])
+  Reflect.set(subagents, 'interrupt', vi.fn())
+  Reflect.set(subagents, 'waitForTreeWork', wait)
+  const lease = new AbortController()
+  const stopping = stopSubagents(ctx, agent, false, lease.signal)
+  await vi.waitFor(() => expect(wait).toHaveBeenCalledOnce())
+  lease.abort(new Error('stop lease revoked'))
+  tree.resolve(true)
+  await expect(stopping).rejects.toThrow('stop lease revoked')
+  expect(agent.cancel).not.toHaveBeenCalled()
+})
+
+it('does not cancel a replacement worker after an asynchronous drain', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  const drain = Promise.withResolvers<void>()
+  subagents.drainChildren.mockReturnValueOnce(drain.promise)
+  const stopping = stopSubagents(ctx, agent)
+  await Promise.resolve()
+  Reflect.set(ctx.agents, 'get', () => undefined)
+  drain.resolve()
+  await expect(stopping).rejects.toThrow('Worker worker-t1 was replaced during subagent cleanup')
+  expect(agent.cancel).not.toHaveBeenCalled()
+})
+
+it('reports when waiting for an interrupted rc.2 tree times out', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  Reflect.deleteProperty(subagents, 'listChildren')
+  Reflect.deleteProperty(subagents, 'drainChildren')
+  Reflect.set(subagents, 'listDescendants', vi.fn(async () => [{ kind: 'child', id: 'child-1' }]))
+  Reflect.set(subagents, 'interrupt', vi.fn())
+  Reflect.set(subagents, 'waitForTreeWork', vi.fn(() => new Promise(() => {})))
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    const stopping = stopSubagents(ctx, agent)
+    const rejected = expect(stopping).rejects.toMatchObject({
+      message: 'Stopping subagent tree of worker-t1 failed',
+      errors: [expect.objectContaining({ message: 'Waiting for subagent tree of worker-t1 timed out' })],
+    })
+    await vi.advanceTimersByTimeAsync(10_000)
+    await rejected
+    expect(agent.cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: false })
+  } finally { vi.useRealTimers() }
+})
+
+it('reports when the rc.2 worker does not become idle after cancellation', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  Reflect.deleteProperty(subagents, 'listChildren')
+  Reflect.deleteProperty(subagents, 'drainChildren')
+  Reflect.set(subagents, 'listDescendants', vi.fn(async () => [{ kind: 'child', id: 'child-1' }]))
+  Reflect.set(subagents, 'interrupt', vi.fn())
+  Reflect.set(subagents, 'waitForTreeWork', vi.fn(async () => true))
+  Reflect.set(agent, 'whenIdle', () => new Promise(() => {}))
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    const stopping = stopSubagents(ctx, agent)
+    const rejected = expect(stopping).rejects.toMatchObject({
+      errors: [expect.objectContaining({ message: 'Waiting for worker-t1 to become idle timed out' })],
+    })
+    await vi.advanceTimersByTimeAsync(10_000)
+    await rejected
+  } finally { vi.useRealTimers() }
+})
+
+it('reports an rc.1 release timeout and cancels the turn the release may have woken', async () => {
   const { ctx, agent } = setup(async () => false, () => new Promise(() => {}))
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   try {
-    let stopped = false
-    const stopping = stopSubagents(ctx, agent).then(() => { stopped = true })
-    await vi.advanceTimersByTimeAsync(9_999)
-    expect(stopped).toBe(false)
-    await vi.advanceTimersByTimeAsync(1)
-    await stopping
+    const stopping = stopSubagents(ctx, agent)
+    const rejected = expect(stopping).rejects.toMatchObject({
+      errors: [expect.objectContaining({ message: 'Releasing subagents of worker-t1 timed out' })],
+    })
+    await vi.advanceTimersByTimeAsync(10_000)
+    await rejected
   } finally { vi.useRealTimers() }
   expect(agent.cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: false })
+})
+
+it('collects jobs started before the worker becomes idle', async () => {
+  const { ctx, agent, jobs } = setup(async () => false)
+  const idle = Promise.withResolvers<void>()
+  Reflect.set(agent, 'whenIdle', () => idle.promise)
+  const stopping = stopBackground(ctx, agent.id, 'stop')
+  const job = jobs.run(agent.id)
+  idle.resolve()
+  await stopping
+  expect(jobs.service.kill).toHaveBeenCalledWith(job, agent.id, expect.any(String))
+})
+
+it('does not stop a replacement worker after waiting for jobs', async () => {
+  const { ctx, agent, jobs, subagents } = setup(async () => false)
+  const job = jobs.run(agent.id)
+  jobs.service.kill.mockImplementation(() => 'requested')
+  const stopping = stopBackground(ctx, agent.id, 'stop')
+  await vi.waitFor(() => expect(jobs.service.kill).toHaveBeenCalledWith(job, agent.id, expect.any(String)))
+  const replacement = { ...agent, cancel: vi.fn() }
+  Reflect.set(ctx.agents, 'get', () => replacement)
+  jobs.end(job)
+  await expect(stopping).rejects.toMatchObject({
+    errors: [expect.objectContaining({ message: 'Worker worker-t1 was replaced during background cleanup' })],
+  })
+  expect(replacement.cancel).not.toHaveBeenCalled()
+  expect(subagents.drainChildren).not.toHaveBeenCalled()
+})
+
+it('reports a worker that remains active even when there are no subagents', async () => {
+  const { ctx, agent } = setup(async () => false)
+  Reflect.set(ctx, 'get', () => undefined)
+  Reflect.set(agent, 'whenIdle', () => new Promise(() => {}))
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    const stopping = stopBackground(ctx, agent.id, 'stop')
+    const rejected = expect(stopping).rejects.toMatchObject({
+      errors: [expect.objectContaining({ message: 'Waiting for worker-t1 to become idle timed out' })],
+    })
+    await vi.advanceTimersByTimeAsync(10_000)
+    await rejected
+  } finally { vi.useRealTimers() }
+})
+
+it('passes rc.1 external catalog entries without local agents to the release operation', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  Reflect.set(subagents, 'listChildren', async () => [{ id: 'external-child', mode: 'external' }])
+  Reflect.set(ctx.agents, 'get', (id: string) => id === agent.id ? agent : undefined)
+  await stopSubagents(ctx, agent)
+  expect(subagents.drainChildren).toHaveBeenCalledWith(agent, ['external-child'])
 })

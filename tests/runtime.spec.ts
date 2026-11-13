@@ -231,6 +231,120 @@ afterEach(async () => {
   }
 })
 
+it.each([{ failure: false }, { failure: true }])('requestShutdown exits only after successful drain (failure: $failure)', async ({ failure }) => {
+  const ctx = (runtime as unknown as { ctx: Context }).ctx
+  const exit = vi.fn()
+  ctx.reflect.provide('appExit', exit)
+  const warn = vi.spyOn(ctx.logger, 'warn')
+  const stop = vi.spyOn(runtime, 'stop')
+  if (failure) stop.mockRejectedValue(new Error('drain failed'))
+  else stop.mockResolvedValue(undefined)
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    runtime.requestShutdown()
+    await vi.advanceTimersByTimeAsync(49)
+    expect(stop).not.toHaveBeenCalled()
+    expect(exit).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(stop).toHaveBeenCalledOnce()
+    if (failure) {
+      expect(exit).not.toHaveBeenCalled()
+      expect(warn).toHaveBeenCalledWith('dsh-superagent stop drain failed; process retained for investigation: %s', 'Error: drain failed')
+    } else {
+      expect(exit).toHaveBeenCalledExactlyOnceWith(0)
+      expect(warn).not.toHaveBeenCalled()
+    }
+  } finally {
+    vi.useRealTimers()
+    stop.mockRestore()
+  }
+})
+
+async function releaseRetainedRuntime(target: Runtime): Promise<void> {
+  vi.spyOn(target, 'stop').mockResolvedValue(undefined)
+  target.executor.dispose()
+  target.sessions.dispose()
+  const retained = target as unknown as { setup: { restore(): void }; releaseLock?: () => Promise<void>; disposers: (() => void)[] }
+  for (const dispose of retained.disposers.reverse()) dispose()
+  retained.setup.restore()
+  target.store.close()
+  await retained.releaseLock?.()
+}
+
+it.each([
+  { failingAgent: 'main', executorFails: false },
+  { failingAgent: 'worker', executorFails: false },
+  { failingAgent: 'main', executorFails: true },
+])('continues shutdown after $failingAgent cancellation fails (executor failure: $executorFails)', async ({ failingAgent, executorFails }) => {
+  const first = await acceptedTicket(feishu('71', '@bot first'))
+  const second = await acceptedTicket(feishu('72', '@bot second'))
+  const main = agents.get(runtime.masterId)!
+  const firstWorker = agents.get(first.sessionId)!
+  const secondWorker = agents.get(second.sessionId)!
+  const failed = failingAgent === 'main' ? main : firstWorker
+  const cancelError = new Error('cancel failed')
+  const executorError = new Error('executor shutdown failed')
+  failed.cancel.mockImplementationOnce(() => { throw cancelError })
+  const failedIdle = vi.spyOn(failed as unknown as { whenIdle: () => Promise<void> }, 'whenIdle')
+  const shutdown = runtime.executor.shutdown.bind(runtime.executor)
+  const executorStop = vi.spyOn(runtime.executor, 'shutdown').mockImplementation(async () => {
+    expect(failedIdle).not.toHaveBeenCalled()
+    await shutdown()
+    if (executorFails) throw executorError
+  })
+  const close = vi.spyOn(runtime.store, 'close')
+  try {
+    const error = await runtime.stop().catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(AggregateError)
+    const causes = (reason: unknown): unknown[] => reason instanceof AggregateError ? reason.errors.flatMap(causes) : [reason]
+    expect(causes(error)).toEqual(executorFails ? [cancelError, executorError] : [cancelError])
+    expect(main.cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: true })
+    expect(firstWorker.cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: true })
+    expect(secondWorker.cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: true })
+    expect(executorStop).toHaveBeenCalledOnce()
+    expect(close).not.toHaveBeenCalled()
+    expect(() => runtime.store.settings()).not.toThrow()
+    const other = new Context()
+    for (const [name, service] of Object.entries(services)) other.reflect.provide(name, service)
+    expect(() => new Runtime(other, testMachine({ stateDir: directory }), vi.fn())).toThrow(/already being held/)
+  } finally { await releaseRetainedRuntime(runtime) }
+})
+
+it('retains its state lock when the main session idle wait fails', async () => {
+  const main = agents.get(runtime.masterId)! as unknown as { whenIdle: () => Promise<void> }
+  vi.spyOn(main, 'whenIdle').mockRejectedValue(new Error('idle wait failed'))
+  const close = vi.spyOn(runtime.store, 'close')
+  try {
+    await expect(runtime.stop()).rejects.toThrow('Could not finish shutdown')
+    expect(close).not.toHaveBeenCalled()
+    expect(() => runtime.store.settings()).not.toThrow()
+  } finally { await releaseRetainedRuntime(runtime) }
+})
+
+it('starts worker shutdown while a cancelled main session is still busy', async () => {
+  await acceptedTicket(feishu('73', '@bot work'))
+  const main = agents.get(runtime.masterId)! as unknown as { whenIdle: () => Promise<void> }
+  let releaseIdle!: () => void
+  vi.spyOn(main, 'whenIdle').mockImplementation(() => new Promise<void>(resolve => { releaseIdle = resolve }))
+  const shutdown = runtime.executor.shutdown.bind(runtime.executor)
+  let executorFinished = false
+  const executorStop = vi.spyOn(runtime.executor, 'shutdown').mockImplementation(async () => {
+    await shutdown()
+    executorFinished = true
+  })
+  const close = vi.spyOn(runtime.store, 'close')
+  const stopping = runtime.stop()
+  try {
+    await vi.waitFor(() => expect(executorFinished).toBe(true))
+    expect(executorStop).toHaveBeenCalledOnce()
+    expect(close).not.toHaveBeenCalled()
+  } finally {
+    releaseIdle?.()
+    await stopping
+  }
+  expect(close).toHaveBeenCalledOnce()
+})
+
 it('uses the model captured for each worker step when assembling its prompt', async () => {
   const { sessionId } = await acceptedTicket()
   const agent = agents.get(sessionId)! as unknown as { ctx: Context; model: { select: (value: { provider: string; model: string }) => void } }

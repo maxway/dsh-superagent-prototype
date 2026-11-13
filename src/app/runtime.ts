@@ -21,7 +21,7 @@ import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
 import type { SetupProblem } from '../setup.ts'
-import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
+import { DshExecutor, sourceTrigger, triggerMessage } from '../executor/dsh.ts'
 import { ticketCard } from './cards.ts'
 import { MasterAssessor } from './assessment.ts'
 import { KV } from '../kv.ts'
@@ -209,11 +209,12 @@ export class Runtime extends Service implements SourceHost {
   requestShutdown(): void {
     const exit = (this.ctx as unknown as { get(name: string): unknown }).get('appExit')
     if (typeof exit !== 'function') throw new Error('The launcher does not provide an exit hook; stop is unavailable')
+    const shutdownExit = exit as (code?: number) => void
     // Let the route's response flush before the drain closes the HTTP server.
     setTimeout(() => {
-      void this.stop().catch((error: unknown) => {
-        this.ctx.logger.warn('dsh-superagent stop drain failed: %s', String(error))
-      }).finally(() => { (exit as (code?: number) => void)(0) })
+      void this.stop().then(() => { shutdownExit(0) }, (error: unknown) => {
+        this.ctx.logger.warn('dsh-superagent stop drain failed; process retained for investigation: %s', String(error))
+      })
     }, 50)
   }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
@@ -254,26 +255,35 @@ export class Runtime extends Service implements SourceHost {
   stop(): Promise<void> { return this.stopping ??= this.shutdown() }
   private async shutdown(): Promise<void> {
     this.closingFlag = true; const passes = this.passes.stop(); this.stopped.abort()
+    let workersStopped = false
     try {
       this.assessor.stop()
-      const ids = [this.masterId, ...this.store.tickets.list().map(ticket => workerSessionId(ticket.id))]
-      const agents = ids.map(id => this.ctx.agents.get(id as SessionId)).filter((agent): agent is Agent => agent !== undefined)
-      for (const agent of agents) agent.cancel({ kind: 'user' }, { keepInbox: true })
-      await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])
+      const failures: unknown[] = []
+      const cancelled: Agent[] = []
       // The workers' jobs and subagents stop too: their ends would start worker turns without the tool limits released below.
-      await this.executor.shutdown()
+      const executorStop = this.executor.shutdown().catch((error: unknown) => { failures.push(error) })
+      const master = this.ctx.agents.get(this.masterId as SessionId)
+      if (master) {
+        try { master.cancel({ kind: 'user' }, { keepInbox: true }); cancelled.push(master) } catch (error) { failures.push(error) }
+      }
+      const settled = await Promise.allSettled([passes, this.effects.drain(), ...cancelled.map(agent => Promise.resolve().then(() => agent.whenIdle())), executorStop])
+      failures.push(...settled.flatMap(result => result.status === 'rejected' ? [result.reason] : []))
+      if (failures.length) throw new AggregateError(failures, 'Could not finish shutdown')
+      workersStopped = true
       this.executor.dispose()
       this.sessions.dispose()
       for (const dispose of this.disposers.reverse()) dispose()
       await this.ctx.sessionPersistence.flush()
     } finally {
       // Close the database before releasing the directory lock so another process cannot open the database mid-write; a compromised lock may already be released.
-      this.setup.restore()
-      try { this.store.close() } finally {
-        const unreleased = (error: unknown) => { this.ctx.logger.warn('dsh-superagent could not release its state directory lock: %s',
-          String(error)) }
-        await this.releaseLock?.().catch(unreleased)
-      }
+      if (workersStopped) {
+        this.setup.restore()
+        try { this.store.close() } finally {
+          const unreleased = (error: unknown) => { this.ctx.logger.warn('dsh-superagent could not release its state directory lock: %s',
+            String(error)) }
+          await this.releaseLock?.().catch(unreleased)
+        }
+      } else this.ctx.logger.warn('dsh-superagent retained its state lock and database because worker shutdown is unconfirmed')
     }
   }
 }

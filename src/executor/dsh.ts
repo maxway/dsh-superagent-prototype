@@ -4,6 +4,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
 import type { AssessmentOutcome, Assignment, Category, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Tier, Trigger }
   from '../core/index.ts'
@@ -18,6 +19,7 @@ import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { offPeakWait } from '../offpeak.ts'
+import { KV } from '../kv.ts'
 import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
 
 const now = (): string => new Date().toISOString()
@@ -69,7 +71,7 @@ export interface ExecutorHost {
   /** Where the Executor reports what happened to Assignments and Inputs. */
   readonly engine: Pick<EngineForExecutor, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed' | 'report'
     | 'assignmentInterrupted'>
-  readonly store: Pick<Store, 'tickets' | 'triggers' | 'set' | 'settings' | 'atomic' | 'afterCommit'>
+  readonly store: Pick<Store, 'tickets' | 'triggers' | 'get' | 'set' | 'delete' | 'keys' | 'settings' | 'atomic' | 'afterCommit'>
   /** Durable effect queue through which launches and input deliveries run. */
   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
   /** The `worker` health entry, which reports whether background worker event handling failed. */
@@ -243,6 +245,9 @@ export class DshExecutor implements Executor {
   private readonly settling = new Map<string, AbortController>()
   /** The stops of tickets' background work that run, by ticket, which a launch or a delivery of the ticket waits for. */
   private readonly stopping = new Map<string, Promise<void>>()
+  private readonly stopFailures = new Set<string>()
+  private readonly stopLeases = new Set<AbortController>()
+  private recordingStopFailures = true
   /** The jobs workers left to a person when they handed off, by ticket, and the collecting of their ends. */
   private readonly left = new Map<string, { jobs: Set<string>; collect: AbortController }>()
   /** When a person's message typed into a worker's Session last started a turn, by ticket. */
@@ -251,6 +256,7 @@ export class DshExecutor implements Executor {
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
   /** Registers effect handlers; launch and delivery are held while processing is paused. */
   constructor(private readonly host: ExecutorHost) {
+    if (this.hasStopFailures()) host.health.set({ state: 'error', detail: 'Workers have unconfirmed background stops', at: now() })
     this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
       () => host.store.settings().executor.maxWorkers)
     // Each launch reserves a worker slot so launches run concurrently while slots are free.
@@ -303,6 +309,9 @@ export class DshExecutor implements Executor {
     const ticket = this.host.store.tickets.get(ticketId)
     const assignment = ticket && latestAssignment(ticket)
     if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== 'pending') return
+    await this.stopped(ticketId)
+    this.checkStopFailure(ticketId)
+    this.checkHandoffStops(ticket)
     // A Ticket accepted on another Git host never runs here: its worktree, remote and change requests belong to the old host.
     const moved = this.hostProblem(ticket)
     if (moved) { this.launchFailed(ticketId, assignmentId, new Error(moved)); return }
@@ -329,9 +338,11 @@ export class DshExecutor implements Executor {
   private async deliverQueued(ticketId: string): Promise<void> {
     // A stop of the worker's background work ends with a cancel, which would drop what is delivered meanwhile.
     await this.stopped(ticketId)
+    this.checkStopFailure(ticketId)
     const first = this.host.store.tickets.get(ticketId)
     const target = first && liveTicket(first) ? runningAssignment(first) : undefined
     if (!first || !target || !first.undelivered.length) return
+    this.checkHandoffStops(first)
     // A worker left waiting by a host restart must not be woken on the new host either.
     const moved = this.hostProblem(first)
     if (moved) { this.failed(ticketId, moved); return }
@@ -373,6 +384,8 @@ export class DshExecutor implements Executor {
     const live = () => {
       const current = this.host.store.tickets.get(ticket.id)
       if (!current || !liveTicket(current) || runningAssignment(current)?.id !== assignment.id) throw new Error('The ticket ended or another Assignment took it over')
+      this.checkStopFailure(ticket.id)
+      this.checkHandoffStops(current)
       // A stop of the worker's background work that started meanwhile ends with a cancel, which would drop the Input.
       if (this.stopping.has(ticket.id)) throw new Later('The worker\'s background work is stopping')
     }
@@ -397,6 +410,7 @@ export class DshExecutor implements Executor {
    * report with no Input delivered since, and stops its shell jobs and subagents, including jobs it left to a person.
    */
   stop(ticket: Ticket, assignment: Assignment, reason: string): void {
+    const token = this.stopIntent(ticket.id)
     this.transient.delete(assignment.id); this.transient.delete(`launch:${assignment.id}`)
     const report = assignment.report
     const busy = !!assignment.deliveredAt && !!report && assignment.deliveredAt >= report.at
@@ -404,22 +418,71 @@ export class DshExecutor implements Executor {
     const sessionId = workerSessionId(ticket.id)
     this.host.store.afterCommit(() => {
       this.settling.get(ticket.id)?.abort()
-      if (!ownTurn) this.host.context.agents.get(sessionId as SessionId)?.cancel({ kind: 'user' }, { keepInbox: false })
       // Its shell jobs and subagents stop with it, also those of a worker that ends its own turn.
-      this.stopWork(ticket.id, reason)
+      this.stopWork(ticket.id, reason, false, token, () => {
+        if (!ownTurn) this.host.context.agents.get(sessionId as SessionId)?.cancel({ kind: 'user' }, { keepInbox: false })
+      })
       this.left.get(ticket.id)?.collect.abort(); this.left.delete(ticket.id); this.personal.delete(ticket.id)
     })
   }
   /** Stop what a ticket's worker runs in the background (see `stopBackground`). */
-  private stopWork(ticketId: string, reason: string, keepInbox = false): void {
-    this.track(ticketId, stopBackground(this.host.context, workerSessionId(ticketId), reason, keepInbox))
+  private stopIntent(ticketId: string): string {
+    const token = randomUUID()
+    try { this.host.store.set(KV.executor.stopPending(ticketId, token), { at: now() }) }
+    catch (error) { this.stopFailures.add(ticketId); throw error }
+    return token
+  }
+  private stopWork(ticketId: string, reason: string, keepInbox = false, token = this.stopIntent(ticketId), before?: () => void): void {
+    const lease = new AbortController()
+    const work = async () => {
+      const failures: unknown[] = []
+      try { before?.() } catch (error) { failures.push(error) }
+      await stopBackground(this.host.context, workerSessionId(ticketId), reason, keepInbox, lease.signal).catch((error: unknown) => { failures.push(error) })
+      if (failures.length) throw new AggregateError(failures, `Stopping the background work of ${workerSessionId(ticketId)} failed`)
+    }
+    this.track(ticketId, work(), token, lease)
   }
   /** A stop of a ticket's background work, which a launch or a delivery of the ticket waits for while it runs. */
-  private track(ticketId: string, stop: Promise<void>): void {
-    const entry: Promise<void> = Promise.all([this.stopping.get(ticketId), stop.catch(() => {})]).then(() => {})
+  private track(ticketId: string, stop: Promise<void>, token?: string, lease?: AbortController): void {
+    if (lease) this.stopLeases.add(lease)
+    const recorded = stop.then(() => {
+      lease?.signal.throwIfAborted()
+      if (token && this.recordingStopFailures) this.host.store.delete(KV.executor.stopPending(ticketId, token))
+    }).catch((error: unknown) => { this.recordStopFailure(ticketId, error); throw error })
+      .finally(() => { if (lease) this.stopLeases.delete(lease) })
+    const entry: Promise<void> = Promise.all([this.stopping.get(ticketId), recorded.catch(() => {})]).then(() => {})
       .finally(() => { if (this.stopping.get(ticketId) === entry) this.stopping.delete(ticketId) })
     this.stopping.set(ticketId, entry)
-    void this.background(stop)
+    void this.background(recorded)
+  }
+  private recordStopFailure(ticketId: string, error: unknown): void {
+    this.stopFailures.add(ticketId)
+    if (this.recordingStopFailures) this.host.store.set(KV.executor.stopFailure(ticketId), { at: now(), error: String(error) })
+  }
+  private hasStopFailures(): boolean {
+    try { return this.stopFailures.size > 0 || this.host.store.keys(KV.executor.stopFailure.prefix).length > 0
+      || this.host.store.keys(KV.executor.stopPending.prefix).length > 0 } catch { return true }
+  }
+  private checkStopFailure(ticketId: string): void {
+    let recorded = true
+    try { recorded = this.host.store.get(KV.executor.stopFailure(ticketId)) !== undefined
+      || this.host.store.keys(KV.executor.stopPending(ticketId, '')).length > 0 } catch {}
+    if (this.stopFailures.has(ticketId) || recorded) {
+      throw new Later('The worker background stop failed or is unconfirmed; operator investigation is required')
+    }
+  }
+  private checkHandoffStops(ticket: Ticket): void {
+    const seen = new Set([ticket.id])
+    let previous = ticket.handoffFrom
+    while (previous !== undefined) {
+      if (seen.has(previous)) throw new Later('The worker handoff ancestry is invalid')
+      seen.add(previous)
+      this.checkStopFailure(previous)
+      if (this.stopping.has(previous)) throw new Later('A predecessor worker is still stopping')
+      const predecessor = this.host.store.tickets.get(previous)
+      if (!predecessor) throw new Later('The predecessor Ticket is unavailable')
+      previous = predecessor.handoffFrom
+    }
   }
   /** Wait for a stop of the ticket's background work that runs, unless the host stops first. */
   private async stopped(ticketId: string): Promise<void> {
@@ -431,16 +494,62 @@ export class DshExecutor implements Executor {
    * of the jobs left to a person, which were killed, and cancel a worker turn that started meanwhile, keeping its inbox.
    */
   async shutdown(): Promise<void> {
-    const agents = this.host.store.tickets.list().map(ticket => this.host.context.agents.get(workerSessionId(ticket.id) as SessionId))
-      .filter((agent): agent is Agent => agent !== undefined)
-    const stop = async () => {
-      await Promise.allSettled(agents.map(agent => stopBackground(this.host.context, agent.id, 'dsh-superagent stopped', true)))
-      for (const { collect } of this.left.values()) collect.abort()
-      const running = agents.filter(agent => agent.status !== 'idle')
-      for (const agent of running) agent.cancel({ kind: 'user' }, { keepInbox: true })
-      await Promise.allSettled(running.map(agent => agent.whenIdle()))
+    const workers = this.host.store.tickets.list().map(ticket => {
+      const sessionId = workerSessionId(ticket.id)
+      return { ticketId: ticket.id, sessionId, agent: this.host.context.agents.get(sessionId as SessionId) }
+    }).filter(worker => worker.agent !== undefined || runningJobs(this.host.context, worker.sessionId).length > 0)
+    let recording = true
+    const lease = new AbortController()
+    const tokens = new Map<string, string>()
+    const registrationFailures: unknown[] = []
+    for (const worker of workers) {
+      try { tokens.set(worker.ticketId, this.stopIntent(worker.ticketId)) } catch (error) { registrationFailures.push(error) }
     }
-    await until(stop(), undefined, SHUTDOWN_STOP_MS)
+    const registered = workers.filter(worker => tokens.has(worker.ticketId))
+    const unfinished = new Set(registered.map(worker => worker.ticketId))
+    const stop = async () => {
+      const results = await Promise.allSettled(registered.map(async worker => {
+        const { ticketId, sessionId, agent } = worker
+        try {
+          const failures: unknown[] = []
+          try { if (agent && agent.status !== 'idle') agent.cancel({ kind: 'user' }, { keepInbox: true }) } catch (error) { failures.push(error) }
+          await stopBackground(this.host.context, sessionId, 'dsh-superagent stopped', true, lease.signal).catch((error: unknown) => { failures.push(error) })
+          lease.signal.throwIfAborted()
+          if (this.host.context.agents.get(sessionId as SessionId) !== agent) failures.push(new Error(`Worker ${sessionId} was replaced during shutdown`))
+          else if (agent && agent.status !== 'idle') {
+            try { agent.cancel({ kind: 'user' }, { keepInbox: true }) } catch (error) { failures.push(error) }
+            await Promise.resolve().then(() => agent.whenIdle()).catch((error: unknown) => { failures.push(error) })
+          }
+          lease.signal.throwIfAborted()
+          if (failures.length) throw new AggregateError(failures, `Stopping ${sessionId} failed`)
+          if (recording && this.recordingStopFailures) this.host.store.delete(KV.executor.stopPending(ticketId, tokens.get(ticketId)!))
+        } catch (error) {
+          if (recording) this.recordStopFailure(ticketId, error)
+          throw error
+        } finally { unfinished.delete(ticketId) }
+      }))
+      lease.signal.throwIfAborted()
+      for (const { collect } of this.left.values()) collect.abort()
+      const failures = [...registrationFailures, ...results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])]
+      if (failures.length) throw new AggregateError(failures, 'Could not finish worker shutdown')
+    }
+    try {
+      const failures: unknown[] = []
+      let settled = false
+      try { settled = await until(stop().then(() => true), undefined, SHUTDOWN_STOP_MS) } catch (error) { failures.push(error) }
+      if (!settled && !failures.length) failures.push(new Error('Worker shutdown timed out'))
+      const unconfirmed = new Set([...this.stopping.keys(), ...!settled ? unfinished : []])
+      if (unconfirmed.size && settled) failures.push(new Error('Tracked background stops remain unconfirmed'))
+      for (const ticketId of unconfirmed) {
+        try { this.recordStopFailure(ticketId, new Error('Background stop was unconfirmed at shutdown')) } catch (error) { failures.push(error) }
+      }
+      if (this.hasStopFailures() && !failures.length) failures.push(new Error('Recorded background stops remain unconfirmed'))
+      if (failures.length) throw new AggregateError(failures, 'Could not finish or record background stops')
+    } finally {
+      recording = false; this.recordingStopFailures = false
+      lease.abort()
+      for (const active of this.stopLeases) active.abort()
+    }
   }
   /** Number of open tickets whose worker holds a worker slot: its turn runs, or its shell jobs or subagents still run after its turn ended. */
   activeCount(): number { return this.host.store.tickets.open().filter(ticket => this.running(ticket)).length }
@@ -467,7 +576,10 @@ export class DshExecutor implements Executor {
     const current = () => {
       if (this.host.closing()) throw new Error('dsh-superagent is stopping')
       if (this.host.paused()) throw new Later('Processing is paused')
+      this.checkStopFailure(ticket.id)
+      if (this.stopping.has(ticket.id)) throw new Later('The worker background work is stopping')
       const stored = this.host.store.tickets.get(ticket.id)
+      if (stored) this.checkHandoffStops(stored)
       return !!stored && liveTicket(stored) && latestAssignment(stored)?.id === assignment.id
     }
     const source = sourceTrigger(this.host, ticket)
@@ -554,6 +666,7 @@ export class DshExecutor implements Executor {
   }
   /** Unsubscribes from host agent events and clears any pending transient-retry timers. */
   dispose(): void {
+    for (const lease of this.stopLeases) lease.abort()
     for (const dispose of this.disposers.splice(0)) dispose()
     for (const timer of this.timers) clearTimeout(timer)
     this.timers.clear()
@@ -579,8 +692,9 @@ export class DshExecutor implements Executor {
       if (running) {
         // A restart within this process left DSH's Sessions, jobs and subagents running: they stop first. The inbox keeps an
         // Input that was handed over but not yet taken.
-        this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.cancel({ kind: 'user' }, { keepInbox: true })
-        this.stopWork(ticket.id, 'dsh-superagent restarted', true)
+        this.stopWork(ticket.id, 'dsh-superagent restarted', true, undefined, () => {
+          this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.cancel({ kind: 'user' }, { keepInbox: true })
+        })
         this.host.engine.assignmentInterrupted(ticket.id, running.id)
       }
       else if (latest?.state === 'pending' && !waitsForPerson(ticket)) this.start(ticket, latest)
@@ -589,7 +703,7 @@ export class DshExecutor implements Executor {
   /** Runs background worker event handling and updates the `worker` health entry on failure or recovery. */
   private background(work: Promise<void>): Promise<void> {
     const { health } = this.host
-    return work.then(() => { if (health.get()?.state === 'error') health.set({ state: 'ready', detail: 'Worker events are handled', at: now() }) },
+    return work.then(() => { if (health.get()?.state === 'error' && !this.hasStopFailures()) health.set({ state: 'ready', detail: 'Worker events are handled', at: now() }) },
       (error: unknown) => { health.set({ state: 'error', detail: String(error), at: now() }) })
   }
   /**
@@ -613,15 +727,36 @@ export class DshExecutor implements Executor {
       if (!ticket || !liveTicket(ticket) || runningAssignment(ticket)?.id !== assignmentId) { this.resuming.delete(assignmentId); return }
       // Wait while processing is paused or no wake slot is free.
       if (this.host.paused()) { this.after(SLOT_WAIT_MS, go); return }
+      try {
+        this.checkStopFailure(ticketId)
+        this.checkHandoffStops(ticket)
+        if (this.stopping.has(ticketId)) throw new Later('The worker background work is stopping')
+      } catch (failure) {
+        if (!(failure instanceof Later)) throw failure
+        this.after(SLOT_WAIT_MS, go); return
+      }
       const sessionId = workerSessionId(ticketId)
       const waking = !this.running(ticket)
       try { if (waking) this.slots.reserve(ticketId, 'wake') } catch (failure) {
         if (!(failure instanceof Later)) throw failure
         this.after(SLOT_WAIT_MS, go); return
       }
-      const sent = this.host.sessions.prompt(sessionId, `retry:${assignmentId}:${tries}`, text, 'queue')
-      void this.background(sent.finally(() => { if (waking) this.slots.free(ticketId); this.resuming.delete(assignmentId) })
-        .catch(failure => { this.failed(ticketId, String(failure)) }))
+      const sent = this.host.sessions.prompt(sessionId, `retry:${assignmentId}:${tries}`, text, 'queue', () => {
+        const current = this.host.store.tickets.get(ticketId)
+        if (this.host.closing() || !current || !liveTicket(current) || runningAssignment(current)?.id !== assignmentId) {
+          throw new Error('The ticket ended or another Assignment took it over')
+        }
+        if (this.host.paused()) throw new Later('Processing is paused')
+        this.checkStopFailure(ticketId)
+        this.checkHandoffStops(current)
+        if (this.stopping.has(ticketId)) throw new Later('The worker background work is stopping')
+      })
+      void this.background(sent.then(() => { this.resuming.delete(assignmentId) }, (failure: unknown) => {
+        if (failure instanceof Later && !this.host.closing()) { this.after(SLOT_WAIT_MS, go); return }
+        this.resuming.delete(assignmentId)
+        const current = this.host.store.tickets.get(ticketId)
+        if (!this.host.closing() && current && liveTicket(current) && runningAssignment(current)?.id === assignmentId) this.failed(ticketId, String(failure))
+      }).finally(() => { if (waking) this.slots.free(ticketId) }))
     }
     this.after(TRANSIENT_BACKOFF_MS * 2 ** (tries - 1), go)
   }
@@ -636,8 +771,9 @@ export class DshExecutor implements Executor {
    * person, are left to the person until the Assignment ends. They hold no slot and run past any limit; their ends are
    * collected, so none wakes the worker outside a slot, and the worker reads of each at its next turn.
    */
-  private handOff(ticketId: string, agent: Agent): void {
-    this.track(ticketId, stopSubagents(this.host.context, agent, true))
+  private handOff(ticketId: string, agent: Agent, token: string): void {
+    const lease = new AbortController()
+    this.track(ticketId, stopSubagents(this.host.context, agent, true, lease.signal), token, lease)
     const left = this.left.get(ticketId) ?? { jobs: new Set<string>(), collect: new AbortController() }
     this.left.set(ticketId, left)
     for (const job of runningJobs(this.host.context, agent.id, left.jobs)) {
@@ -673,8 +809,11 @@ export class DshExecutor implements Executor {
     const report = runningAssignment(before)?.report, person = this.personal.get(ticket.id)
     // The worker read what reached it before a turn that ended: one it handed off with, or one whose background work ended.
     if (handedOff(before) && !(report && person && person > report.at)) {
-      this.host.engine.turnEnded(ticket.id, idle.id)
-      this.handOff(ticket.id, agent)
+      this.host.store.atomic(() => {
+        const token = this.stopIntent(ticket.id)
+        this.host.engine.turnEnded(ticket.id, idle.id)
+        this.host.store.afterCommit(() => this.handOff(ticket.id, agent, token))
+      })
       return
     }
     // Its turn ends once nothing runs for it in the background, which holds its slot meanwhile: at most for the limit from
@@ -698,11 +837,18 @@ export class DshExecutor implements Executor {
       const sessionId = workerSessionId(ticket.id), minutes = BACKGROUND_LIMIT_MS / 60_000
       const jobs = runningJobs(this.host.context, sessionId, left).map(job => job.name)
       if (jobs.length) {
-        void this.background(killJobs(this.host.context, sessionId, 'The job ran past its limit', left))
+        const token = this.stopIntent(ticket.id)
+        this.track(ticket.id, killJobs(this.host.context, sessionId, 'The job ran past its limit', left), token)
         const note = `Your background jobs ran ${minutes} minutes after your turn ended and were killed: ${jobs.join(', ')}.`
-        void this.background(this.host.sessions.prompt(sessionId, `killed:${jobs.join(',')}`, note, { inject: 'Background jobs killed' }))
+        void this.background(this.stopped(ticket.id).then(() => {
+          this.checkStopFailure(ticket.id)
+          return this.host.sessions.prompt(sessionId, `killed:${jobs.join(',')}`, note, { inject: 'Background jobs killed' }, () => {
+            this.checkStopFailure(ticket.id)
+            if (this.stopping.has(ticket.id)) throw new Later('The worker background work is stopping')
+          })
+        }))
       }
-      stopped = jobs.length ? `Background jobs ran ${minutes} minutes after the worker's turn ended and were killed: ${jobs.join(', ')}.`
+      stopped = jobs.length ? `Background jobs ran ${minutes} minutes after the worker's turn ended; stopping them is not yet confirmed: ${jobs.join(', ')}.`
         : `Subagents still ran ${minutes} minutes after the worker's turn ended.`
     }
     // The worker may have reported while its turn ended; a blocked or failed report a person's message has lifted is stale.
