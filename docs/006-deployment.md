@@ -270,6 +270,10 @@ directory after the new entry is deployed and no old invocation remains.
 
 Open the URL printed in the log, then choose **Superagent** in the sidebar.
 
+### Service check
+
+Check status from an environment independent of `superagent`; exit codes 2 and 3 report a component error and setup requirements respectively, so do not treat a restart as a fix. For exit code 1, inspect the output and service logs and diagnose the cause. An intentional stop marker means the service should remain stopped; use the latest-code deployment path below for a normal restart.
+
 ### Task-level check (Watchdog)
 
 The intended independent Watchdog observer reads `GET /orchestrator/api/watchdog` at a fixed interval, without long polling; the snapshot describes service state and open Tickets and their mechanical signals. When the service is unreachable the observer cannot inspect its current state, but can record the failed observation locally.
