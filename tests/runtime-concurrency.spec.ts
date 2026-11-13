@@ -135,7 +135,7 @@ it('keeps a launch that a pause cut short queued, and finishes it once processin
 })
 
 const botMessage = () => feishu('2', 'CI 失败', { mentions: [], root_id: 'om_1', sender_id: 'cli_ci', sender_type: 'bot' })
-it('wakes an idle worker for a bot\'s Input only when a worker slot is free, and creates a worker Session someone deleted again', async () => {
+it('keeps a bot Input pending when its worker Session was deleted', async () => {
   const settings = h.runtime.store.settings()
   h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, maxWorkers: 1 } })
   const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
@@ -149,8 +149,9 @@ it('wakes an idle worker for a bot\'s Input only when a worker slot is free, and
   h.agents.delete(one.sessionId)
   vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 6000 })
   try { await h.runtime.pump(); await h.runtime.idle() } finally { vi.useRealTimers() }
-  expect(h.runtime.store.tickets.get(one.ticket.id)!.undelivered).toEqual([])
-  expect(h.agents.get(one.sessionId)!.status).toBe('running')
+  expect(h.runtime.store.tickets.get(one.ticket.id)!.undelivered).toHaveLength(1)
+  expect(h.runtime.store.tickets.get(one.ticket.id)!.delivery?.error).toContain('recover its original history')
+  expect(h.agents.has(one.sessionId)).toBe(false)
 })
 
 it('wakes an idle worker for a person\'s message at once, in the slot kept beyond the limit', async () => {
@@ -186,7 +187,7 @@ it('counts a launch under way against maxWorkers, so a bot\'s Input for an idle 
   expect(h.runtime.store.tickets.get(one.ticket.id)!.undelivered).toHaveLength(1)
 })
 
-it('records on the ticket that its worker Session could not be created again', async () => {
+it('records on the ticket that the worker Session store is unavailable', async () => {
   const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
   h.agents.get(one.sessionId)!.status = 'idle'
   h.agents.delete(one.sessionId)
@@ -207,10 +208,10 @@ it('lets a worker go on after a passing provider failure, three times, before it
   try {
     fail(busy)
     await vi.advanceTimersByTimeAsync(15_000)
-    expect(h.deliveries.mock.calls.map(([call]) => call).filter(call => call.sessionId === one.sessionId).at(-1)!.text)
-      .toContain('Your last turn failed for a passing reason')
-    expect(latestAssignment(ticket())?.report).toBeUndefined()
   } finally { vi.useRealTimers() }
+  await vi.waitFor(() => expect(h.deliveries.mock.calls.map(([call]) => call).filter(call => call.sessionId === one.sessionId).at(-1)!.text)
+    .toContain('Your last turn failed for a passing reason'))
+  expect(latestAssignment(ticket())?.report).toBeUndefined()
   fail(busy); fail(busy)
   expect(latestAssignment(ticket())?.report).toBeUndefined()
   // The fourth passing failure fails the ticket, as any other failure does at once.
@@ -228,7 +229,7 @@ describe('a worker that goes on after a passing failure', () => {
     const fail = () => { h.ctx.emit('agent/error', { agent, turn: 1, step: 1, error: busy() } as never) }
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try { fail(); fail(); fail(); await vi.advanceTimersByTimeAsync(60_000) } finally { vi.useRealTimers() }
-    expect(told(one.sessionId)).toHaveLength(3)
+    await vi.waitFor(() => expect(told(one.sessionId)).toHaveLength(3))
     // Once the resumed turn ends normally, a later passing failure starts a new retry count rather than counting as the fourth in a row.
     agent.status = 'idle'
     h.ctx.emit('agent/status', { agent, status: 'idle' } as never)
@@ -250,7 +251,7 @@ describe('a worker that goes on after a passing failure', () => {
       await h.runtime.settings.pause(false, 'panel')
       await vi.advanceTimersByTimeAsync(5000)
     } finally { vi.useRealTimers() }
-    expect(told(one.sessionId)).toHaveLength(1)
+    await vi.waitFor(() => expect(told(one.sessionId)).toHaveLength(1))
   })
   it('drops its timer when the host stops within the backoff', async () => {
     const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
@@ -943,9 +944,9 @@ describe('what a worker read', () => {
   /** A ticket its worker completed, and a person's thanks on its thread, which resumes it once received. */
   async function completed() {
     const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
-    await h.runTool(one.sessionId, 'orchestrator_report', { state: 'ready', summary: 'Done' }); await h.runtime.idle()
+    await h.runTool(one.sessionId, 'orchestrator_report', { state: 'ready', summary: 'Done' })
     idle(one.sessionId)
-    await later()
+    await h.runtime.idle(); await later()
     return { one, thanks: feishu('2', '@bot 谢谢', { root_id: 'om_1' }), ticket: () => h.runtime.store.tickets.get(one.ticket.id)! }
   }
   /** Deliveries to a Session of a message with `text` fail until the returned function lets them through. */

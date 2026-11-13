@@ -112,6 +112,7 @@ export const ExecutorConfigSchema = z.object({
   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
   directory: z.string().trim().refine(path => path === '' || isAbsolutePath(path), 'An absolute path, or empty for <stateDir>/work').default(''),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
+  managedRepository: z.string().trim().refine(path => path === '' || isAbsolutePath(path), 'An absolute path, or empty to disable').default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
   offPeak: OffPeakWindowSchema.default(() => OffPeakWindowSchema.parse({})),
 }).strict()

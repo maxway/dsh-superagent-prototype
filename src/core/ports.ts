@@ -89,9 +89,10 @@ export interface DomainEvents {
   'decision.recorded': { decisionId: string; kind: DecisionKind; threadKey: string }
   'ticket.created': { ticketId: string; decisionId: string; strength: Strength; tier: Tier }
   'ticket.resumed': { ticketId: string; triggerId: string }
-  'ticket.ended': { ticketId: string; by: TicketEndBy; outcome: TicketOutcome; reason?: string }
+  'ticket.ended': { ticketId: string; by: TicketEndBy; outcome: TicketOutcome; reason?: string; observation?: import('./model.ts').RemoteTerminalObservation }
   'assignment.started': { ticketId: string; assignmentId: string }
   'assignment.ended': { ticketId: string; assignmentId: string; reason: string }
+  'thread.closed': { threadKey: string; ticketId: string; at: string; outcome: 'merged' | 'closed'; observation: import('./model.ts').RemoteTerminalObservation }
   'thread.subscribed': { threadKey: string; ticketId: string }
   /** A person dropped every ticket's Subscription, or a ticket's Executor its own, for `reason`. */
   'thread.unsubscribed': { threadKey: string; ticketId: string; by: 'person' | 'executor'; reason?: string }

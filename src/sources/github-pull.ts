@@ -10,7 +10,8 @@ const PullSchema = z.looseObject({
   title: z.string().optional(), state: z.string(), html_url: z.string(), user: UserSchema,
   body: z.string().nullish(), created_at: z.string().optional(),
   merged: z.boolean().optional(), merged_at: z.string().nullish(), closed_at: z.string().nullish(), auto_merge: z.unknown().optional(),
-  head: z.looseObject({ sha: z.string(), ref: z.string(), repo: z.looseObject({ full_name: z.string() }).nullish() }),
+  id: z.unknown().optional(), merge_commit_sha: z.unknown().optional(), base: z.unknown().optional(),
+  head: z.looseObject({ sha: z.string().nullish(), ref: z.string(), repo: z.looseObject({ full_name: z.string(), id: z.unknown().optional() }).nullish() }),
 })
 export type Pull = z.infer<typeof PullSchema> & { number: number }
 export const readPull = async (ctx: SourceContext, number: number, signal?: AbortSignal): Promise<Pull> =>
@@ -26,6 +27,9 @@ export const agentPull = (pr: { user: { login: string }; head?: { repo?: { full_
 /** True when a branch belongs to the ticket: its last path segment is the ticket's short name, such as `agent/<name>`. */
 export const ticketBranch = (ticket: Pick<Ticket, 'execution'>, ref: string): boolean =>
   !!ticket.execution?.name && ref.split('/').at(-1) === ticket.execution.name
+export const remoteId = (value: unknown): string | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? String(value) : undefined
+export const remoteOid = (value: unknown): string | undefined => typeof value === 'string' && /^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(value) ? value : undefined
+export const remoteRef = (value: unknown): string | undefined => typeof value === 'string' && value.length > 0 && !/[\x00-\x20\x7f]/.test(value) ? `refs/heads/${value}` : undefined
 const AUTO_MERGE_ON: ThreadFact = { label: { zh: '自动合并', en: 'Auto-merge' }, value: { zh: '已开启', en: 'on' } }
 
 /**
@@ -80,7 +84,18 @@ function bind(ctx: SourceContext, ticketId: string, pr: Pull, own: boolean): voi
 function closePull(ctx: SourceContext, pr: Pull): void {
   if (!ctx.tickets.open().some(ticket => pullsOf(ticket, true).includes(pr.number))) return
   const at = pr.merged_at ?? pr.closed_at ?? new Date().toISOString()
-  ctx.tickets.threadClosed({ source: SOURCE, id: String(pr.number) }, pr.merged ? 'merged' : 'closed', at)
+  const outcome = pr.merged ? 'merged' : 'closed'
+  const base = pr.base && typeof pr.base === 'object' && 'repo' in pr.base ? pr.base.repo : undefined
+  const project = base && typeof base === 'object' && 'id' in base ? remoteId(base.id) : undefined
+  const sourceProject = remoteId(pr.head.repo?.id), change = remoteId(pr.id)
+  const sha = remoteOid(pr.head.sha), merge = remoteOid(pr.merge_commit_sha)
+  const ref = remoteRef(pr.head.ref)
+  ctx.tickets.threadClosed({ source: SOURCE, id: String(pr.number) }, outcome, at, {
+    provider: 'github', host: ctx.deployment.git.host, number: pr.number, observedAt: new Date().toISOString(), outcome,
+    ...(project ? { projectId: project } : {}), ...(change ? { changeId: change } : {}),
+    ...(sourceProject ? { sourceProjectId: sourceProject } : {}), ...(ref ? { sourceRef: ref } : {}),
+    ...(sha ? { observedSourceOid: sha } : {}), ...(merge && outcome === 'merged' ? { mergeCommitOid: merge } : {}),
+  })
 }
 /**
  * Builds idempotent outbound notices for IM conversations when a ticket ends with its PR (selecting the last-closed PR it

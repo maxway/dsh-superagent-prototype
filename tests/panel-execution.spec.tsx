@@ -119,6 +119,32 @@ it('shows a Ticket with its stage, its Mandate details with the Trigger and Deci
   expect(tab(zh['tab.trigger']).getAttribute('aria-selected')).toBe('true')
 })
 
+it('shows a stale read-only workspace observation without offering deletion', async () => {
+  const observation = { state: 'unknown' as const, reason: 'Not verified' }
+  server.ticketDetails.t1 = { ...server.ticketDetails.t1!, workspaceReport: { at: '2026-11-01T00:00:00Z',
+    endedAt: '2026-11-01T00:00:00Z', reason: 'Preserved', report: { directory: '/w/t1', branch: 'agent/t1',
+      worktree: { state: 'present', reason: 'Linked checkout' }, localBranch: observation, ticketRef: observation,
+      remoteBranch: observation, changes: observation, ignored: observation } } }
+  at({ page: 'execution', id: 't1' })
+  await mount()
+  await click(zh.workspaceInventory)
+  expect(text()).toContain(zh.workspaceInventoryHint)
+  expect(text()).toContain(zh.workspaceInventoryStale)
+  expect(text()).toContain('Linked checkout')
+  expect(text()).toContain(zh.workspaceRemote)
+  expect(server.requests.filter(request => request.method === 'DELETE')).toHaveLength(0)
+})
+
+it('shows creation evidence without presenting it as deletion authorization', async () => {
+  server.ticketDetails.t1 = { ...server.ticketDetails.t1!, workspaceProvenance: { status: 'verified' } }
+  at({ page: 'execution', id: 't1' })
+  await mount()
+  await click(zh.workspaceInventory)
+  expect(text()).toContain(zh.workspaceProvenanceVerified)
+  expect(text()).toContain(zh.workspaceInventoryHint)
+  expect(server.requests.filter(request => request.method === 'DELETE')).toHaveLength(0)
+})
+
 it('reports a missing Ticket instead of rendering an empty page', async () => {
   at({ page: 'execution', id: 'missing' })
   await mount()

@@ -1,10 +1,12 @@
-/** Finished Tickets retain their workspaces, including when old cleanup effects are replayed. */
+/** Finished Tickets retain their workspaces and receive read-only inventory reports. */
 import { existsSync, writeFileSync } from 'node:fs'
+import { KV } from '../src/kv.ts'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
+import { newProvenance } from '../src/executor/provenance.ts'
 import { feishu, startRuntime } from './fixtures/host.ts'
 
-it('keeps a finished workspace on stop, restart and legacy cleanup replay', async () => {
+it('records a read-only report and retains a finished workspace on legacy cleanup replay', async () => {
   const h = await startRuntime()
   try {
     const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一'))
@@ -15,14 +17,44 @@ it('keeps a finished workspace on stop, restart and legacy cleanup replay', asyn
     h.subprocess.spawn.mockClear()
     await h.runtime.engine.stopTicket(ticket.id)
     await h.runtime.idle()
-    expect(h.runtime.effects.pending('cleanup', ticket.id)).toBe(false)
     h.runtime.executor.resume()
     await h.runtime.idle()
-    expect(h.runtime.effects.pending('cleanup', ticket.id)).toBe(false)
     h.runtime.effects.enqueue('cleanup', ticket.id, { ticketId: ticket.id })
     await h.runtime.idle()
     expect(h.runtime.effects.pending('cleanup', ticket.id)).toBe(false)
-    expect(existsSync(marker)).toBe(true)
-    expect(h.subprocess.spawn.mock.calls.map(([spec]) => spec.argv).filter(argv => argv[0] === 'git')).toEqual([])
+    const report = h.runtime.store.get(KV.workspace.report(ticket.id))
+    expect(report).toMatchObject({ endedAt: h.runtime.store.tickets.get(ticket.id)!.ended!.at,
+      report: { directory, worktree: { state: 'unknown' }, remoteBranch: { state: 'unknown' } } })
+    expect(existsSync(join(directory, '.git'))).toBe(true)
+    const git = h.subprocess.spawn.mock.calls.map(([spec]) => spec.argv).filter(argv => argv[0] === 'git')
+    expect(git.some(argv => argv.includes('worktree') || argv.includes('push') || argv.includes('update-ref'))).toBe(false)
+  } finally { await h.stop() }
+})
+
+it('does not delete even when creation evidence and the Ticket ref are present', async () => {
+  const h = await startRuntime()
+  try {
+    const { ticket, sessionId } = await h.acceptedTicket(feishu('2', '@bot 修二'))
+    const execution = h.runtime.store.tickets.get(ticket.id)!.execution!
+    const oid = 'a'.repeat(40)
+    writeFileSync(join(execution.directory, '.git'), 'gitdir: elsewhere\n')
+    h.runtime.store.set(KV.workspace.provenance(ticket.id), {
+      ...newProvenance('generation', execution.directory, execution.directory, execution.name, ticket.id),
+      status: 'verified', refOid: oid,
+    })
+    h.subprocess.spawn.mockImplementation(spec => {
+      const args = [...spec.argv]
+      const output = args.includes('for-each-ref') ? `refs/dsh-superagent/${ticket.id} ${oid}\n`
+        : args.includes('--git-common-dir') ? join(execution.directory, 'common')
+          : args.includes('--git-dir') ? join(execution.directory, 'admin') : ''
+      const reader = (text: string) => ({ readFrom: () => ({ text, nextOffset: text.length, lossy: false }) })
+      return { done: Promise.resolve({ exitCode: 0, signal: null }), collected: { stdout: reader(output), stderr: reader('') } }
+    })
+    h.agents.get(sessionId)!.status = 'idle'
+    await h.runtime.engine.stopTicket(ticket.id)
+    await h.runtime.idle()
+    expect(h.runtime.store.get(KV.workspace.report(ticket.id))?.report.ticketRef).toMatchObject({ state: 'present', oid })
+    const git = h.subprocess.spawn.mock.calls.map(([spec]) => spec.argv).filter(argv => argv.includes('git'))
+    expect(git.some(argv => argv.includes('update-ref') || argv.includes('push') || argv.includes('remove'))).toBe(false)
   } finally { await h.stop() }
 })

@@ -1,7 +1,7 @@
 /** The domain Engine: the single entry point of the core, and the role interfaces its callers receive. */
 import { UserError } from './errors.ts'
 import { isoTime, liveTicket } from './model.ts'
-import type { ChannelRef, Decision, PolicyEffect, ThreadRef, Ticket, Trigger } from './model.ts'
+import type { ChannelRef, Decision, PolicyEffect, RemoteTerminalObservation, ThreadRef, Ticket, Trigger } from './model.ts'
 import type { Candidate, Repositories } from './ports.ts'
 import type { EngineOptions } from './part.ts'
 import { Assignments, type WorkerReport } from './assignments.ts'
@@ -59,9 +59,9 @@ export class Engine {
    * follows it ends once it is done with the Threads it follows, unless work resumed since the close has not finished, or
    * its worker took up a person's message the ticket decides after its latest report.
    */
-  threadClosed(thread: ThreadRef, outcome: 'merged' | 'closed', at: string): void {
+  threadClosed(thread: ThreadRef, outcome: 'merged' | 'closed', at: string, observation?: RemoteTerminalObservation): void {
     // Normalize source timestamps (such as GitHub whole seconds) to canonical ISO form.
-    this.repo.atomic(() => { this.tickets.threadClosed(thread, outcome, isoTime(at)) })
+    this.repo.atomic(() => { this.tickets.threadClosed(thread, outcome, isoTime(at), observation) })
   }
 
   // The clock

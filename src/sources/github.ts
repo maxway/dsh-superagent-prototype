@@ -419,6 +419,7 @@ export async function pollTicketPulls(ctx: SourceContext, signal?: AbortSignal, 
 }
 /** Polls a PR's CI checks; only changes after the first baseline observation become Triggers. */
 async function pollChecks(ctx: SourceContext, round: Round, number: number, pr: Pull): Promise<void> {
+  if (!pr.head.sha) return
   const snapshot = await pullChecks(ctx.commands.withSignal(round.signal), pr.head.sha, round.tally)
   const fingerprint = key(JSON.stringify(snapshot))
   const previous = ctx.state.get(KV.github.ci(number))

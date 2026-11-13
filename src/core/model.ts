@@ -288,6 +288,21 @@ export interface Attention { id: string; question: string; triggerId?: string }
  * active one must not resume, because its worktree, remote and change requests still belong to the old host.
  */
 export interface TicketGit { provider: string }
+/** A remote terminal state as observed, not proof of ownership, deletion authority, or the source OID at merge time. */
+export interface RemoteTerminalObservation {
+  provider: 'github' | 'gitlab'
+  host?: string
+  projectId?: string
+  changeId?: string
+  number: number
+  sourceRef?: string
+  sourceProjectId?: string
+  observedSourceOid?: string
+  observedAt: string
+  outcome: 'merged' | 'closed'
+  mergeCommitOid?: string
+  squashCommitOid?: string
+}
 /** Ticket aggregate: an authorized work item with its assignments, channels, thread bindings, and inputs. */
 export interface Ticket {
   id: string
@@ -315,6 +330,7 @@ export interface Ticket {
    * `Tickets.unfinished`), and then its next `ready` or `dropped` report ends it.
    */
   follows?: Follow[]
+  remoteTerminalObservations?: { thread: string; at: string; observation: RemoteTerminalObservation }[]
   /** People's questions the worker answered, whose answers the main Session may send. */
   answers?: string[]
   createdAt: string
@@ -338,7 +354,7 @@ export interface Ticket {
  * closed. `followsDone` holds once no Thread of its own is open, or, when the ticket has no `own` Thread, once every followed
  * Thread closed; the ticket then ends unless its work has not finished (see `Tickets.unfinished`).
  */
-export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed' } }
+export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed'; observation?: RemoteTerminalObservation } }
 export interface Execution { name: string; directory: string; assignment: string }
 
 /** A Ticket's effective category: its recorded one, or the one its mandate implies for a Ticket accepted before categories. */

@@ -339,6 +339,20 @@ describe('gitlab channel and merge requests', () => {
     vi.spyOn(h.commands, 'run').mockRejectedValue(new CliError('404 Not Found', 404))
     await expect(sendGitlab(h.ctx, { id: 'reply-1', kind: 'reply' as const, channel: gitlabChannel('issue', 5), text: 'Done' })).rejects.toThrow('404')
   })
+  it('records observed GitLab fork and merge result without inventing missing fields', async () => {
+    const ticket = { follows: [{ thread: 'gitlab:mr:7', own: true }] } as Ticket
+    const close = vi.fn()
+    const h = context({ tickets: { get: () => ticket, open: () => [ticket], bindThread: vi.fn(), threadClosed: close } })
+    const sha = 'a'.repeat(40), merge = 'b'.repeat(40), squash = 'c'.repeat(40)
+    await observeMergeRequest(h.ctx, mr({ state: 'merged', id: 101, project_id: 10, target_project_id: 10,
+      source_project_id: 20, source_branch: 'fork/fix', sha, merge_commit_sha: merge, squash_commit_sha: squash }))
+    expect(close.mock.calls[0]![3]).toMatchObject({ provider: 'gitlab', number: 7, projectId: '10', changeId: '101',
+      sourceProjectId: '20', sourceRef: 'refs/heads/fork/fix', observedSourceOid: sha, mergeCommitOid: merge, squashCommitOid: squash })
+    await observeMergeRequest(h.ctx, mr({ state: 'closed', source_project_id: null, sha: null, project_id: undefined }))
+    expect(close.mock.calls[1]![3]).not.toHaveProperty('projectId')
+    expect(close.mock.calls[1]![3]).not.toHaveProperty('observedSourceOid')
+    expect(close.mock.calls[1]![3]).not.toHaveProperty('sourceProjectId')
+  })
   it('claims an agent merge request on the ticket branch and ends a ticket when the merge request closes', async () => {
     const ticket = { id: 't1', title: 'Fix', follows: [], channels: [], assignments: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '',
       execution: { name: 'fix-margin', directory: '/w/fix-margin', assignment: '' },
@@ -354,7 +368,8 @@ describe('gitlab channel and merge requests', () => {
     ticket.follows = [{ thread: 'gitlab:mr:7', own: true }]
     const merged = mr({ author: { id: 9, username: 'agent-bot' }, state: 'merged', merged_at: now(), source_branch: 'agent/fix-margin' })
     await observeMergeRequest(h.ctx, merged)
-    expect(h.ctx.tickets.threadClosed).toHaveBeenCalledWith({ source: 'gitlab', id: 'mr:7' }, 'merged', expect.any(String))
+    expect(h.ctx.tickets.threadClosed).toHaveBeenCalledWith({ source: 'gitlab', id: 'mr:7' }, 'merged', expect.any(String),
+      expect.objectContaining({ provider: 'gitlab', number: 7, outcome: 'merged', sourceRef: 'refs/heads/agent/fix-margin' }))
     ticket.follows = [{ thread: 'gitlab:mr:7', own: true, closed: { at: now(), outcome: 'merged' } }]
     ticket.channels = [{ source: 'feishu', thread: 'feishu:oc:om', address: { chatId: 'oc', messageId: 'om' } }]
     ticket.ended = { at: now(), by: 'executor', outcome: 'merged' }

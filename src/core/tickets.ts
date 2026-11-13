@@ -2,7 +2,7 @@
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
 import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, waitsForPerson } from './model.ts'
-import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
+import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, RemoteTerminalObservation, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
   Trigger, TriggerDisposition } from './model.ts'
 import type { AssessmentOutcome } from './ports.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
@@ -87,13 +87,17 @@ export class Tickets extends EnginePart {
    * Record that a Thread open tickets follow closed, and end each one done with its Threads (see `followsDone`), unless its
    * work has not finished (see `unfinished`); such work ends the ticket once it reports ready.
    */
-  threadClosed(thread: ThreadRef, outcome: 'merged' | 'closed', at: string): void {
+  threadClosed(thread: ThreadRef, outcome: 'merged' | 'closed', at: string, observation?: RemoteTerminalObservation): void {
     const closed = threadKey(thread)
     for (const ticket of this.repo.tickets.open()) {
       const follow = ticket.follows?.find(item => item.thread === closed && !item.closed)
       if (!follow) continue
-      follow.closed = { at, outcome }
+      const recorded = ticket.remoteTerminalObservations?.find(item => item.thread === closed && item.at === at && item.observation.outcome === outcome)
+      const evidence = recorded?.observation ?? observation
+      follow.closed = { at, outcome, ...(evidence ? { observation: evidence } : {}) }
+      if (observation && !recorded) ticket.remoteTerminalObservations = [...ticket.remoteTerminalObservations ?? [], { thread: closed, at, observation }]
       this.repo.tickets.save(ticket)
+      if (observation && !recorded) this.emit('thread.closed', { threadKey: closed, ticketId: ticket.id, at, outcome, observation })
       const done = this.followsDone(ticket)
       if (!done || this.unfinished(ticket, at)) continue
       // Work resumed after the close and finished ends now.
@@ -462,7 +466,8 @@ export class Tickets extends EnginePart {
     for (const assignment of stopping) { assignment.state = 'ended'; assignment.endedAt = at }
     this.repo.tickets.save(ticket)
     this.letGo(ticketId, waiting, left)
-    this.emit('ticket.ended', { ticketId, by, outcome, ...why })
+    const observation = by === 'executor' && (outcome === 'merged' || outcome === 'closed') ? this.followsDone(ticket)?.observation : undefined
+    this.emit('ticket.ended', { ticketId, by, outcome, ...why, ...(observation?.outcome === outcome ? { observation } : {}) })
     for (const assignment of stopping) this.options.executor.stop(ticket, assignment, reason ?? outcome)
   }
   /**

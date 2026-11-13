@@ -3,6 +3,7 @@ import { liveTicket, threadKey, ticketStage, type AcceptMode, type AdmissionCell
   type TicketStage } from '../../core/index.ts'
 import { workerSessionId } from '../../executor/dsh.ts'
 import type { Store } from '../store.ts'
+import { KV } from '../../kv.ts'
 import { channelLink, decisionView, newestFirst, page, snapshot, threadSummary, ticketLine, type Snapshot,
   type ViewHost } from './records.ts'
 import { markdown, preview } from './text.ts'
@@ -60,6 +61,8 @@ export function ticketDetail(host: ViewHost, id: string) {
   const view = snapshot(host)
   const { stage } = ticketStage(ticket)
   const decision = store.decisions.get(ticket.decisionId)
+  const workspaceReport = store.get(KV.workspace.report(id))
+  const provenance = store.get(KV.workspace.provenance(id))
   const input = (value: Ticket['inputs'][number]) => {
     const trigger = value.kind === 'trigger' ? store.triggers.get(value.triggerId) : undefined
     const handback = trigger && store.triggers.disposition(trigger.id)?.handbacks?.find(item => item.ticketId === id)
@@ -73,6 +76,8 @@ export function ticketDetail(host: ViewHost, id: string) {
   const human = ticket.mandate.basis.via !== 'bot'
   return { ...ticketLine(view, ticket), mandate: { ...ticket.mandate, actor: view.actor(ticket.mandate.actor, human) },
     basis: basisFacts(ticket.mandate.basis, view.rule), paused: store.settings().paused,
+    ...workspaceReport ? { workspaceReport } : {},
+    ...provenance ? { workspaceProvenance: { status: provenance.status } } : {},
     channels: ticket.channels.map(channel => channelLink(view, channel)),
     decision: decision ? decisionView(view, decision) : undefined,
     // Every started Assignment ran in the ticket's one worker Session. A running assignment whose worker reported a non-progress state has finished its turn unless a human response resumed the ticket.

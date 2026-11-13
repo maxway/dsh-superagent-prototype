@@ -2,14 +2,15 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { mkdir, rmdir, stat } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { lstat, mkdir, realpath, stat } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
+import { dirname, isAbsolute, join } from 'node:path'
 import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
 import type { AssessmentOutcome, Assignment, Category, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Tier, Trigger }
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
-import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
+import { runAsWorker, sameDirectory, verifyDirectory } from '../infra/environment.ts'
+import { KV } from '../kv.ts'
 import type { Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
@@ -19,7 +20,8 @@ import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { offPeakWait } from '../offpeak.ts'
-import { KV } from '../kv.ts'
+import { reclaimWorkspace, type GitRun } from './workspace.ts'
+import { newProvenance, pathIdentity, preflightCreation, verifyCreation } from './provenance.ts'
 import { cancelled, collectJob, hasUnconfirmedSubagentCleanup, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
 
 const now = (): string => new Date().toISOString()
@@ -29,6 +31,7 @@ export const workerSessionId = (ticketId: string): string => `worker-${ticketId}
 export const ticketOfSession = (sessionId: string): string | undefined => sessionId.startsWith('worker-') ? sessionId.slice('worker-'.length) : undefined
 /** Maximum runtime for a workspace prepare command. */
 const PREPARE_TIMEOUT_MS = 10 * 60_000
+const CLEANUP_TIMEOUT_MS = 60_000
 /** The platform shell that runs a prepare command: `sh -c` on POSIX, PowerShell 7 on Windows. */
 export function prepareArgv(command: string, platform: NodeJS.Platform = process.platform): string[] {
   return platform === 'win32' ? ['pwsh', '-NoProfile', '-NonInteractive', '-Command', command] : ['sh', '-c', command]
@@ -79,7 +82,7 @@ export interface ExecutorHost {
   readonly machine: Pick<Machine, 'stateDir'>
   readonly lifetime: AbortSignal
   /** Session manager for worker sessions and for relaying worker reports to the main Session. */
-  readonly sessions: Pick<Sessions, 'ensure' | 'prompt' | 'promptedId' | 'relay' | 'holds'>
+  readonly sessions: Pick<Sessions, 'ensure' | 'existing' | 'prompt' | 'promptedId' | 'relay' | 'holds'>
   closing(): boolean
   /** Whether processing is paused, which holds launches and input deliveries. */
   paused(): boolean
@@ -245,6 +248,7 @@ export class DshExecutor implements Executor {
   private readonly settling = new Map<string, AbortController>()
   /** The stops of tickets' background work that run, by ticket, which a launch or a delivery of the ticket waits for. */
   private readonly stopping = new Map<string, Promise<void>>()
+  private readonly cleaning = new Map<string, Promise<void>>()
   private readonly stopFailures = new Set<string>()
   private readonly stopLeases = new Set<AbortController>()
   private recordingStopFailures = true
@@ -264,7 +268,7 @@ export class DshExecutor implements Executor {
       retry: [5000, 300_000] })
     // Failed input deliveries are recorded on the ticket itself rather than reported through the `delivery` effect health entry (`quiet: true`).
     host.effects.handle('delivery', payload => this.deliverQueued(payload.ticketId), { limit: () => host.paused() ? 0 : 4, quiet: true })
-    host.effects.handle('cleanup', async () => {})
+    host.effects.handle('cleanup', payload => this.cleanupQueued(payload.ticketId), { limit: () => host.paused() ? 0 : 1, retry: [30_000, 3_600_000] })
   }
   /** Why `ticket` must not run on the active Git host: it was accepted on another one, and its remote and change requests stay there. */
   private hostProblem(ticket: Ticket): string | undefined {
@@ -274,12 +278,104 @@ export class DshExecutor implements Executor {
   }
   /** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
   prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
-    return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir) }
+    const execution = ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir)
+    this.host.store.set(KV.workspace.claim(ticket.id), { directory: execution.directory, state: 'new' })
+    const settings = this.host.store.settings().executor
+    if (settings.managedRepository) this.host.store.set(KV.workspace.provenance(ticket.id),
+      newProvenance(randomUUID(), settings.managedRepository, execution.directory, execution.name, ticket.id))
+    this.host.store.set(KV.sessions.workerCreation(ticket.id), 'new')
+    return { ...ticket, execution }
+  }
+  private async checkWorkspace(ticket: Ticket, allowPrepare = false): Promise<Agent | undefined> {
+    const directory = ticket.execution?.directory
+    if (!directory) throw new PrepareFailed('The ticket has no recorded workspace directory; ask an operator to recover it.')
+    const sessionId = workerSessionId(ticket.id)
+    const resolved = await this.host.context.sessionController.resolveAgent(sessionId as SessionId)
+    if ('error' in resolved && resolved.error.code !== 'session/not-found') throw resolved.error
+    const agent = 'error' in resolved ? undefined : resolved.agent
+    const cwd = agent?.session.header?.cwd
+    if (agent && (!cwd || !sameDirectory(cwd, directory))) throw new PrepareFailed(`Worker Session ${sessionId} was created with ${cwd ?? 'an unknown cwd'}, not ${directory}; ask an operator to recover it.`)
+    const header = this.host.store.get(KV.sessions.workerHeader(ticket.id))
+    if (agent && header && agent.session.header?.createdAt !== header.createdAt) {
+      throw new PrepareFailed(`Worker Session ${sessionId} has a different creation timestamp; ask an operator to recover its original history.`)
+    }
+    const claim = this.host.store.get(KV.workspace.claim(ticket.id))
+    if (claim && !sameDirectory(claim.directory, directory)) throw new PrepareFailed(`The recorded workspace ${directory} differs from its original ${claim.directory}; ask an operator to recover it.`)
+    if (claim?.state === 'preparing') throw new PrepareFailed(`Preparation of ${directory} was interrupted or failed; ask an operator to inspect and recover it.`)
+    let info
+    let prepared = false
+    try { info = await stat(directory) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      if (!allowPrepare || claim?.state !== 'new' || agent) throw new PrepareFailed(`The historical workspace ${directory} is missing; ask an operator to recover it. The prepare command was not run.`)
+      this.host.store.set(KV.workspace.claim(ticket.id), { directory, state: 'preparing' })
+      await this.prepareDirectory(ticket)
+      prepared = true
+      info = await stat(directory)
+    }
+    if (claim?.state === 'new' && !prepared) throw new PrepareFailed(`The new ticket workspace ${directory} already exists; ask an operator to inspect it before starting.`)
+    if (!info.isDirectory()) throw new PrepareFailed(`The workspace ${directory} is not a directory; ask an operator to recover it.`)
+    if (claim?.state === 'ready' && claim.directoryIdentity) {
+      const identity = await pathIdentity(directory)
+      if (!(await lstat(directory)).isDirectory() || !identity || identity.device !== claim.directoryIdentity.device
+        || identity.inode !== claim.directoryIdentity.inode) {
+        throw new PrepareFailed(`The workspace ${directory} is not the originally prepared directory; ask an operator to recover it.`)
+      }
+    }
+    let git = false
+    try { await lstat(join(directory, '.git')); git = true } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    let branch: string | undefined, commonDir: string | undefined
+    let gitIdentity: NonNullable<typeof claim>['gitIdentity']
+    if (git) {
+      try {
+        const run = (argv: string[]) => runAsWorker(this.host.context.subprocess, ['git', ...argv], directory,
+          AbortSignal.any([this.host.lifetime, AbortSignal.timeout(60_000)]), { GIT_OPTIONAL_LOCKS: '0' })
+        branch = (await run(['symbolic-ref', '--quiet', '--short', 'HEAD'])).trim()
+        commonDir = (await run(['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim()
+        if (!branch || !commonDir) throw new Error('empty branch or Git common directory')
+        if (claim?.state === 'new' || claim?.gitIdentity) {
+          try {
+            const gitDir = (await run(['rev-parse', '--path-format=absolute', '--git-dir'])).trim()
+            if (!isAbsolute(commonDir) || !isAbsolute(gitDir)) throw new Error('Git paths are not absolute')
+            const canonicalCommon = await realpath(commonDir), canonicalGit = await realpath(gitDir)
+            const common = await pathIdentity(canonicalCommon), admin = await pathIdentity(canonicalGit)
+            if (!common || !admin) throw new Error('Git directory identity is unavailable')
+            gitIdentity = { commonDir: canonicalCommon, gitDir: canonicalGit, common, git: admin }
+          } catch (error) {
+            if (claim?.gitIdentity) throw error
+          }
+        }
+      } catch (error) { throw new PrepareFailed(`Cannot verify the Git branch and common directory of ${directory}: ${String(error)}; ask an operator to recover it.`) }
+      if (claim?.state === 'ready' && claim.branch !== branch) throw new PrepareFailed(`The workspace ${directory} is on Git branch ${branch}, not its recorded branch ${claim.branch ?? '(none)'}; ask an operator to recover it.`)
+      if (claim?.state === 'ready' && claim.commonDir && !sameDirectory(claim.commonDir, commonDir)) throw new PrepareFailed(`The Git common directory ${commonDir} differs from the recorded ${claim.commonDir}; ask an operator to recover it.`)
+      if (claim?.state === 'ready' && claim.gitIdentity && (!gitIdentity
+        || !sameDirectory(claim.gitIdentity.commonDir, gitIdentity.commonDir) || !sameDirectory(claim.gitIdentity.gitDir, gitIdentity.gitDir)
+        || claim.gitIdentity.common.device !== gitIdentity.common.device || claim.gitIdentity.common.inode !== gitIdentity.common.inode
+        || claim.gitIdentity.git.device !== gitIdentity.git.device || claim.gitIdentity.git.inode !== gitIdentity.git.inode)) {
+        throw new PrepareFailed(`The Git metadata of ${directory} differs from the originally prepared checkout; ask an operator to recover it.`)
+      }
+    } else if (claim?.state === 'ready' && claim.branch) {
+      throw new PrepareFailed(`The Git checkout in ${directory} is missing; ask an operator to recover it.`)
+    }
+    await verifyDirectory(directory, this.host.context.subprocess, this.host.lifetime)
+    if (claim?.state === 'new') {
+      const directoryIdentity = await pathIdentity(directory)
+      this.host.store.set(KV.workspace.claim(ticket.id), { directory, state: 'ready', ...(branch ? { branch, commonDir } : {}),
+        ...(directoryIdentity ? { directoryIdentity } : {}), ...(gitIdentity ? { gitIdentity } : {}) })
+    }
+    return agent
+  }
+  private requireWorker(ticket: Ticket, agent: Agent | undefined): Agent {
+    const state = this.host.store.get(KV.sessions.workerCreation(ticket.id))
+    if (state === 'creating') throw new PrepareFailed(`Creation of worker Session ${workerSessionId(ticket.id)} was interrupted or failed; ask an operator to inspect and recover it.`)
+    if (!agent || state === 'new') throw new PrepareFailed(`Worker Session ${workerSessionId(ticket.id)} is missing or has an unverified creation state; ask an operator to recover its original history.`)
+    return agent
   }
   /**
    * Runs the configured `executor.prepare` command for a new ticket workspace in its parent directory with the ticket's
    * execution environment variables, then verifies the directory as the worker sees it.
-   * A failed prepare command throws `PrepareFailed`, which is not retried automatically; an empty directory it left is removed, a non-empty one kept.
+   * A failed prepare command throws `PrepareFailed` and leaves any directory for operator inspection.
    * @throws PrepareFailed with the command's output when the prepare command fails.
    */
   private async prepareDirectory(ticket: Ticket): Promise<void> {
@@ -289,12 +385,21 @@ export class DshExecutor implements Executor {
     const env = Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value]))
     // Enforce a timeout so a hung prepare command (such as on a credential prompt) fails the ticket instead of holding a worker slot indefinitely.
     const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(PREPARE_TIMEOUT_MS)])
-    if (command) await runAsWorker(this.host.context.subprocess, prepareArgv(command), dirname(directory), signal, env)
-      .catch(async (error: unknown) => {
-        // Remove an empty directory left by a failed prepare command so a later retry does not treat it as already prepared.
-        await rmdir(directory).catch(() => { /* Absent, or holding what the command wrote, which the output explains. */ })
-        throw new PrepareFailed(`The prepare command failed: ${error instanceof Error ? error.message : String(error)}`)
-      })
+    const provenance = this.host.store.get(KV.workspace.provenance(ticket.id))
+    if (command && provenance?.status === 'unknown' && !provenance.preflight) {
+      const checked = await preflightCreation(provenance)
+      this.host.store.set(KV.workspace.provenance(ticket.id), checked)
+    }
+    if (command) {
+      await runAsWorker(this.host.context.subprocess, prepareArgv(command), dirname(directory), signal, env)
+        .catch((error: unknown) => {
+          throw new PrepareFailed(`The prepare command failed: ${error instanceof Error ? error.message : String(error)}`)
+        })
+      const checked = this.host.store.get(KV.workspace.provenance(ticket.id))
+      if (checked?.preflight && checked.status === 'unknown') {
+        this.host.store.set(KV.workspace.provenance(ticket.id), await verifyCreation(checked))
+      }
+    }
     await mkdir(directory, { recursive: true })
     await verifyDirectory(directory, this.host.context.subprocess, this.host.lifetime)
   }
@@ -306,6 +411,7 @@ export class DshExecutor implements Executor {
   deliver(ticket: Ticket, _assignment: Assignment): void { this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id }) }
   /** Launches a queued assignment unless its ticket ended, a newer assignment replaced it, or it is deferred outside the off-peak window. */
   private async launchQueued({ ticketId, assignmentId }: { ticketId: string; assignmentId: string }): Promise<void> {
+    await this.cleaning.get(ticketId)?.catch(() => {})
     const ticket = this.host.store.tickets.get(ticketId)
     const assignment = ticket && latestAssignment(ticket)
     if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== 'pending') return
@@ -354,7 +460,6 @@ export class DshExecutor implements Executor {
         const inputId = ticket?.undelivered[0]
         if (!ticket || !assignment || inputId === undefined) return
         // Waking an idle worker reserves a slot (including the extra slot reserved for human follow-ups).
-        const sessionId = workerSessionId(ticketId)
         if (!woken && !this.running(ticket)) {
           // A person's message wakes its worker ahead of new launches, in the slot kept for it.
           const person = ticket.undelivered.some(id => fromPerson(ticket.inputs.find(item => item.id === id)))
@@ -363,11 +468,9 @@ export class DshExecutor implements Executor {
         }
         const input = ticket.inputs.find(item => item.id === inputId)
         try {
-          // Recreate the worker session if it was externally deleted.
-          if (!this.host.context.agents.get(sessionId as SessionId)) {
-            await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker', ticket)
-          }
-          if (input) await this.deliverInput(ticket, assignment, input)
+          const worker = this.requireWorker(ticket, await this.checkWorkspace(ticket))
+          const agent = await this.host.sessions.existing(workerSessionId(ticket.id), ticket.title, 'worker', worker, ticket)
+          if (input) await this.deliverInput(ticket, assignment, input, agent)
         } catch (error) {
           if (this.host.closing() || error instanceof Later) throw error
           const current = this.host.store.tickets.get(ticketId)
@@ -379,13 +482,14 @@ export class DshExecutor implements Executor {
       }
     } finally { if (woken) this.slots.free(ticketId) }
   }
-  private async deliverInput(ticket: Ticket, assignment: Assignment, input: TicketInput): Promise<void> {
+  private async deliverInput(ticket: Ticket, assignment: Assignment, input: TicketInput, agent: Agent): Promise<void> {
     // Re-check right before session delivery because the ticket may have ended while awaiting `sourceLink`.
     const live = () => {
       const current = this.host.store.tickets.get(ticket.id)
       if (!current || !liveTicket(current) || runningAssignment(current)?.id !== assignment.id) throw new Error('The ticket ended or another Assignment took it over')
       this.checkStopFailure(ticket.id)
       this.checkHandoffStops(current)
+      if (this.host.context.agents.get(agent.id) !== agent) throw new Error('The worker Session changed before delivery; ask an operator to recover its original history')
       // A stop of the worker's background work that started meanwhile ends with a cancel, which would drop the Input.
       if (this.stopping.has(ticket.id)) throw new Later('The worker\'s background work is stopping')
     }
@@ -423,6 +527,7 @@ export class DshExecutor implements Executor {
         if (!ownTurn) this.host.context.agents.get(sessionId as SessionId)?.cancel({ kind: 'user' }, { keepInbox: false })
       })
       this.left.get(ticket.id)?.collect.abort(); this.left.delete(ticket.id); this.personal.delete(ticket.id)
+      if (ticket.ended && ticket.execution?.directory) this.host.effects.enqueue('cleanup', ticket.id, { ticketId: ticket.id })
     })
   }
   /** Stop what a ticket's worker runs in the background (see `stopBackground`). */
@@ -588,14 +693,30 @@ export class DshExecutor implements Executor {
     const source = sourceTrigger(this.host, ticket)
     const workspace = ticket.execution?.directory ?? ''
     if (!current()) return
-    // Prepare the workspace directory once; an existing directory counts as already prepared, including worktrees created before `prepare` commands existed.
-    if (!await stat(workspace).then(() => true, () => false)) {
-      await this.prepareDirectory(ticket)
-      if (!current()) return
-    }
+    const state = this.host.store.get(KV.sessions.workerCreation(ticket.id))
+    const claim = this.host.store.get(KV.workspace.claim(ticket.id))
+    const initial = state === 'new' && (claim?.state === 'new' || claim?.state === 'ready')
+      && ticket.assignments.every(item => !item.startedAt)
+    const existing = await this.checkWorkspace(ticket, initial)
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', ticket)
+    let agent: Agent
+    if (initial && !existing) {
+      this.host.store.set(KV.sessions.workerCreation(ticket.id), 'creating')
+      agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', ticket, true)
+      const verified = await this.checkWorkspace(ticket)
+      if (verified !== agent) throw new PrepareFailed(`Worker Session ${sessionId} changed during creation; ask an operator to recover it.`)
+      const createdAt = agent.session.header?.createdAt
+      this.host.store.atomic(() => {
+        if (typeof createdAt === 'number' && Number.isSafeInteger(createdAt) && createdAt > 0) {
+          this.host.store.set(KV.sessions.workerHeader(ticket.id), { createdAt })
+        }
+        this.host.store.set(KV.sessions.workerCreation(ticket.id), 'ready')
+      })
+    } else {
+      const worker = this.requireWorker(ticket, existing)
+      agent = await this.host.sessions.existing(sessionId, ticket.title, 'worker', worker, ticket)
+    }
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)
@@ -603,8 +724,7 @@ export class DshExecutor implements Executor {
     // A message put back for this Assignment may still wait in the Session, kept by a restart's cancel or persisted across a
     // crash, where this launch's message would take it into a step beside the copy delivered next: that copy is the only one.
     for (const id of this.host.store.tickets.get(ticket.id)?.undelivered ?? []) agent.inbox.remove(this.host.sessions.promptedId(id))
-    // The first message holds the assignment and the source Trigger; a later Assignment's says only what is new, unless the
-    // Session lost the first, such as when someone deleted it.
+    // The first message holds the assignment and the source Trigger; a later Assignment says only what is new when the Session holds the first.
     const first = `assignment:${ticket.id}`
     const later = ticket.assignments.length > 1
     const told = later && await this.host.sessions.holds(sessionId, first)
@@ -621,7 +741,10 @@ export class DshExecutor implements Executor {
         ...(batch.length ? { batch } : {}), ...retried })
     const requestId = later ? `assignment:${ticket.id}:${assignment.id}` : first
     await this.host.sessions.prompt(sessionId, requestId, text, 'queue',
-      () => { if (!current()) throw new Error('Launch authorization changed before worker delivery') },
+      () => {
+        if (!current()) throw new Error('Launch authorization changed before worker delivery')
+        if (this.host.context.agents.get(agent.id) !== agent) throw new Error('The worker Session changed before launch delivery; ask an operator to recover its original history')
+      },
       () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) })
     this.host.engine.assignmentStarted(ticket.id, assignment.id)
   }
@@ -680,6 +803,10 @@ export class DshExecutor implements Executor {
    * while failed launches (`waitsForPerson`) wait for a person's message or a retry.
    */
   resume(): void {
+    // Reconcile finished Tickets, including those that ended before this version or while the host was down.
+    for (const ticket of this.host.store.tickets.list()) {
+      if (ticket.ended && ticket.execution?.directory) this.host.effects.enqueue('cleanup', ticket.id, { ticketId: ticket.id })
+    }
     // Launch pending tickets oldest first (in acceptance order).
     for (const ticket of this.host.store.tickets.open().sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
       const running = runningAssignment(ticket), latest = latestAssignment(ticket)
@@ -744,15 +871,20 @@ export class DshExecutor implements Executor {
         if (!(failure instanceof Later)) throw failure
         this.after(SLOT_WAIT_MS, go); return
       }
-      const sent = this.host.sessions.prompt(sessionId, `retry:${assignmentId}:${tries}`, text, 'queue', () => {
-        const current = this.host.store.tickets.get(ticketId)
-        if (this.host.closing() || !current || !liveTicket(current) || runningAssignment(current)?.id !== assignmentId) {
-          throw new Error('The ticket ended or another Assignment took it over')
-        }
-        if (this.host.paused()) throw new Later('Processing is paused')
-        this.checkStopFailure(ticketId)
-        this.checkHandoffStops(current)
-        if (this.stopping.has(ticketId)) throw new Later('The worker background work is stopping')
+      const sent = this.checkWorkspace(ticket).then(async agent => {
+        const worker = this.requireWorker(ticket, agent)
+        await this.host.sessions.existing(sessionId, ticket.title, 'worker', worker, ticket)
+        return this.host.sessions.prompt(sessionId, `retry:${assignmentId}:${tries}`, text, 'queue', () => {
+          const current = this.host.store.tickets.get(ticketId)
+          if (this.host.closing() || !current || !liveTicket(current) || runningAssignment(current)?.id !== assignmentId) {
+            throw new Error('The ticket ended or another Assignment took it over')
+          }
+          if (this.host.paused()) throw new Later('Processing is paused')
+          this.checkStopFailure(ticketId)
+          this.checkHandoffStops(current)
+          if (this.stopping.has(ticketId)) throw new Later('The worker background work is stopping')
+          if (this.host.context.agents.get(worker.id) !== worker) throw new Error('The worker Session changed before retry; ask an operator to recover its original history')
+        })
       })
       void this.background(sent.then(() => { this.resuming.delete(assignmentId) }, (failure: unknown) => {
         if (failure instanceof Later && !this.host.closing()) { this.after(SLOT_WAIT_MS, go); return }
@@ -787,6 +919,43 @@ export class DshExecutor implements Executor {
         await this.host.sessions.prompt(agent.id, `ended:${job.id}`, note, { inject: 'Background job ended' })
       }))
     }
+  }
+  /**
+   * Inventories the checkout of an ended Ticket. A launch waits for any in-flight inventory of that Ticket.
+   */
+  private async cleanupQueued(ticketId: string): Promise<void> {
+    // A newer end can enqueue this again while an older cleanup still runs; wait for it and look again.
+    for (;;) {
+      const ticket = this.host.store.tickets.get(ticketId)
+      if (!ticket?.ended || !ticket.execution?.directory) return
+      const running = this.cleaning.get(ticketId)
+      if (!running) break
+      await running.catch(() => {})
+    }
+    const task = this.reclaim(ticketId)
+    this.cleaning.set(ticketId, task)
+    try { await task } finally { if (this.cleaning.get(ticketId) === task) this.cleaning.delete(ticketId) }
+  }
+  /** Observes the Ticket's workspace after its background work stops, without removing resources. */
+  private async reclaim(ticketId: string): Promise<void> {
+    await this.stopped(ticketId)
+    if (this.host.closing()) throw new Later('dsh-superagent is stopping')
+    const ticket = this.host.store.tickets.get(ticketId)
+    if (!ticket?.ended || !ticket.execution?.directory) return
+    // A person can type into the worker's Session directly; its checkout is in use while that turn runs.
+    if (this.host.context.agents.get(workerSessionId(ticketId) as SessionId)?.status === 'running') {
+      throw new Later('The Ticket workspace is in use', 60_000)
+    }
+    const endedAt = ticket.ended.at
+    const stillEnded = () => {
+      const current = this.host.store.tickets.get(ticketId)
+      return current?.ended?.at === endedAt && current.execution?.directory === ticket.execution?.directory
+        && this.host.context.agents.get(workerSessionId(ticketId) as SessionId)?.status !== 'running'
+    }
+    const run: GitRun = (argv, cwd) => runAsWorker(this.host.context.subprocess, ['git', '-c', 'core.fsmonitor=false', ...argv], cwd,
+      AbortSignal.any([this.host.lifetime, AbortSignal.timeout(CLEANUP_TIMEOUT_MS)]), { GIT_OPTIONAL_LOCKS: '0', GIT_NO_LAZY_FETCH: '1' })
+    const result = await reclaimWorkspace(run, { id: ticket.id, name: ticket.execution.name, directory: ticket.execution.directory }, stillEnded)
+    if (stillEnded()) this.host.store.set(KV.workspace.report(ticketId), { at: now(), endedAt, reason: result.reason, report: result.report })
   }
   private async workerIdle(ticket: Ticket, idle: Assignment, agent: Agent): Promise<void> {
     await agent.whenIdle()

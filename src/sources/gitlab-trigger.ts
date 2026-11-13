@@ -33,7 +33,8 @@ export const MergeRequestSchema = z.looseObject({
   source_branch: z.string(), target_branch: z.string().nullish(), sha: z.string().nullish(), source_project_id: z.number().nullish(),
   head_pipeline: z.looseObject({ id: z.number().nullish(), status: z.string().nullish(), web_url: z.string().nullish() }).nullish(),
   detailed_merge_status: z.string().nullish(), merge_status: z.string().nullish(), draft: z.boolean().nullish(),
-  work_in_progress: z.boolean().nullish(),
+  work_in_progress: z.boolean().nullish(), id: z.unknown().optional(), project_id: z.unknown().optional(),
+  target_project_id: z.unknown().optional(), merge_commit_sha: z.unknown().optional(), squash_commit_sha: z.unknown().optional(),
 })
 export type GitlabMergeRequest = z.infer<typeof MergeRequestSchema>
 export const DiscussionSchema = z.looseObject({ id: z.string(), notes: z.array(NoteSchema) })

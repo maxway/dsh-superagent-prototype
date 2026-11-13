@@ -251,6 +251,25 @@ describe('github source', () => {
     expect(pullEndNotices(h.store.tickets.get('t1')!, request.text, 'acme/widgets').map(notice => notice.id)).toEqual(notices.map(notice => notice.id))
     h.store.close()
   })
+  it('records fork identity and full source ref without inferring missing IDs or SHA', async () => {
+    const h = host()
+    h.store.tickets.save({ ...openTicket('fork'), ...pulled(40) })
+    const sha = 'a'.repeat(40)
+    await observePull(h, { ...endedPull(40, '2026-09-02T00:00:00Z'), id: 90,
+      base: { repo: { id: 1 } }, head: { sha, ref: 'contributor/fix', repo: { full_name: 'other/widgets', id: 2 } } })
+    const observation = h.store.tickets.get('fork')!.remoteTerminalObservations![0]!.observation
+    expect(observation).toMatchObject({ provider: 'github', number: 40, projectId: '1', changeId: '90',
+      sourceProjectId: '2', sourceRef: 'refs/heads/contributor/fix', observedSourceOid: sha, outcome: 'merged' })
+    h.store.tickets.save({ ...openTicket('missing'), ...pulled(41) })
+    await observePull(h, { ...endedPull(41, '2026-09-02T00:00:00Z', false), head: { sha: null, ref: 'agent/fix', repo: null } })
+    const missing = h.store.tickets.get('missing')!.remoteTerminalObservations![0]!.observation
+    expect(missing).toMatchObject({ sourceRef: 'refs/heads/agent/fix', outcome: 'closed' })
+    expect(missing).not.toHaveProperty('projectId')
+    expect(missing).not.toHaveProperty('sourceProjectId')
+    expect(missing).not.toHaveProperty('observedSourceOid')
+    expect(missing.sourceRef).not.toBe(observation.sourceRef)
+    h.store.close()
+  })
   it('keeps a ticket working on its other open PR when one of its PRs merges', async () => {
     const h = host()
     h.store.tickets.save({ id: 't3', title: 'three', decisionId: 'd3', mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [], assignments: [{ id: 'a1', state: 'running', createdAt: '2026-09-01T00:00:00Z' }], inputs: [], undelivered: [], execution: execution('fix-3'), origin: { triggerId: 'x', triggerIds: [] }, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' })

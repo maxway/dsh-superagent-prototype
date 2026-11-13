@@ -65,6 +65,26 @@ function Assignments({ ticket }: { ticket: TicketPageView }) {
       sessionId={item.ref} /></div>}
   </li>)}</ul>
 }
+function WorkspaceInventory({ ticket }: { ticket: TicketPageView }) {
+  const { t } = usePanel()
+  const inventory = ticket.workspaceReport
+  const provenance = ticket.workspaceProvenance
+  if (!inventory && !provenance) return null
+  const state = (value: NonNullable<typeof inventory>['report']['worktree']) => value.state === 'present' ? t('workspacePresent')
+    : value.state === 'absent' ? t('workspaceAbsent') : t('workspaceUnknown')
+  const observation = (value: NonNullable<typeof inventory>['report']['worktree']) => <span>{state(value)} · {value.reason}{value.oid ? ` (${value.oid})` : ''}</span>
+  return <Details icon="hash" title={t('workspaceInventory')}>
+    <Hint>{t('workspaceInventoryHint')}</Hint>
+    {inventory && ticket.ended?.at !== inventory.endedAt && <Hint>{t('workspaceInventoryStale')}</Hint>}
+    <KeyValues rows={[
+      ...provenance ? [[t('workspaceProvenance'), t(provenance.status === 'verified' ? 'workspaceProvenanceVerified' : 'workspaceProvenanceUnknown')] as [string, ReactNode]] : [],
+      ...inventory ? [[t('workspaceObserved'), when(inventory.at, t('lang'))],
+        [t('workspaceWorktree'), observation(inventory.report.worktree)], [t('workspaceBranch'), observation(inventory.report.localBranch)],
+        [t('workspaceRef'), observation(inventory.report.ticketRef)], [t('workspaceRemote'), observation(inventory.report.remoteBranch)],
+        [t('workspaceChanges'), observation(inventory.report.changes)], [t('workspaceIgnored'), observation(inventory.report.ignored)]] as [string, ReactNode][] : [],
+    ]} />
+  </Details>
+}
 function MandateDetails({ ticket, actor }: { ticket: TicketPageView; actor: string }) {
   const { t, navigate } = usePanel()
   const { mandate, decision } = ticket
@@ -163,6 +183,7 @@ export function TicketPage({ id }: { id: string }) {
         context={thread.context} />)}</ul>
     </Section>}
     <div className="dt-details">
+      <WorkspaceInventory ticket={data} />
       {/* A single Assignment adds nothing beyond the status line; list Assignments only once work has been resumed or handed over. */}
       {data.assignments.length > 1 && <Details icon="queue" title={`${t('term.assignment')} · ${data.assignments.length}`} open><Assignments
         ticket={data} /></Details>}

@@ -49,7 +49,7 @@
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && node --test tests/workspace-inventory.test.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm build"
   },
   "engines": {

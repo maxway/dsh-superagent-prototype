@@ -18,7 +18,7 @@ export interface EffectPayloads {
   launch: { ticketId: string; assignmentId: string }
   /** Hand a ticket's waiting Inputs to its running Assignment; the key is the Ticket ID. */
   delivery: { ticketId: string }
-  /** Retired workspace cleanup effect, retained to drain rows queued by older versions. */
+  /** Observe an ended Ticket's workspace without deleting resources; also handles rows queued by older versions. */
   cleanup: { ticketId: string }
   /** Steer a report or a candidate into the main Session; the key is the request ID. */
   relay: { text: string }

@@ -142,24 +142,52 @@ export class Sessions {
     })
   }
   /** Resolves or creates session `id` in workspace `cwd`, initializes its role model from its Ticket, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
-  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker', ticket?: Pick<Ticket, 'category' | 'mandate'>): Promise<Agent> {
+  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker', ticket?: Pick<Ticket, 'category' | 'mandate'>,
+    createOnly = false): Promise<Agent> {
     const ctx = this.ctx
     let result = await ctx.sessionController.resolveAgent(id as SessionId)
+    if (createOnly && !('error' in result)) throw new Error(`Session ${id} appeared before creation; ask an operator to inspect it.`)
     if ('error' in result && result.error.code === 'session/not-found') {
       const workspace = await ctx.workspaceRegistry.create(cwd)
       // A Session keeps the preset it was created with, one of the bundle's own (cordis.patch.yml).
-      await ctx.sessionController.create({ sessionId: id as SessionId, workspaceId: workspace.id,
+      const created = await ctx.sessionController.create({ sessionId: id as SessionId, workspaceId: workspace.id,
         agentPreset: role === 'worker' ? WORKER_PRESET : ROUTER_PRESET })
+      if (created.sessionId !== id) throw new Error(`Session creation returned ${created.sessionId}, not ${id}; ask an operator to inspect it.`)
       result = await ctx.sessionController.resolveAgent(id as SessionId)
     }
     if ('error' in result) throw result.error
+    await this.initialize(result.agent, title, role, ticket)
+    return result.agent
+  }
+  /** Initializes an existing Session without creating it, refusing a missing or replaced Agent. */
+  async existing(id: string, title: string, role: 'orchestrator' | 'worker', expected: Agent, ticket?: Pick<Ticket, 'category' | 'mandate'>): Promise<Agent> {
+    const check = () => {
+      if (this.ctx.agents.get(id as SessionId) !== expected) throw new Error(`Session ${id} changed during initialization; ask an operator to recover it.`)
+    }
+    const resolved = await this.ctx.sessionController.resolveAgent(id as SessionId)
+    if ('error' in resolved) throw resolved.error
+    if (resolved.agent !== expected) throw new Error(`Session ${id} changed before initialization; ask an operator to recover it.`)
+    check()
+    await this.initialize(expected, title, role, ticket, check)
+    const verified = await this.ctx.sessionController.resolveAgent(id as SessionId)
+    if ('error' in verified) throw verified.error
+    if (verified.agent !== expected) throw new Error(`Session ${id} changed during initialization; ask an operator to recover it.`)
+    check()
+    return expected
+  }
+  private async initialize(agent: Agent, title: string, role: 'orchestrator' | 'worker', ticket?: Pick<Ticket, 'category' | 'mandate'>,
+    check: () => void = () => {}): Promise<void> {
     const settings = this.host.store.settings()
     const model = role === 'orchestrator' ? settings.eval.model : ticket ? workerModel(settings, ticket) : settings.executor.model
-    await initializeRoleModel(ctx, result.agent, model)
-    await this.decorate(result.agent)
-    ctx.permissionPresets.set(result.agent.session, 'danger-full-access')
-    await ctx.sessionController.rename({ sessionId: id as SessionId, title })
-    return result.agent
+    check()
+    await initializeRoleModel(this.ctx, agent, model)
+    check()
+    await this.decorate(agent)
+    check()
+    this.ctx.permissionPresets.set(agent.session, 'danger-full-access')
+    check()
+    await this.ctx.sessionController.rename({ sessionId: agent.id, title })
+    check()
   }
   /** Returns whether `sessionId` already holds the message delivered under `requestId`, or `false` if the session does not exist. */
   async holds(sessionId: string, requestId: string): Promise<boolean> {

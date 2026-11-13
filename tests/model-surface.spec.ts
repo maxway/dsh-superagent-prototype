@@ -102,8 +102,8 @@ async function start() {
   const sections = new Map<string, Section>()
   const skills = new Map<string, Skill[]>()
   const inputs: { sessionId: string; text: string }[] = []
-  const create = async ({ sessionId }: { sessionId: string }) => {
-    if (agents.has(sessionId)) return
+  const create = async ({ sessionId, workspaceId }: { sessionId: string; workspaceId: string }) => {
+    if (agents.has(sessionId)) return { sessionId }
     const agentCtx = new Context()
     const own = new Map<string, Tool>(), registered: Skill[] = []
     tools.set(sessionId, own); skills.set(sessionId, registered)
@@ -125,9 +125,10 @@ async function start() {
     const deliver = (queue: UserMessage[]) => (message: UserMessage) => {
       queue.push(message); record(message); agents.get(sessionId)!.status = 'running'
     }
-    const session = { id: sessionId, snapshotEvents: () => [], requestHeader: () => undefined, append: () => {} }
+    const session = { id: sessionId, header: { cwd: workspaceId }, snapshotEvents: () => [], requestHeader: () => undefined, append: () => {} }
     agents.set(sessionId, { id: sessionId, ctx: agentCtx, inbox, followup: deliver(inbox.nextTurn), steer: deliver(inbox.nextStep),
       inject: record, status: 'idle', cancel: () => {}, whenIdle: async () => {}, model: { current: () => selectedModel ? { model: selectedModel } : undefined }, session } as never)
+    return { sessionId }
   }
   const resolveAgent = async (id: string) => agents.has(id) ? { agent: agents.get(id) } : { error: { code: 'session/not-found' } }
   const ctx = new Context()

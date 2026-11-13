@@ -176,7 +176,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `assessment` | MasterAssessor | 把评估的候选卡片送入主 Session 的回合，然后告诉 Engine 它已投递，从而启动评估的截止时间 | 4，暂停时为 0 | 2 秒起逐次翻倍至 60 秒 |
 | `launch` | DshExecutor | 启动待启动的派工：准备命令、执行器 Session、派工消息 | 空闲的 worker 槽位，暂停时为 0 | 模型提供方或网络的暂时性失败会在 5 秒后重试，逐次翻倍至 300 秒，共三次；其他任何失败，以及准备命令失败，都会使其工单失败。因暂停或 worker 槽位已满而被拦下的会尝试在 5 秒后重试 |
 | `delivery` | DshExecutor | 按顺序把工单等待中的输入交给其运行中的派工 | 4，暂停时为 0 | 2 秒起逐次翻倍至 60 秒；等待 worker 槽位的会在 2 秒后重试 |
-| `cleanup` | DshExecutor | 丢弃旧版排队的清理副作用，不触碰工作目录或分支 | 1 | 2 秒起逐次翻倍至 60 秒 |
+| `cleanup` | DshExecutor | 记录已结束工单的工作区和 ref 的只读观察结果；不删除资源 | 1，暂停时为 0 | 30 秒起逐次翻倍至 1 小时；反复失败会出现在健康面板上 |
 | `relay` | Sessions | 把 worker 的报告或问题，或人的跟进，送入主 Session 的回合 | 1，按队列顺序 | 2 秒起逐次翻倍至 60 秒 |
 | `notice` | Sessions | 在不唤醒主 Session 的情况下向其注入一条通知 | 1，按队列顺序 | 2 秒起逐次翻倍至 60 秒 |
 | `reply` | Outbox | 通过来源为某个渠道发送消息，排在其工单发往该会话的、失败未满三次的较早消息之后；撤回该消息会取消它 | 1，暂停时为 0 | 5 秒起逐次翻倍至 300 秒；来源关闭的，或排在较早消息之后的，会在 5 秒后重试 |
@@ -209,7 +209,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 
 `install` 订阅 Session 事件；`dispose` 取消订阅。回合结束通常报告等待，但就绪之后或需要人行动时除外。错误报告失败。启动时，`resume` 通过 `assignmentInterrupted` 报告被中断的派工，并重新排队不等待人工的待启动派工，最早的工单优先。
 
-工单结束不会自动删除其 worktree、本地分支或远端分支。恢复前核验原工作区和 Session 目录；目录缺失时请运维恢复。
+工单结束不会自动删除其 worktree、本地分支或远端分支。在 lifecycle 候选版本中，`stop` 会为已结束的工单排队一个 `cleanup` 副作用，`resume` 会为每个已结束工单排队一个。尽管名称如此，`cleanupQueued` 等待已知后台工作停止后调用 `reclaimWorkspace`（`src/executor/workspace.ts`），仅记录只读观察；它保留所有资源并保存最新报告。远端状态和普通改动可能仍为未知，观察结果不能证明归属或授权删除。已部署的旧版本可能仍执行破坏性清理。恢复工单时若历史工作区或 worker Session 缺失，不会自动重建，必须由运维恢复。只有新工单可以准备工作区并创建 Session。这些检查不能提供进程隔离，也不能证明仓库身份。
 
 ### MasterAssessor
 
@@ -237,7 +237,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 
 ### Sessions
 
-`Sessions`（`src/app/sessions.ts`）为两种角色管理 DeepSeek Harness Session。`ensure` 用其角色的模型创建 Session。`install` 跟踪智能体事件，并为受管理的 Session 注册提示词、技能和工具。
+`Sessions`（`src/app/sessions.ts`）为两种角色管理 DeepSeek Harness Session。`ensure` 用其角色的模型创建新 Session；恢复历史 worker 使用 `existing`，并拒绝缺失或被替换的 Session。`install` 跟踪智能体事件，并为受管理的 Session 注册提示词、技能和工具。
 
 `prompt` 对每个请求 id 只投递一次。`relay` 和 `notify` 把主 Session 消息入队，由 `relay` 和 `notice` 副作用处理。`src/app/notices.ts` 定义它们的内容；`delivery` 检查消息是否到达。
 
@@ -338,6 +338,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/context.ts` | 内置提示词文本，从 `prompts/` 读取，以及 Session 读取的转录条目 |
 | `src/app/skill-files.ts` | 打包的文本：`promptFile`（把文件中一行一句的内容合并成段落），以及随包附带的技能 |
 | `src/app/sessions.ts` | Sessions |
+| `src/app/workspace-journal.ts` | 本地 ref 操作的持久意图和结果日志，以调用方验证的仓库身份为范围；是独立构件，不代表已调度清理 |
 | `src/app/delivery.ts` | `AgentDelivery`：对每个请求 id 向 DeepSeek Harness 智能体只投递一次消息，恢复的 Session 也是如此 |
 | `src/app/retry-health.ts` | `RetryHealth`：哪些 Session 在等待模型预算重试，供 `models` 健康条目使用 |
 | `src/app/role-models.ts` | 解析评估和执行器的模型，并用其角色的模型初始化新 Session |
@@ -375,6 +376,10 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/views/settings.ts` | 设置页面的视图：每个块及其修订版本、每个来源的设置及其种类的表单，以及执行环境 |
 | `src/app/views/overview.ts` | 概览：需要人的工单、问题、最后一天的流转和执行器负载 |
 | `src/executor/dsh.ts` | DshExecutor、`WorkerSlots`、`ticketExecution`、`inputMessage` 和 `mandateInstructions` |
+| `src/executor/workspace.ts` | 对已结束工单的工作区、本地 ref 和被忽略条目进行只读观察（`reclaimWorkspace`）；不删除或证明归属 |
+| `src/executor/provenance.ts` | 可选的链接 worktree 及其 ref 创建来源预检与验证；证据不完整时保持未知 |
+| `src/executor/ref-cleanup.ts` | 独立的本地工单 ref 条件删除原语，使用保留 ref 及注入的授权和日志；未接入调度，不能证明归属 |
+| `src/executor/remote-cleanup.ts` | 独立的远端分支删除原语，使用预期 OID 的 lease 和注入的守卫；未接入调度，不能证明归属 |
 | `src/executor/background.ts` | worker 在 DeepSeek Harness 中的后台工作、其 Session 拥有的 shell 作业（`ctx.jobs`）和子智能体（`ctx.subagents`）：`runningJobs`、`untilQuiet`、`killJobs`、`collectJobs`、`stopSubagents`、`stopBackground`、`until`，以及 `cancelled`，即因停止其子智能体而取消当轮执行的 worker |
 | `src/infra/commands.ts` | `Commands`，CLI 传输：`run`；`api` 和 `pages`，限于已配置的仓库并经过校验；以机器人身份运行的 `lark`；`git`。`CliError` 携带命令输出报告的代码，例如 GitHub HTTP 状态；什么也不打印的命令以它的结束方式失败，绝不带出其参数；`validItems` 跳过并统计列表中的畸形条目 |
 | `src/infra/launch.ts` | Windows CLI 启动器：把 npm `.cmd` shim 解析到它 `%dp0%` 路径所指的 Node 入口并用 Node 运行，因此 argv 从不经过 `cmd.exe`；没有 Node 入口的 `.cmd` 会被拒绝 |
@@ -451,7 +456,12 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/assessment.spec.ts` | MasterAssessor 为每个评估保留什么，以及何时放手 |
 | `tests/background.spec.ts` | 等待 worker 的 shell 作业和子智能体：唤醒它的结束，以及宿主机停止 |
 | `tests/worker-guard.spec.ts` | 经 rc.3 工具管线验证 worker guard：拒绝原生子智能体调用、允许工作工具及 guard 启用前准备的调用 |
-| `tests/cleanup.spec.ts` | 已结束工单的工作目录和分支保持不变，包括处理旧清理副作用时 |
+| `tests/workspace.spec.ts` | 针对真实仓库的只读工作区清点：保留 worktree、ref 和已跟踪、未跟踪及被忽略的数据，覆盖未知和工单恢复等情况 |
+| `tests/workspace-journal.spec.ts` | 本地 ref 操作的持久意图与结果、重复和未解决操作以及仓库身份 |
+| `tests/provenance.spec.ts` | 可选工作区创建来源：预检、验证以及拒绝认领预先存在或不匹配的资源 |
+| `tests/ref-cleanup.spec.ts` | 独立本地 ref 删除：保留 ref、授权、条件更新和不确定结果 |
+| `tests/remote-cleanup.spec.ts` | 独立远端 ref 删除：预期 OID lease、守卫变化、拒绝和不确定结果 |
+| `tests/cleanup.spec.ts` | 已结束工单的工作目录和分支保持不变，包括处理旧版清理副作用时 |
 | `tests/bundle-patch.spec.ts` | 打包产物的补丁，按 DeepSeek Harness 读取它的方式读取，以及它定义的执行器 Session 智能体预设 |
 | `tests/effects.spec.ts` | 副作用队列：合并、限制、带退避的重试、处理者自定的推迟延迟、健康和关停 |
 | `tests/offpeak.spec.ts` | 谷价时段：默认值、日间和跨午夜时段、时区、来源默认，以及 schema 的拒绝 |

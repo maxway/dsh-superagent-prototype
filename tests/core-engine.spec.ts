@@ -1334,6 +1334,31 @@ describe('replies', () => {
   })
 })
 describe('ticket commands', () => {
+  it('persists terminal observations once per close across reopen and emits them with the ticket update', () => {
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const h = harness({}, { emit: event => events.push(event) })
+    const ticketId = accepted(h).ticketId!
+    const thread = { source: 'github', id: '7' }
+    h.engine.bindThread(ticketId, thread, false)
+    h.engine.bindThread(ticketId, { source: 'github', id: '8' }, true)
+    const observation = { provider: 'github' as const, number: 7, observedAt: '2026-09-23T00:00:03Z', outcome: 'closed' as const,
+      sourceRef: 'refs/heads/fork/fix', sourceProjectId: '2', projectId: '1' }
+    h.engine.threadClosed(thread, 'closed', '2026-09-23T00:00:01Z', observation)
+    h.engine.threadClosed(thread, 'closed', '2026-09-23T00:00:01Z', observation)
+    expect(h.repo.tickets.get(ticketId)!.remoteTerminalObservations).toEqual([{ thread: 'github:7', at: '2026-09-23T00:00:01.000Z', observation }])
+    expect(events.filter(event => event.type === 'thread.closed')).toHaveLength(1)
+    h.engine.bindThread(ticketId, thread, false)
+    h.engine.threadClosed(thread, 'closed', '2026-09-23T00:00:01Z', { ...observation, observedAt: '2026-09-23T00:00:04Z' })
+    expect(h.repo.tickets.get(ticketId)!.remoteTerminalObservations).toHaveLength(1)
+    expect(events.filter(event => event.type === 'thread.closed')).toHaveLength(1)
+    h.engine.bindThread(ticketId, thread, false)
+    const merged = { ...observation, outcome: 'merged' as const, observedAt: '2026-09-23T00:00:05Z' }
+    h.engine.threadClosed(thread, 'merged', '2026-09-23T00:00:04Z', merged)
+    expect(h.repo.tickets.get(ticketId)!.remoteTerminalObservations).toEqual([{ thread: 'github:7', at: '2026-09-23T00:00:01.000Z', observation },
+      { thread: 'github:7', at: '2026-09-23T00:00:04.000Z', observation: merged }])
+    h.engine.threadClosed({ source: 'github', id: '8' }, 'merged', '2026-09-23T00:00:06Z', { ...merged, number: 8 })
+    expect(events.filter(event => event.type === 'ticket.ended').at(-1)?.data).toMatchObject({ observation: { number: 8 } })
+  })
   it('ends a ticket by the same rule on a close and on a ready report: once no PR it opened is open, as the latest of them ended', () => {
     const h = harness()
     const ticketId = accepted(h).ticketId!

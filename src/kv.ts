@@ -6,6 +6,8 @@ import type { PromptVersion } from './app/prompts.ts'
 import type { SettingsVersion } from './app/store.ts'
 import type { SettingsSave } from './policy.ts'
 import type { Retry } from './sources/github.ts'
+import type { WorkspaceReport } from './executor/workspace.ts'
+import type { CreationProvenance } from './executor/provenance.ts'
 
 /** Key of a KV record whose value has type `V`; a plain string represents an untyped key. */
 export type Key<V> = string & { readonly __value?: V }
@@ -34,8 +36,15 @@ export const KV = {
   executor: { stopFailure: family<{ at: string; error: string }, [ticket: string]>('executor-stop-failure:'),
     stopPending: family<{ at: string }, [ticket: string, token: string]>('executor-stop-pending:',
       (ticket, token) => `${encodeURIComponent(ticket)}:${token}`) },
+  workspace: { provenance: family<CreationProvenance, [ticket: string]>('executor-workspace-provenance:'),
+    report: family<{ at: string; endedAt: string; reason: string; report: WorkspaceReport }, [ticket: string]>('workspace-report:'),
+    claim: family<{ directory: string; state: 'new' | 'preparing' | 'ready'; branch?: string; commonDir?: string;
+      directoryIdentity?: { device: string; inode: string };
+      gitIdentity?: { commonDir: string; gitDir: string; common: { device: string; inode: string }; git: { device: string; inode: string } } }, [ticket: string]>('executor-workspace-claim:') },
   /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
-  sessions: { prompts: family<number[], [session: string]>('session-prompts:') },
+  sessions: { prompts: family<number[], [session: string]>('session-prompts:'),
+    workerCreation: family<'new' | 'creating' | 'ready', [ticket: string]>('executor-worker-creation:'),
+    workerHeader: family<{ createdAt: number }, [ticket: string]>('executor-worker-header:') },
   /** Schema 11 migration: legacy main-Session queues imported into the effect table. */
   queues: { relays: record<{ id: string; text: string }[]>('relay-queue'), unsubscribed: record<string[]>('subscription-results'),
     prompts: record<number | null>('prompt-notification'), settings: record<number | null>('settings-notification') },

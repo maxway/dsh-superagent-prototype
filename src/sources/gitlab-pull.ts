@@ -3,7 +3,7 @@ import { key, liveTicket, type Follow, type OutboundMessage, type ThreadFact, ty
 import type { Deployment } from '../deployment.ts'
 import { sameName } from '../infra/text.ts'
 import type { SourceContext } from './host.ts'
-import { ticketBranch } from './github-pull.ts'
+import { remoteId, remoteOid, remoteRef, ticketBranch } from './github-pull.ts'
 import { pipelineFact } from './gitlab-read.ts'
 import { gitlabPage, gitlabThread, MergeRequestSchema, SOURCE, type GitlabMergeRequest } from './gitlab-trigger.ts'
 
@@ -69,7 +69,20 @@ function bind(ctx: SourceContext, ticketId: string, mr: MergeRequest, own: boole
 function closeMergeRequest(ctx: SourceContext, mr: MergeRequest): void {
   if (!ctx.tickets.open().some(ticket => mergeRequestsOf(ticket, true).includes(mr.iid))) return
   const at = mr.merged_at ?? mr.closed_at ?? new Date().toISOString()
-  ctx.tickets.threadClosed({ source: SOURCE, id: `mr:${mr.iid}` }, mr.state === 'merged' || mr.merged_at ? 'merged' : 'closed', at)
+  const outcome = mr.state === 'merged' || mr.merged_at ? 'merged' : 'closed'
+  const target = remoteId(mr.target_project_id), reported = remoteId(mr.project_id)
+  const project = target && reported && target !== reported ? undefined : target ?? reported
+  const change = remoteId(mr.id)
+  const sourceProject = remoteId(mr.source_project_id), ref = remoteRef(mr.source_branch), sha = remoteOid(mr.sha)
+  const merge = remoteOid(mr.merge_commit_sha), squash = remoteOid(mr.squash_commit_sha)
+  ctx.tickets.threadClosed({ source: SOURCE, id: `mr:${mr.iid}` }, outcome, at, {
+    provider: 'gitlab', ...(ctx.deployment.gitlab?.host ? { host: ctx.deployment.gitlab.host } : {}),
+    number: mr.iid, observedAt: new Date().toISOString(), outcome,
+    ...(project ? { projectId: project } : {}), ...(change ? { changeId: change } : {}),
+    ...(sourceProject ? { sourceProjectId: sourceProject } : {}), ...(ref ? { sourceRef: ref } : {}),
+    ...(sha ? { observedSourceOid: sha } : {}), ...(merge && outcome === 'merged' ? { mergeCommitOid: merge } : {}),
+    ...(squash && outcome === 'merged' ? { squashCommitOid: squash } : {}),
+  })
 }
 /** Builds idempotent notices for IM conversations when a ticket ends with its MR. */
 export function mergeRequestEndNotices(ticket: Ticket, request: string, deployment: Deployment): OutboundMessage[] {

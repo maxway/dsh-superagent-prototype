@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import { bindScopeParent } from '@deepseek-ai/dsh-scope'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 import { delimiter, join } from 'node:path'
@@ -12,6 +12,7 @@ import { shellTool } from '../src/app/sessions.ts'
 import { jobRegistry } from './fixtures/host.ts'
 import { evalsHealth } from '../src/app/views/overview.ts'
 import { mandateInstructions, prepareArgv } from '../src/executor/dsh.ts'
+import { pathIdentity } from '../src/executor/provenance.ts'
 import { masterPrompt } from '../src/app/context.ts'
 import { reference, testConfigDirs, testMachine } from './fixtures/deployment.ts'
 import type { Machine } from '../src/deployment.ts'
@@ -167,8 +168,8 @@ beforeEach(async () => {
   restricts = new Map()
   deliveries = vi.fn()
   controller = {
-    create: vi.fn(async ({ sessionId, agentPreset }) => {
-      if (agents.has(sessionId)) return
+    create: vi.fn(async ({ sessionId, agentPreset, workspaceId }) => {
+      if (agents.has(sessionId)) return { sessionId }
       const agentCtx = new Context()
       const preset = {}
       const inherited = [shellTool(), 'read', 'read_image', 'skill', 'job_output', 'job_list', 'job_kill', 'grep', 'web_search',
@@ -204,8 +205,9 @@ beforeEach(async () => {
       })
       const model = { current: () => modelEvents.filter(event => event.type === 'model/selection').at(-1)?.data as { model: string } | undefined,
         select: (selection: unknown) => { modelEvents.push({ type: 'model/selection', data: selection }) } }
-      agents.set(sessionId, { id: sessionId, ctx: agentCtx, model, inbox, followup: deliver('queue'), steer: deliver('steer'), status: 'idle', inject: vi.fn(), session: { id: sessionId, header: { agentPreset }, snapshotEvents: () => modelEvents, requestHeader: () => undefined, append: vi.fn((type: string, data: unknown) => { modelEvents.push({ type, data }) }) }, cancel: vi.fn(), whenIdle: async () => {} } as never)
+      agents.set(sessionId, { id: sessionId, ctx: agentCtx, model, inbox, followup: deliver('queue'), steer: deliver('steer'), status: 'idle', inject: vi.fn(), session: { id: sessionId, header: { agentPreset, cwd: workspaceId, createdAt: Date.now() }, snapshotEvents: () => modelEvents, requestHeader: () => undefined, append: vi.fn((type: string, data: unknown) => { modelEvents.push({ type, data }) }) }, cancel: vi.fn(), whenIdle: async () => {} } as never)
       bindScopeParent(agents.get(sessionId)!, preset)
+      return { sessionId }
     }),
     selectModel: vi.fn(async () => {}), resolveAgent: vi.fn(async id => agents.has(id) ? { agent: agents.get(id) } : { error: { code: 'session/not-found' } }), rename: vi.fn(async () => {}),
     prompt: vi.fn(() => { throw new Error('Plugin delivery must not use user RPC') }),
@@ -840,12 +842,14 @@ it('retries only a failed, blocked or undelivered ticket with a new assignment, 
   expect(retried.assignments.at(-2)!.endedReason).toBe('retried')
   // The worker's Session holds the assignment, so the new one says only that a person retried it.
   expect(relays(`worker-${ticket.id}`).at(-1)).toEqual({ ticket_id: ticket.id, assignment: 2, note: expect.stringContaining('A person retried this ticket') })
-  // A Session someone deleted gets the whole first message again with the next Assignment.
+  // A deleted Session needs recovery rather than a replacement with incomplete history.
   runtime.store.atomic(() => { runtime.engine.report(ticket.id, { state: 'failed', summary: 'LlmError: offline' }) })
   agents.delete(`worker-${ticket.id}`)
+  controller.create.mockClear()
   runtime.engine.retryTicket(ticket.id)
   await runtime.idle()
-  expect(relays(`worker-${ticket.id}`).at(-1)).toMatchObject({ ticket_id: ticket.id, title: '修复回归', trigger: expect.objectContaining({ text: '@bot 修一下回归' }) })
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report?.summary).toContain('recover its original history')
+  expect(controller.create).not.toHaveBeenCalled()
   expect(search(viewsOf(runtime), '修复', new TextCache(0)).tickets).toEqual([expect.objectContaining({ id: ticket.id })])
   expect(decisionList(viewsOf(runtime), [], 0, 10, '2999-01-01T00:00:00Z').items).toEqual([])
   const accepted = runtime.store.read.recentDecisions(0, 1)[0]!
@@ -1300,18 +1304,402 @@ it('runs the prepare command once for a new ticket, under the execution root wit
   expect(waitsForPerson(runtime.store.tickets.get(failed.ticket.id)!)).toBe(true)
 })
 
+it('records Git directory identities during initial workspace preparation', async () => {
+  const commonDir = join(directory, 'git-common'), gitDir = join(directory, 'git-admin')
+  mkdirSync(commonDir); mkdirSync(gitDir)
+  answers['git symbolic-ref --quiet --short HEAD'] = 'custom/original\n'
+  answers['git rev-parse --path-format=absolute --git-common-dir'] = commonDir
+  answers['git rev-parse --path-format=absolute --git-dir'] = gitDir
+  const settings = runtime.store.settings()
+  runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, prepare: 'make-test-worktree' } })
+  const spawn = subprocess.spawn.getMockImplementation()!
+  subprocess.spawn.mockImplementation(spec => {
+    if (spec.argv[0] === prepareArgv('')[0] && spec.env?.DSH_SUPERAGENT_DIR) {
+      mkdirSync(spec.env.DSH_SUPERAGENT_DIR, { recursive: true })
+      writeFileSync(join(spec.env.DSH_SUPERAGENT_DIR, '.git'), `gitdir: ${gitDir}\n`)
+    }
+    return spawn(spec)
+  })
+  try {
+    const { ticket } = await acceptedTicket()
+    expect(runtime.store.get(KV.workspace.claim(ticket.id))).toMatchObject({ state: 'ready', gitIdentity: {
+      commonDir, gitDir, common: await pathIdentity(commonDir), git: await pathIdentity(gitDir),
+    } })
+  } finally { subprocess.spawn.mockImplementation(spawn) }
+})
+
+it('records an unknown creation generation only for new Tickets accepted with a managed repository', async () => {
+  const old = await acceptedTicket()
+  expect(runtime.store.get(KV.workspace.provenance(old.ticket.id))).toBeUndefined()
+  const repository = join(directory, 'missing-repository')
+  runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, managedRepository: repository, prepare: 'true' } })
+  const created = await acceptedTicket(feishu('9', '@bot 修一下标题'))
+  await runtime.idle()
+  expect(runtime.store.get(KV.workspace.provenance(created.ticket.id))).toMatchObject({
+    generation: expect.any(String), repository, directory: created.ticket.execution!.directory,
+    branch: `refs/heads/agent/${created.ticket.execution!.name}`, ref: `refs/dsh-superagent/${created.ticket.id}`, status: 'unknown',
+  })
+  expect(runtime.store.get(KV.workspace.provenance(created.ticket.id))?.preflight).toBeUndefined()
+  expect(ticketDetail(viewsOf(runtime), created.ticket.id)?.workspaceProvenance).toEqual({ status: 'unknown' })
+  expect(ticketDetail(viewsOf(runtime), old.ticket.id)?.workspaceProvenance).toBeUndefined()
+  expect(runtime.store.get(KV.workspace.provenance(old.ticket.id))).toBeUndefined()
+})
+
 it('counts a ticket whose directory the host prepared before prepare commands existed as prepared', async () => {
   const { ticket, sessionId } = await acceptedTicket()
   await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
   // A ticket from before prepare commands has its worktree.
   const stored = runtime.store.tickets.get(ticket.id)!
   runtime.store.tickets.save({ ...stored, execution: { ...stored.execution!, directory } })
+  runtime.store.delete(`executor-workspace-claim:${ticket.id}`)
+  ;(agents.get(sessionId)! as unknown as { session: { header: { cwd: string } } }).session.header.cwd = directory
   runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, prepare: 'exit 1' } })
   subprocess.spawn.mockClear()
   await runtime.engine.retryTicket(ticket.id)
   await runtime.idle()
   expect(subprocess.spawn.mock.calls.some(([spec]) => spec.argv[0] === prepareArgv('')[0])).toBe(false)
   expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.state).toBe('running')
+})
+
+it('prepares a never-started Ticket after its host mismatch is corrected and retried', async () => {
+  const trigger = feishu('1', '@bot 修一下回归')
+  await receive(trigger)
+  await runtime.settings.pause(true, 'panel')
+  const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '修复回归', worktree_name: worktreeName, acknowledgement: '收到' })
+  const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+  const resolved = (runtime.setup as unknown as { resolved: { git: { provider: string } } }).resolved.git
+  resolved.provider = 'gitlab'
+  await runtime.settings.pause(false, 'panel')
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report?.summary).toContain('accepted on the github Git host')
+  expect(runtime.store.get(KV.workspace.claim(ticket.id))?.state).toBe('new')
+  expect(runtime.store.get(KV.sessions.workerCreation(ticket.id))).toBe('new')
+  resolved.provider = 'github'
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.get(KV.workspace.claim(ticket.id))?.state).toBe('ready')
+  expect(runtime.store.get(KV.sessions.workerCreation(ticket.id))).toBe('ready')
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.state).toBe('running')
+})
+
+it('does not adopt a directory created before a new ticket starts', async () => {
+  const trigger = feishu('1', '@bot 修一下回归')
+  await receive(trigger)
+  await runtime.settings.pause(true, 'panel')
+  const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '修复回归', worktree_name: worktreeName, acknowledgement: '收到' })
+  const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+  mkdirSync(ticket.execution!.directory, { recursive: true })
+  writeFileSync(join(ticket.execution!.directory, 'keep.txt'), 'someone else')
+  await runtime.settings.pause(false, 'panel')
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('already exists') })
+  expect(readFileSync(join(ticket.execution!.directory, 'keep.txt'), 'utf8')).toBe('someone else')
+})
+
+it('refuses a worker that appears between the workspace check and Session creation', async () => {
+  const trigger = feishu('1', '@bot 修一下回归')
+  await receive(trigger)
+  await runtime.settings.pause(true, 'panel')
+  const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '修复回归', worktree_name: worktreeName, acknowledgement: '收到' })
+  const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+  const sessionId = `worker-${ticket.id}`
+  const resolve = controller.resolveAgent.getMockImplementation()! as (id: string) => Promise<unknown>
+  const create = controller.create as unknown as (request: { sessionId: string; workspaceId: string }) => Promise<unknown>
+  let calls = 0
+  controller.resolveAgent.mockImplementation(async (id: string) => {
+    if (id === sessionId && ++calls === 2) await create({ sessionId, workspaceId: ticket.execution!.directory })
+    return resolve(id)
+  })
+  await runtime.settings.pause(false, 'panel')
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report?.summary).toContain('appeared before creation')
+  expect(runtime.store.get(KV.sessions.workerCreation(ticket.id))).toBe('creating')
+  expect(relays(sessionId)).toHaveLength(0)
+})
+
+it('refuses a Session creation response for a different ID', async () => {
+  const trigger = feishu('1', '@bot 修一下回归')
+  await receive(trigger)
+  await runtime.settings.pause(true, 'panel')
+  const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '修复回归', worktree_name: worktreeName, acknowledgement: '收到' })
+  const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+  const sessionId = `worker-${ticket.id}`
+  const create = controller.create.getMockImplementation()! as (request: { sessionId: string }) => Promise<{ sessionId: string }>
+  controller.create.mockImplementation(async (request: { sessionId: string }) => {
+    const created = await create(request)
+    return request.sessionId === sessionId ? { sessionId: 'unexpected-session' } : created
+  })
+  await runtime.settings.pause(false, 'panel')
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report?.summary).toContain('unexpected-session')
+  expect(runtime.store.get(KV.sessions.workerCreation(ticket.id))).toBe('creating')
+  expect(relays(sessionId)).toHaveLength(0)
+})
+
+it('rechecks the Session cwd after creating a worker', async () => {
+  const trigger = feishu('1', '@bot 修一下回归')
+  await receive(trigger)
+  await runtime.settings.pause(true, 'panel')
+  const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '修复回归', worktree_name: worktreeName, acknowledgement: '收到' })
+  const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+  const sessionId = `worker-${ticket.id}`
+  const create = controller.create.getMockImplementation()! as (request: { sessionId: string }) => Promise<{ sessionId: string }>
+  controller.create.mockImplementation(async (request: { sessionId: string }) => {
+    if (request.sessionId === sessionId) expect(runtime.store.get(KV.sessions.workerCreation(ticket.id))).toBe('creating')
+    const created = await create(request)
+    if (request.sessionId === sessionId) (agents.get(sessionId)! as unknown as { session: { header: { cwd: string } } }).session.header.cwd = directory
+    return created
+  })
+  await runtime.settings.pause(false, 'panel')
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('Worker Session') })
+  expect(runtime.store.get(KV.sessions.workerCreation(ticket.id))).toBe('creating')
+  expect(relays(sessionId)).toHaveLength(0)
+})
+
+it.each([true, false])('retains uncertain Session creation after a failure before creation: %s', async beforeCreate => {
+  const trigger = feishu('1', '@bot 修一下回归')
+  await receive(trigger)
+  await runtime.settings.pause(true, 'panel')
+  const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '修复回归', worktree_name: worktreeName, acknowledgement: '收到' })
+  const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+  const sessionId = `worker-${ticket.id}`
+  const create = controller.create.getMockImplementation()! as (request: { sessionId: string }) => Promise<{ sessionId: string }>
+  controller.create.mockImplementation(async (request: { sessionId: string }) => {
+    if (request.sessionId !== sessionId) return create(request)
+    expect(runtime.store.get(KV.sessions.workerCreation(ticket.id))).toBe('creating')
+    if (!beforeCreate) await create(request)
+    throw new Error('creation interrupted')
+  })
+  await runtime.settings.pause(false, 'panel')
+  await runtime.idle()
+  expect(runtime.store.get(KV.sessions.workerCreation(ticket.id))).toBe('creating')
+  expect(agents.has(sessionId)).toBe(!beforeCreate)
+  const calls = controller.create.mock.calls.length
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(controller.create.mock.calls).toHaveLength(calls)
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report?.summary).toContain('interrupted or failed')
+})
+
+it('refuses a workspace left by an interrupted preparation', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  runtime.store.set(`executor-workspace-claim:${ticket.id}`, { directory: ticket.execution!.directory, state: 'preparing' })
+  subprocess.spawn.mockClear()
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('interrupted or failed') })
+  expect(subprocess.spawn.mock.calls.some(([spec]) => spec.argv[0] === prepareArgv('')[0])).toBe(false)
+})
+
+it('does not recreate a missing historical workspace on retry, even without a claim from older versions', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  rmSync(ticket.execution!.directory, { recursive: true, force: true })
+  runtime.store.delete(`executor-workspace-claim:${ticket.id}`)
+  subprocess.spawn.mockClear()
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('historical workspace') })
+  expect(subprocess.spawn.mock.calls.some(([spec]) => spec.argv[0] === prepareArgv('')[0])).toBe(false)
+})
+
+it.each([true, false])('refuses an interrupted Session creation even when Session exists: %s', async exists => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  runtime.store.set(KV.sessions.workerCreation(ticket.id), 'creating')
+  if (!exists) agents.delete(sessionId)
+  controller.create.mockClear()
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('Creation of worker Session') })
+  expect(runtime.store.get(KV.sessions.workerCreation(ticket.id))).toBe('creating')
+  expect(controller.create).not.toHaveBeenCalled()
+})
+
+it('reinitializes an existing worker without creating a Session', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  const agent = agents.get(sessionId)! as unknown as { session: object; model: { current(): unknown } }
+  const permission = vi.spyOn(services.permissionPresets as { set: (session: object, preset: string) => void }, 'set')
+  const settings = runtime.store.settings()
+  runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, model: { provider: 'worker-provider', model: 'worker-model' } } })
+  controller.create.mockClear(); controller.rename.mockClear()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.state).toBe('running')
+  expect(agent.model.current()).toMatchObject({ provider: 'worker-provider', model: 'worker-model' })
+  expect(permission).toHaveBeenCalledWith(agent.session, 'danger-full-access')
+  expect(controller.rename).toHaveBeenCalledWith({ sessionId, title: ticket.title })
+  expect(controller.create).not.toHaveBeenCalled()
+})
+
+it('redecorates an existing worker after its bindings were released', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  const agent = agents.get(sessionId)!
+  runtime.sessions.dispose()
+  expect(tools.get(sessionId)!.has('orchestrator_report')).toBe(false)
+  controller.create.mockClear()
+  await runtime.sessions.existing(sessionId, ticket.title, 'worker', agent as never, ticket)
+  expect(tools.get(sessionId)!.has('orchestrator_report')).toBe(true)
+  expect(controller.create).not.toHaveBeenCalled()
+})
+
+it.each(['before', 'during'])('refuses a worker Session replaced %s initialization', async when => {
+  const { ticket, sessionId } = await acceptedTicket()
+  const original = agents.get(sessionId)!
+  const replacement = { ...original }
+  controller.create.mockClear()
+  if (when === 'before') agents.set(sessionId, replacement)
+  else controller.rename.mockImplementation(async (request: { sessionId: string }) => {
+    if (request.sessionId === sessionId) agents.set(sessionId, replacement)
+  })
+  await expect(runtime.sessions.existing(sessionId, ticket.title, 'worker', original as never, ticket)).rejects.toThrow('changed')
+  expect(controller.create).not.toHaveBeenCalled()
+  agents.set(sessionId, original)
+})
+
+it('does not initialize or create an existing worker that disappeared', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  const original = agents.get(sessionId)!
+  agents.delete(sessionId)
+  controller.create.mockClear(); controller.rename.mockClear()
+  await expect(runtime.sessions.existing(sessionId, ticket.title, 'worker', original as never, ticket)).rejects.toBeDefined()
+  expect(controller.create).not.toHaveBeenCalled()
+  expect(controller.rename).not.toHaveBeenCalled()
+})
+
+it('resumes an existing historical Session without a creation marker', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  runtime.store.delete(KV.sessions.workerCreation(ticket.id))
+  controller.create.mockClear()
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.state).toBe('running')
+  expect(controller.create).not.toHaveBeenCalled()
+})
+
+it('does not create a missing historical Session on retry without a creation marker', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  runtime.store.delete(KV.sessions.workerCreation(ticket.id))
+  agents.delete(sessionId)
+  controller.create.mockClear()
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('recover its original history') })
+  expect(controller.create).not.toHaveBeenCalled()
+})
+
+it('refuses a worker Session whose recorded cwd differs from the workspace', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  const agent = agents.get(sessionId)! as unknown as { session: { header: { cwd: string } } }
+  agent.session.header.cwd = directory
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('Worker Session') })
+})
+
+it('refuses a same-ID same-cwd worker with a changed creation timestamp', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  const recorded = runtime.store.get(KV.sessions.workerHeader(ticket.id))!
+  const agent = agents.get(sessionId)! as unknown as { session: { header: { createdAt: number } } }
+  agent.session.header.createdAt = recorded.createdAt + 1
+  controller.create.mockClear()
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report?.summary).toContain('different creation timestamp')
+  expect(controller.create).not.toHaveBeenCalled()
+})
+
+it('refuses a worker Session with no verifiable cwd', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  const agent = agents.get(sessionId)! as unknown as { session: { header: { cwd?: string } } }
+  delete agent.session.header.cwd
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('unknown cwd') })
+})
+
+it('refuses a replacement workspace at the original path', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  const workspace = ticket.execution!.directory
+  expect(runtime.store.get(KV.workspace.claim(ticket.id))?.directoryIdentity).toBeDefined()
+  writeFileSync(join(workspace, 'original.txt'), 'preserve')
+  renameSync(workspace, `${workspace}-original`)
+  mkdirSync(workspace)
+  writeFileSync(join(workspace, 'replacement.txt'), 'different')
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report?.summary).toContain('not the originally prepared directory')
+  expect(readFileSync(join(`${workspace}-original`, 'original.txt'), 'utf8')).toBe('preserve')
+  expect(readFileSync(join(workspace, 'replacement.txt'), 'utf8')).toBe('different')
+})
+
+it('refuses a changed recorded Git branch without touching its workspace', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  const workspace = ticket.execution!.directory
+  writeFileSync(join(workspace, '.git'), 'gitdir: retained')
+  runtime.store.set(`executor-workspace-claim:${ticket.id}`, { directory: workspace, state: 'ready', branch: 'custom/original' })
+  answers['git symbolic-ref --quiet --short HEAD'] = 'custom/other\n'
+  answers['git rev-parse --path-format=absolute --git-common-dir'] = join(directory, 'git-common')
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('custom/original') })
+  expect(readFileSync(join(workspace, '.git'), 'utf8')).toBe('gitdir: retained')
+})
+
+it('refuses a changed Git common directory even on the same branch', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  const workspace = ticket.execution!.directory
+  writeFileSync(join(workspace, '.git'), 'gitdir: retained')
+  runtime.store.set(`executor-workspace-claim:${ticket.id}`, { directory: workspace, state: 'ready', branch: 'custom/original', commonDir: join(directory, 'original-git') })
+  answers['git symbolic-ref --quiet --short HEAD'] = 'custom/original\n'
+  answers['git rev-parse --path-format=absolute --git-common-dir'] = join(directory, 'other-git')
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('Git common directory') })
+})
+
+it.each(['common', 'admin'])('refuses a replaced Git %s directory even when its path and branch match', async changed => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  const workspace = ticket.execution!.directory
+  const commonDir = join(directory, 'git-common'), gitDir = join(directory, 'git-admin')
+  mkdirSync(commonDir); mkdirSync(gitDir)
+  writeFileSync(join(workspace, '.git'), `gitdir: ${gitDir}\n`)
+  const common = (await pathIdentity(commonDir))!, git = (await pathIdentity(gitDir))!
+  expect(common).toBeDefined(); expect(git).toBeDefined()
+  const claim = runtime.store.get(KV.workspace.claim(ticket.id))!
+  runtime.store.set(KV.workspace.claim(ticket.id), { ...claim, branch: 'custom/original', commonDir,
+    gitIdentity: { commonDir, gitDir, common, git } })
+  answers['git symbolic-ref --quiet --short HEAD'] = 'custom/original\n'
+  answers['git rev-parse --path-format=absolute --git-common-dir'] = commonDir
+  answers['git rev-parse --path-format=absolute --git-dir'] = gitDir
+  const replaced = changed === 'common' ? commonDir : gitDir
+  renameSync(replaced, `${replaced}-original`)
+  mkdirSync(replaced)
+  await runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report?.summary).toContain('Git metadata')
+  expect(readFileSync(join(workspace, '.git'), 'utf8')).toContain(gitDir)
+})
+
+it('refuses to deliver a follow-up to a missing workspace', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  rmSync(ticket.execution!.directory, { recursive: true, force: true })
+  deliveries.mockClear()
+  await receive(feishu('2', '请继续', { mentions: [], root_id: 'om_1' }))
+  expect(relays(sessionId)).toHaveLength(0)
+  expect(runtime.store.tickets.get(ticket.id)?.delivery?.error).toContain('historical workspace')
 })
 
 it('runs a GitHub-only deployment: the GitHub part of the Policy decides alone, and the Feishu part has nothing to sync', async () => {
@@ -1846,15 +2234,15 @@ it('runs a launch that fails for a passing reason again on the launch backoff th
   await runtime.idle()
   expect(runtime.store.tickets.get(prepared.ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('503') })
   expect(runs()).toBe(before + 1)
-  // A retry runs the prepare command again, for the directory it left empty was removed; resuming relaunches no failed launch.
+  // Neither resume nor retry reruns a failed prepare without operator recovery.
   delete answers[prepareArgv('exit 3').join(' ')]
   runtime.executor.resume()
   await runtime.idle()
   expect(runs()).toBe(before + 1)
   runtime.engine.retryTicket(prepared.ticket.id)
   await runtime.idle()
-  expect(runs()).toBe(before + 2)
-  expect(runtime.store.tickets.get(prepared.ticket.id)!.assignments.at(-1)).toMatchObject({ state: 'running' })
+  expect(runs()).toBe(before + 1)
+  expect(runtime.store.tickets.get(prepared.ticket.id)!.assignments.at(-1)).toMatchObject({ report: expect.objectContaining({ state: 'failed', summary: expect.stringContaining('ask an operator') }) })
 })
 
 it('launches a queued Assignment once when the host resumes, and gives a failed launch\'s slot back', async () => {

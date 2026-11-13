@@ -174,7 +174,7 @@ Failures retry with exponential backoff. Throwing `Later` defers work without co
 | `assessment` | MasterAssessor | Steers an Eval's candidate card into the main Session's turn, then tells the Engine it was delivered, which starts the Eval's deadline | 4, none while paused | 2 s doubling to 60 s |
 | `launch` | DshExecutor | Launches a pending Assignment: prepare command, Executor Session, assignment message | The free worker slots, none while paused; an off-peak Ticket only inside its window | A passing failure of the model provider or the network runs again after 5 s doubling to 300 s, three times; any other failure, and a failed prepare command, fails its Ticket. One held by a pause, by full worker slots or by the off-peak window tries again after 5 s, or when the window may have opened |
 | `delivery` | DshExecutor | Hands a Ticket's waiting Inputs to its running Assignment, in order | 4, none while paused | 2 s doubling to 60 s; one that waits for a worker slot tries again after 2 s |
-| `cleanup` | DshExecutor | Discards legacy queued cleanup effects without touching workspaces or branches | 1 | 2 s doubling to 60 s |
+| `cleanup` | DshExecutor | Records a read-only observation of an ended Ticket's workspace and refs; does not delete resources | 1, none while paused | 30 s doubling to 1 h; repeated failures appear on the health board |
 | `relay` | Sessions | Steers a worker's report or question, or a person's follow-up, into the main Session's turn | 1, in queue order | 2 s doubling to 60 s |
 | `notice` | Sessions | Injects a notice into the main Session without waking it | 1, in queue order | 2 s doubling to 60 s |
 | `reply` | Outbox | Sends a message for a Channel through its Source, after the earlier messages of its Ticket to its conversation that have not failed three times; withdrawing the message cancels it | 1, none while paused | 5 s doubling to 300 s; one whose Source is off, or behind an earlier message, tries again after 5 s |
@@ -207,7 +207,7 @@ Transient provider and network failures get three retries. Launches use effect b
 
 `install` subscribes to Session events; `dispose` unsubscribes. A turn end normally reports waiting, except after readiness or while human action is required. Errors report failed. At startup, `resume` reports interrupted Assignments through `assignmentInterrupted` and requeues pending launches that do not wait for a person, oldest Ticket first.
 
-Ending a Ticket does not automatically delete its worktree or local or remote branch. Verify the original workspace and Session directory before resuming; ask an operator to recover a missing directory.
+Ending a Ticket does not automatically delete its worktree or local or remote branch. In the lifecycle candidate, `stop` queues a `cleanup` effect for an ended Ticket, and `resume` queues one for each finished Ticket. Despite its name, `cleanupQueued` waits for known background work and calls `reclaimWorkspace` (`src/executor/workspace.ts`) only to record a read-only observation; it preserves all resources and stores the latest report. Remote state and ordinary changes can remain unknown, and observations do not establish ownership or authorize deletion. Older deployed versions may still run destructive cleanup. A resumed Ticket with a missing historical workspace or worker Session is not automatically recreated; it requires operator recovery. New Tickets alone may prepare their workspace and create their Session. The checks do not establish process isolation or prove repository identity.
 
 ### MasterAssessor
 
@@ -235,7 +235,7 @@ Validation inherits an omitted base from the saved override, drops removed parts
 
 ### Sessions
 
-`Sessions` (`src/app/sessions.ts`) manages DeepSeek Harness Sessions for both roles. `ensure` creates a Session with its role's model. `install` follows agent events and registers prompts, skills and tools for managed Sessions.
+`Sessions` (`src/app/sessions.ts`) manages DeepSeek Harness Sessions for both roles. `ensure` creates a new Session with its role's model; recovery of a historical worker uses `existing` and refuses a missing or replaced Session. `install` follows agent events and registers prompts, skills and tools for managed Sessions.
 
 `prompt` delivers once per request id. `relay` and `notify` enqueue main-Session messages handled by the `relay` and `notice` effects. `src/app/notices.ts` defines their content; `delivery` checks whether a message arrived.
 
@@ -336,6 +336,7 @@ Some generic modules still need provider-specific behavior:
 | `src/app/context.ts` | The built-in prompt text, read from `prompts/`, and the transcript entries Sessions read |
 | `src/app/skill-files.ts` | Packaged text: `promptFile`, which joins a file's one-sentence lines into paragraphs, and the bundled skills |
 | `src/app/sessions.ts` | Sessions |
+| `src/app/workspace-journal.ts` | Durable intent and result journal for local ref operations, scoped to a caller-verified repository identity; a standalone building block, not a scheduled cleanup |
 | `src/app/delivery.ts` | `AgentDelivery`: delivers a message to a DeepSeek Harness agent once per request id, also across a restored Session |
 | `src/app/retry-health.ts` | `RetryHealth`: which Sessions wait on a model budget retry, for the `models` health entry |
 | `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
@@ -374,6 +375,10 @@ Some generic modules still need provider-specific behavior:
 | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
 | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
+| `src/executor/workspace.ts` | Read-only observations of an ended Ticket's workspace, local refs and ignored entries (`reclaimWorkspace`); no deletion or ownership proof |
+| `src/executor/provenance.ts` | Optional creation provenance preflight and verification for a linked worktree and its refs; incomplete evidence remains unknown |
+| `src/executor/ref-cleanup.ts` | Standalone conditional local Ticket-ref deletion primitive with a retention ref and injected authorization and journal; not scheduled and does not establish ownership |
+| `src/executor/remote-cleanup.ts` | Standalone remote branch deletion primitive using an expected-OID lease and injected guard; not scheduled and does not establish ownership |
 | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
 | `src/infra/launch.ts` | The Windows CLI launcher: resolves an npm `.cmd` shim to the Node entry named by its `%dp0%` path and runs it with Node, so argv never passes through `cmd.exe`; a `.cmd` without a Node entry is refused |
 | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
@@ -449,7 +454,12 @@ Some generic modules still need provider-specific behavior:
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
 | `tests/worker-guard.spec.ts` | Worker guard through the rc.3 tool pipeline: denied native subagent calls, allowed work tools and calls prepared before the guard |
-| `tests/cleanup.spec.ts` | Finished workspaces and branches stay untouched, including legacy cleanup effects |
+| `tests/workspace.spec.ts` | Read-only workspace inventory against real repositories: preserves worktrees, refs and tracked, untracked and ignored data, with unknown and resumed cases |
+| `tests/workspace-journal.spec.ts` | Durable local ref operation intents and results, duplicate and unresolved operations, and repository identity |
+| `tests/provenance.spec.ts` | Optional workspace creation provenance: preflight, verification and refusal to claim pre-existing or mismatched resources |
+| `tests/ref-cleanup.spec.ts` | Standalone local ref deletion: retained ref, authorization, conditional updates and uncertain outcomes |
+| `tests/remote-cleanup.spec.ts` | Standalone remote ref deletion: expected-OID lease, guard changes, rejection and uncertain outcomes |
+| `tests/cleanup.spec.ts` | Finished workspaces and branches stay untouched, including when legacy cleanup effects are handled |
 | `tests/bundle-patch.spec.ts` | The bundle's patch, read as DeepSeek Harness reads it, and the agent preset of Executor Sessions it defines |
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, a handler's own deferral delay, health and shutdown |
 | `tests/offpeak.spec.ts` | The off-peak window: defaults, daytime and overnight periods, time zones, the source default, and schema refusals |

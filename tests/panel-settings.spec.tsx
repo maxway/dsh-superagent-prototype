@@ -38,6 +38,7 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   // An empty root uses the default directory, which the field names instead of looking set.
   expect(field<HTMLInputElement>(zh.executionDirectory).closest('.dt-field')!.querySelector('small')?.textContent).toBe('留空时用 /srv/dsh-superagent/work')
   await type(field<HTMLInputElement>(zh.executionDirectory), '/srv/work')
+  await type(field<HTMLInputElement>(zh.managedRepository), '/srv/repo')
   // A variable picked from the list goes where the caret is in the prepare command.
   const prepare = field<HTMLTextAreaElement>(zh.prepareCommand)
   await type(prepare, 'git worktree add ')
@@ -56,7 +57,7 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   await type(expertInputs[0] as HTMLInputElement, 'expert-provider')
   await type(expertInputs[1] as HTMLInputElement, 'expert-model')
   await click(zh.save)
-  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work',
+  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work', managedRepository: '/srv/repo',
     prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
       model: 'worker-model', reasoningEffort: 'high' }, models: { query: null, research: null, development: null }, tierModels: { low: null, high: null, expert: { provider: 'expert-provider', model: 'expert-model' } },
     offPeak: { enabled: false, start: '22:00', end: '08:00', timezone: 'Asia/Shanghai' } })
