@@ -32,7 +32,7 @@ async function releaseRetained(runtime: Runtime) {
 async function stopRetained(runtime: Runtime) {
   try {
     await expect(runtime.stop()).rejects.toThrow('Could not finish shutdown')
-    expect(() => { const release = lockSync(runtime.machine.stateDir); release() }).toThrow()
+    expect(() => { const release = lockSync(runtime.machine.stateDir, { stale: 30_000 }); release() }).toThrow()
   } finally { await releaseRetained(runtime) }
 }
 async function stopRetainedHost() {
@@ -935,7 +935,7 @@ it('retains the state lock while a tracked stop remains unconfirmed', async () =
     pending.reject(new Error('late stop failure'))
     await new Promise(resolve => setTimeout(resolve, 10))
     expect(h.runtime.store.settings()).toBeDefined()
-    expect(() => { const release = lockSync(h.directory); release() }).toThrow()
+    expect(() => { const release = lockSync(h.directory, { stale: 30_000 }); release() }).toThrow()
   } finally { pending.reject(new Error('test cleanup')) }
 })
 
