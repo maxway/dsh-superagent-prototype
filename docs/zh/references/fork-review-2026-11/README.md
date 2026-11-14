@@ -27,7 +27,7 @@
 | 序号 | 优先级 | 问题标题 | 核心涉及模块 | 修复方案文档 |
 | :---: | :---: | --- | --- | --- |
 | 01 | **P0** | 停机排空失败使服务滞留“监听存活但内部瘫痪”僵尸态，且无法再次优雅停机或被健康检查识别 | `src/app/runtime.ts`, `scripts/restart-superagent.ps1`, `scripts/dsh-superagent` | [01-p0-shutdown-drain-zombie-state.md](./01-p0-shutdown-drain-zombie-state.md) |
-| 02 | **P0** | Windows 路径盘符与目录大小写不敏感导致 `sameDirectory`、`withoutDirectory` 及裸字符串比较误判 | `src/infra/environment.ts`, `src/executor/dsh.ts`, `src/executor/workspace.ts`, `src/core/tickets.ts` | [02-p0-windows-path-case-canonicalization.md](./02-p0-windows-path-case-canonicalization.md) |
+| 02 | **P0** | 目录物理身份比较在未知态下缺少反向保守语义，且工单交接（Handoff）工作区分离校验无法识别软链 / Junction 与目录嵌套 | `src/infra/environment.ts`, `src/core/part.ts`, `src/core/tickets.ts`, `src/executor/dsh.ts`, `src/executor/workspace.ts` | [02-p0-windows-path-case-canonicalization.md](./02-p0-windows-path-case-canonicalization.md) |
 | 03 | **P0** | Fail-closed 后台停止隔离栅栏（`stopFailure`）与升级前排队工单缺乏受控运维解锁与迁移工具 | `src/executor/dsh.ts`, `src/executor/background.ts`, `scripts/dsh-superagent` | [03-p0-ticket-quarantine-and-legacy-pending-recovery.md](./03-p0-ticket-quarantine-and-legacy-pending-recovery.md) |
 | 04 | **P1** | `Sessions` 初始化类型签名遗漏 `tier`，且重启恢复已有 Session 时未挂载提示词变量同步钩子 | `src/app/sessions.ts`, `src/app/role-models.ts` | [04-p1-session-tier-signature-and-prompt-hook-resume.md](./04-p1-session-tier-signature-and-prompt-hook-resume.md) |
 | 05 | **P1** | IPv6 回环地址 `[::1]` 在运维脚本与服务端 `registerHttp` / `sameOrigin` 之间契约不一致 | `src/app/http.ts`, `scripts/restart-superagent.ps1`, `scripts/dsh-superagent` | [05-p1-loopback-ipv6-same-origin-alignment.md](./05-p1-loopback-ipv6-same-origin-alignment.md) |
