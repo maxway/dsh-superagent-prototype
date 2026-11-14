@@ -20,7 +20,7 @@ import { resultRelay } from '../app/notices.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { offPeakWait } from '../offpeak.ts'
 import { KV } from '../kv.ts'
-import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
+import { cancelled, collectJob, hasUnconfirmedSubagentCleanup, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
 
 const now = (): string => new Date().toISOString()
 /** Returns the worker session ID (`worker-<ticketId>`) for a ticket. */
@@ -457,7 +457,9 @@ export class DshExecutor implements Executor {
   }
   private recordStopFailure(ticketId: string, error: unknown): void {
     this.stopFailures.add(ticketId)
-    if (this.recordingStopFailures) this.host.store.set(KV.executor.stopFailure(ticketId), { at: now(), error: String(error) })
+    if (this.recordingStopFailures) this.host.store.set(KV.executor.stopFailure(ticketId), {
+      at: now(), error: String(error) + (hasUnconfirmedSubagentCleanup(error) ? '; reason=subagent_cleanup_unconfirmed' : ''),
+    })
   }
   private hasStopFailures(): boolean {
     try { return this.stopFailures.size > 0 || this.host.store.keys(KV.executor.stopFailure.prefix).length > 0

@@ -450,6 +450,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/admission-context.spec.ts` | 研判的线程窗口 |
 | `tests/assessment.spec.ts` | MasterAssessor 为每个评估保留什么，以及何时放手 |
 | `tests/background.spec.ts` | 等待 worker 的 shell 作业和子智能体：唤醒它的结束，以及宿主机停止 |
+| `tests/worker-guard.spec.ts` | 经 rc.3 工具管线验证 worker guard：拒绝原生子智能体调用、允许工作工具及 guard 启用前准备的调用 |
 | `tests/cleanup.spec.ts` | 已结束工单的工作目录和分支保持不变，包括处理旧清理副作用时 |
 | `tests/bundle-patch.spec.ts` | 打包产物的补丁，按 DeepSeek Harness 读取它的方式读取，以及它定义的执行器 Session 智能体预设 |
 | `tests/effects.spec.ts` | 副作用队列：合并、限制、带退避的重试、处理者自定的推迟延迟、健康和关停 |

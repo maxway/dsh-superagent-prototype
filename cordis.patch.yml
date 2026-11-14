@@ -18,9 +18,7 @@
     # It is DSH's `standard` preset with only what a worker needs, and a shell whose foreground command moves to a background job
     # after 5 seconds, so a long command does not hold back a person's message, which the Session takes at its next step. Left
     # out: questions to a person, presenting, plan mode, the plugin manager and market, scheduling, goals, workflows, web fetch,
-    # and forked subagents, which would run under this preset; spawned subagents run under `standard`, whose shell moves a
-    # command to a background job only after 60 seconds, as a subagent's jobs are killed when it ends. A preset row has no
-    # setting that hides it from the preset picker, so its name and description say whom it is for.
+    # and subagents. A preset row has no setting that hides it from the preset picker, so its name and description say whom it is for.
     - id: dsh-superagent-worker-preset
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -100,22 +98,6 @@
                   thresholdChars: 8192
                   headChars: 4096
                   tailChars: 1024
-          - id: delegation
-            name: cordis:group
-            group: true
-            isolate:
-              workflowEngine: true
-            config:
-              - id: tool-subagent-control
-                name: '@deepseek-ai/dsh-tool-subagent-control'
-              - id: tool-subagent
-                name: '@deepseek-ai/dsh-tool-subagent'
-                config:
-                  provider: spawn
-                  toolName: subagent
-                  modelSelection: true
-                  modelDiscovery: true
-                  agentPreset: standard
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
             config:
