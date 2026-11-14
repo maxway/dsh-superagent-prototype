@@ -1,6 +1,6 @@
 # 010 Session retention
 
-The candidate does not automatically delete an ended Ticket's worktree or local or remote branch. This document records the retention problem and historical proposals, not an implemented purge policy. `docs/013-workspace-lifecycle.md` describes this checkout's read-only reconciliation and its limitations. Do not assume the candidate is deployed or that any proposed deletion or recovery mechanism exists.
+The candidate does not automatically delete an ended Ticket's worktree or local or remote branch. This document records the retention problem and historical proposals, not an implemented purge policy. `docs/014-workspace-lifecycle.md` describes this checkout's read-only reconciliation and its limitations. Do not assume the candidate is deployed or that any proposed deletion or recovery mechanism exists.
 
 ## What accumulates
 
@@ -22,7 +22,7 @@ The previous launch path could run prepare if a Ticket's directory was missing, 
 
 ## Retention proposals are deferred
 
-Earlier versions of this document proposed a 45-day Ticket/Session purge, a daily sweep, a 12-hour trash window, pinning, a size cap and receipt pruning. None is an implemented guarantee or an approved policy. Age, a merged pull request, a clean status or a trash rename alone cannot authorize deletion. The safety, ownership, backup, process, concurrency and crash-recovery requirements in `docs/013-workspace-lifecycle.md` must be resolved before any destructive retention is considered. Historical workspaces or other remnants require explicit human confirmation, not automatic adoption or cleanup.
+Earlier versions of this document proposed a 45-day Ticket/Session purge, a daily sweep, a 12-hour trash window, pinning, a size cap and receipt pruning. None is an implemented guarantee or an approved policy. Age, a merged pull request, a clean status or a trash rename alone cannot authorize deletion. The safety, ownership, backup, process, concurrency and crash-recovery requirements in `docs/014-workspace-lifecycle.md` must be resolved before any destructive retention is considered. Historical workspaces or other remnants require explicit human confirmation, not automatic adoption or cleanup.
 
 A future Session purge would need a supported DSH deletion API coordinating the persistence write claim, Session generations, workspace membership and archive state, and projection cache. Archiving hides a Session rather than reclaiming its storage; deleting files behind DSH risks races and inconsistent state. A proposed fresh Session would not restore lost conversation, and a report or summary is not equivalent to that history. Receipt pruning also requires evidence about source redelivery and deduplication windows; no fixed expiry is established here.
 
