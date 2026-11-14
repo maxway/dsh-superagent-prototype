@@ -58,11 +58,21 @@ if (Listening $url.Port) {
   if (-not $state.health.runtime -or -not ($state.health.assessment -or $state.health.delivery -or $state.health.reply)) {
     throw 'The configured URL is not a Superagent server.'
   }
+  if ($state.health.runtime.state -eq 'error' -and $state.health.runtime.detail -like 'shutdown_failed:*') {
+    throw "$($state.health.runtime.detail) No forced kill or update was performed; investigate the original process and remaining work."
+  }
   Invoke-RestMethod -Method Post -Uri "$($url.AbsoluteUri.TrimEnd('/'))/orchestrator/api/service/stop" -Headers @{ 'x-orchestrator-request' = '1' } -TimeoutSec 10 | Out-Null
   $deadline = (Get-Date).AddMinutes(5)
   do {
     Start-Sleep -Milliseconds 500
     $listening = Listening $url.Port
+    if ($listening) {
+      $current = $null
+      try { $current = Invoke-RestMethod -Method Get -Uri "$($url.AbsoluteUri.TrimEnd('/'))/orchestrator/api/state" -Headers @{ 'x-orchestrator-request' = '1' } -TimeoutSec 2 } catch { }
+      if ($current.health.runtime.state -eq 'error' -and $current.health.runtime.detail -like 'shutdown_failed:*') {
+        throw "$($current.health.runtime.detail) No forced kill or update was performed; investigate the original process and remaining work."
+      }
+    }
   } while ($listening -and (Get-Date) -lt $deadline)
   if ($listening) { throw "Service is still listening on port $($url.Port)." }
 }

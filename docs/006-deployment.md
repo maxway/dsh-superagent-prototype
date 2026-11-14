@@ -236,7 +236,7 @@ names and `manually-stopped` marker apply on both.
 `stop` and `restart` request a graceful drain and wait up to five minutes for the process to exit. The Executor drain is
 bounded at ten seconds and DSH's launcher adds a five-second grace, so a stop normally finishes within about fifteen
 seconds; a worker still in a turn after the drain can be interrupted. On POSIX they never force-kill the process or
-touch other tmux sessions.
+touch other tmux sessions. If drain is unconfirmed, the candidate retains the process, database and state lock, reports `shutdown_failed` as a runtime health error (`status` exits 1), and rejects subsequent stop requests. Windows stop and the deployment restart entry report this failure without waiting for the timeout or updating. Investigate the original process and remaining work before recovery; do not force-kill it to proceed. Existing installations require a separate deployment of this candidate.
 
 `status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or
 set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`; in PowerShell, set `$env:DSH_SUPERAGENT_PROFILE` and
@@ -381,7 +381,7 @@ Agents may rely on these routes and fields. The other routes in `src/app/api.ts`
 | `PUT settings/<block>` with `{"value": …, "revision": n}` | Saves one block: `saved`, the block's new `revision`, `policy_changed` and `restarting`. `value` is the whole block, as `GET settings` holds it; a missing key takes its default |
 | `POST executor/pause` with `{"paused": true}` or `false` | Pauses or resumes processing: `paused` |
 | `POST setup/check` | Runs setup again by restarting dsh-superagent: `restarting: true`. Refused when setup has nothing to fix |
-| `POST service/stop` | Asks dsh-superagent to drain Executors, bounded at ten seconds, and then exit through DSH's launcher: `stopping: true`. Refused with 500 when the launcher provides no exit hook; the service script uses it to stop without a POSIX signal |
+| `POST service/stop` | Asks dsh-superagent to drain Executors, bounded at ten seconds, and then exit through DSH's launcher: `stopping: true`. Refused with 500 when the launcher provides no exit hook or a prior shutdown failed; the service script uses it to stop without a POSIX signal |
 | `POST policy-sync/<source id>` | Syncs that Source's allowed list now: `policy`, the Source's part as saved |
 | `GET prompts`, `PUT prompts` with `{"config", "baseRevision"}` | Reads the prompt configuration: `current`, with its `revision` and `config`, `defaults`, `sections`, the team sections in the order Sessions read them, `skillName`, the pattern of a team skill's name, `builtin`, the names a team skill cannot take, and `skillPrefix`, which Sessions load a skill's name under. Or saves it: the new `revision` |
 | `POST tickets/<id>/retry`, `POST tickets/<id>/stop` | Retries or stops a Ticket, as the panel does |

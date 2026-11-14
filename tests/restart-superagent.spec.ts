@@ -19,7 +19,7 @@ afterEach(() => {
   directory = undefined
 })
 
-async function fixture(status: number, superagent = true) {
+async function fixture(status: number, superagent = true, drainFails = false) {
   directory = mkdtempSync(join(tmpdir(), 'restart-superagent-'))
   const config = join(directory, 'service.json')
   const mock = join(directory, 'service.ps1')
@@ -27,15 +27,19 @@ async function fixture(status: number, superagent = true) {
   const update = join(directory, 'update.ps1')
   const requests: string[] = []
   const stopped = join(directory, 'stopped')
+  let stopRequested = false
   server = createServer((request, response) => {
     requests.push(`${request.method} ${request.url} ${request.headers['x-orchestrator-request']}`)
     if (request.method === 'GET') {
       response.writeHead(200, { 'content-type': 'application/json', connection: 'close' })
-        .end(JSON.stringify({ health: { runtime: { state: 'ready' }, ...(superagent ? { assessment: { state: 'ready' } } : {}) } }))
+        .end(JSON.stringify({ health: { runtime: stopRequested && drainFails
+          ? { state: 'error', detail: 'shutdown_failed: drain unconfirmed' } : { state: 'ready' },
+        ...(superagent ? { assessment: { state: 'ready' } } : {}) } }))
       return
     }
+    stopRequested = true
     response.writeHead(status, { connection: 'close' }).end()
-    if (status === 200) { writeFileSync(stopped, 'stopped'); server?.close() }
+    if (status === 200 && !drainFails) { writeFileSync(stopped, 'stopped'); server?.close() }
   })
   await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
   const port = (server.address() as AddressInfo).port
@@ -120,6 +124,13 @@ it.skipIf(process.platform !== 'win32')('does not start when the stop request fa
   expect(await run(value.config, value.mock, value.update)).not.toBe(0)
   expect(value.requests).toEqual(['GET /orchestrator/api/state 1', 'POST /orchestrator/api/service/stop 1'])
   expect(() => readFileSync(value.calls, 'utf8')).toThrow()
+}, 30000)
+
+it.skipIf(process.platform !== 'win32')('does not update when the shutdown drain fails', async () => {
+  const value = await fixture(200, true, true)
+  expect(await run(value.config, value.mock, value.update)).not.toBe(0)
+  expect(value.requests).toEqual(['GET /orchestrator/api/state 1', 'POST /orchestrator/api/service/stop 1', 'GET /orchestrator/api/state 1'])
+  expect(existsSync(value.calls)).toBe(false)
 }, 30000)
 
 it.skipIf(process.platform !== 'win32')('excludes recovery during a deployment update', async () => {
