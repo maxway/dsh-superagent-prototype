@@ -209,6 +209,17 @@ it('keeps what a person types in the Execution settings, converting it once on s
   expect(server.settings.executor).toMatchObject({ blockedCommands: ['gh-personal', 'gh-other'], directory: '/srv/my work', maxWorkers: 2 })
 })
 
+it('accepts Windows and POSIX execution directory inputs', async () => {
+  await mount()
+  await click(zh['tab.execution'])
+  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  const root = field<HTMLInputElement>(zh.executionDirectory)
+  for (const path of ['F:\\code\\worktrees', '\\\\server\\share\\worktrees', '/srv/worktrees', '']) {
+    await type(root, path)
+    expect(root.checkValidity()).toBe(true)
+  }
+})
+
 it('edits and saves the off-peak window with the Executor block', async () => {
   await mount()
   await click(tab(zh['tab.settings']))
