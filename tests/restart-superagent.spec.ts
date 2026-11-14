@@ -127,6 +127,9 @@ it.skipIf(process.platform !== 'win32')('excludes recovery during a deployment u
   const started = join(directory!, 'update-started')
   const release = join(directory!, 'release-update')
   writeFileSync(value.update, `param($Checkout)\nSet-Content -LiteralPath '${started.replaceAll("'", "''")}' -Value 'started'\nwhile (-not (Test-Path -LiteralPath '${release.replaceAll("'", "''")}')) { Start-Sleep -Milliseconds 50 }\n`)
+  const guardServer = createServer((_request, response) => response.writeHead(503).end())
+  await new Promise<void>(resolve => guardServer.listen(0, '127.0.0.1', resolve))
+  const guardUrl = `http://127.0.0.1:${(guardServer.address() as AddressInfo).port}`
   const deploying = run(value.config, value.mock, value.update)
   try {
     const deadline = Date.now() + 15000
@@ -137,13 +140,14 @@ it.skipIf(process.platform !== 'win32')('excludes recovery during a deployment u
     expect(result.stdout).toContain('in progress')
     for (const action of ['start', 'restart', 'stop']) {
       const direct = spawnSync(process.execPath, [join(import.meta.dirname, '..', 'scripts', 'dsh-superagent'), action,
-        '--home', directory!, '--profile', 'superagent', '--url', JSON.parse(readFileSync(value.config, 'utf8')).url], { encoding: 'utf8' })
+        '--home', directory!, '--profile', 'superagent', '--url', guardUrl], { encoding: 'utf8' })
       expect(direct.status).not.toBe(0)
       expect(direct.stderr).toContain('in progress')
     }
     expect(existsSync(value.calls)).toBe(false)
   } finally {
     writeFileSync(release, 'release')
+    guardServer.close()
     expect(await deploying).toBe(0)
   }
 }, 30000)

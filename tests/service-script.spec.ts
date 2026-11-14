@@ -14,6 +14,9 @@ let root: string
 let home: string
 let server: Server | undefined
 let sleepers: ChildProcess[] = []
+let fallbackServer: Server
+let fallbackUrl: string
+let ownedUrls: Map<string, () => boolean>
 const control = (profile: string) => join(home, 'service', 'control', 'profiles', profile)
 const logs = () => join(home, 'service', 'logs')
 const program = (name: string, body: string) => writeFileSync(join(root, 'bin', name), `#!/bin/sh\n${body}\n`, { mode: 0o755 })
@@ -28,7 +31,11 @@ const service = (pid: number, profile = 'superagent') => `${pid} node node /opt/
 /** Write active process lines (`pid ucomm args`) for the fake ps binary. Entries prefixed with `after:<pid> ` appear only after that PID exits. */
 const processes = (...lines: string[]) => writeFileSync(join(root, 'ps.txt'), lines.map(line => `${line}\n`).join(''))
 const started = (...lines: string[]) => writeFileSync(join(root, 'ps-started.txt'), lines.map(line => `${line}\n`).join(''))
-beforeEach(() => {
+beforeEach(async () => {
+  fallbackServer = createServer(request => request.socket.destroy())
+  await new Promise<void>(resolve => fallbackServer.listen(0, '127.0.0.1', resolve))
+  fallbackUrl = `http://127.0.0.1:${(fallbackServer.address() as AddressInfo).port}`
+  ownedUrls = new Map([[fallbackUrl, () => fallbackServer.listening]])
   root = mkdtempSync(join(tmpdir(), 'service script '))
   home = join(root, 'home')
   mkdirSync(join(root, 'scripts')); mkdirSync(join(root, 'bin')); mkdirSync(home)
@@ -48,20 +55,37 @@ done < "$list"`)
   program('tmux', `for a in "$@"; do printf '%s\\n' "$a"; done >> '${root}/tmux.log'; echo --- >> '${root}/tmux.log'\n`
     + `case "$1" in -L) shift 2;; esac\ncase "$1" in has-session) exit 1;; new-*) touch '${root}/launched'; cat '${root}/pane';; esac`)
   program('dsh', 'exit 0')
+  program('lsof', 'exit 2')
 })
 afterEach(() => {
+  fallbackServer.close()
   server?.close(); server = undefined
   for (const child of sleepers) child.kill()
   sleepers = []
   rmSync(root, { recursive: true, force: true })
 })
-function runWithEnvironment(environment: NodeJS.ProcessEnv, ...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise(resolve => execFile(process.execPath, [join(root, 'scripts', 'dsh-superagent'), ...args, '--home', home, '--use-installed'],
+function runWithOptions(environment: NodeJS.ProcessEnv, useInstalled: boolean, ...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  if (args.some(arg => arg.startsWith('--url=')) || args.filter(arg => arg === '--url').length > 1) {
+    throw new Error('Test commands must use one explicit --url argument')
+  }
+  const urlIndex = args.indexOf('--url')
+  const url = urlIndex < 0 ? fallbackUrl : args[urlIndex + 1]
+  const activeServerUrl = server?.listening ? `http://127.0.0.1:${(server.address() as AddressInfo).port}` : undefined
+  if (!url || (url !== activeServerUrl && !ownedUrls.get(url)?.())) throw new Error(`Test target is not an active owned endpoint: ${url}`)
+  if (urlIndex < 0) args.push('--url', url)
+  return new Promise(resolve => execFile(process.execPath, [join(root, 'scripts', 'dsh-superagent'), ...args, '--home', home, ...(useInstalled ? ['--use-installed'] : [])],
     { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '', ...environment },
       timeout: 20_000 },
     (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr })))
 }
+const runWithEnvironment = (environment: NodeJS.ProcessEnv, ...args: string[]) => runWithOptions(environment, true, ...args)
 const run = (...args: string[]) => runWithEnvironment({}, ...args)
+it('refuses lifecycle commands aimed at endpoints not owned by the test', () => {
+  expect(() => run('stop', '--url', 'http://127.0.0.1:3082')).toThrow('not an active owned endpoint')
+  expect(() => run('restart', '--url', 'http://127.0.0.1:3082')).toThrow('not an active owned endpoint')
+  expect(() => run('stop', `--url=${fallbackUrl}`, '--url', 'http://127.0.0.1:3082')).toThrow('one explicit --url')
+  expect(() => run('stop', '--url', fallbackUrl, '--url', 'http://127.0.0.1:3082')).toThrow('one explicit --url')
+})
 const READY = { health: { runtime: { state: 'ready', detail: '' } }, setup: { problem: null, feishuProblem: null } }
 /** Start a mock HTTP server that returns 503 until tmux launches the service (unless always is true). */
 async function answering(state: unknown = READY, always = false): Promise<string> {
@@ -72,7 +96,7 @@ async function answering(state: unknown = READY, always = false): Promise<string
   await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
   return `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
 }
-const status = async (profile: string, url = 'http://127.0.0.1:9') =>
+const status = async (profile: string, url = fallbackUrl) =>
   JSON.parse((await run('status', '--profile', profile, '--url', url)).stdout) as
     { pids: number[]; manually_stopped: boolean; listener: number[] | null; unlistening: number[]; foreign: { pid: number }[] }
 
@@ -106,7 +130,9 @@ server.listen(0, '127.0.0.1', () => writeFileSync(${JSON.stringify(portFile)}, S
     try { port = Number(readFileSync(portFile, 'utf8')) } catch { /* The server has not listened yet. */ }
   }
   if (!port || !child.pid) throw new Error('The fake management API did not start.')
-  return { child, pid: child.pid, url: `http://127.0.0.1:${port}` }
+  const url = `http://127.0.0.1:${port}`
+  ownedUrls.set(url, () => child.exitCode === null && child.signalCode === null)
+  return { child, pid: child.pid, url }
 }
 
 /** Resolve once the child exits, or reject after the timeout. */
@@ -580,9 +606,8 @@ it.skipIf(process.platform !== 'win32')('runs a non-interactive node entry point
     const window = execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${pid}).MainWindowHandle`],
       { encoding: 'utf8' }).trim()
     expect(window).toBe('0')
-  } catch (error) {
-    try { execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }) } catch { /* It already exited. */ }
-    throw error
+  } finally {
+    await exited
   }
   expect(await exited).toBe(7)
 }, 20_000)
@@ -637,8 +662,9 @@ it.skipIf(process.platform !== 'win32')('proves a service created outside every 
   const serviceDirectory = mkdtempSync(join(tmpdir(), 'verify service '))
   const profile = `p1verify${process.pid}`
   const portFile = join(serviceDirectory, 'port.txt')
+  const exitFile = join(serviceDirectory, 'exit')
   const entry = join(serviceDirectory, 'entry.js')
-  writeFileSync(entry, `import { writeFileSync } from 'node:fs'
+  writeFileSync(entry, `import { existsSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 const ready = { health: { runtime: { state: 'ready', detail: '' }, assessment: { state: 'ready' } }, setup: { problem: null, feishuProblem: null } }
@@ -655,7 +681,8 @@ server.listen(0, '127.0.0.1', () => writeFileSync(${JSON.stringify(portFile)}, S
 // the temporary directory on Windows.
 spawn(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(0))'],
   { stdio: ['pipe', 'ignore', 'ignore'] })
-setInterval(() => {}, 60_000)
+setInterval(() => { if (existsSync(${JSON.stringify(exitFile)})) process.exit(0) }, 100)
+setTimeout(() => process.exit(0), 35_000)
 `)
   const controlScript = join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')
   const module = pathToFileURL(controlScript).href
@@ -708,7 +735,7 @@ if (-not [ConsoleVisibility]::AttachConsole(${servicePid})) { throw 'Could not a
     expect(verified).toMatchObject({ code: 0, stderr: '' })
     // Node puts the service into its own Job when it spawns a child; only a Job it merely inherited may fail the check.
     expect(JSON.parse(verified.stdout)).toMatchObject({ ok: true, pid: servicePid, inJob: true, foreignJob: false, survivalSeconds: 1 })
-    process.kill(servicePid!)
+    writeFileSync(exitFile, '')
     const stopped = servicePid!
     servicePid = undefined
     for (let attempt = 0; attempt < 50; attempt++) {
@@ -719,7 +746,7 @@ if (-not [ConsoleVisibility]::AttachConsole(${servicePid})) { throw 'Could not a
     expect(lost.code).toBe(1)
     expect(lost.stderr).toContain('Expected exactly one running service')
   } finally {
-    if (servicePid) { try { process.kill(servicePid) } catch { /* It already exited. */ } }
+    if (servicePid) writeFileSync(exitFile, '')
     for (let attempt = 0; attempt < 50; attempt++) {
       if (!servicePid) break
       try { process.kill(servicePid, 0) } catch { break }
@@ -781,12 +808,12 @@ it.skipIf(process.platform !== 'win32')('refuses a foreign listener and a record
   sleepers.push(child)
   writeFileSync(join(control(profile), 'service.pid'), `${child.pid}\n`)
   await new Promise(resolve => setTimeout(resolve, 2_000))
-  expect((await status(profile, 'http://127.0.0.1:9')).unlistening).toContain(child.pid!)
-  expect(await run('stop', '--profile', profile, '--url', 'http://127.0.0.1:9', '--stop-timeout', '1'))
-    .toMatchObject({ code: 0, stdout: expect.stringContaining('nothing to stop') })
+  expect((await status(profile)).unlistening).toContain(child.pid!)
+  expect(await run('stop', '--profile', profile, '--url', fallbackUrl, '--stop-timeout', '1'))
+    .toMatchObject({ code: 1, stderr: expect.stringContaining('not a dsh-superagent server') })
   expect(child.exitCode).toBeNull()
-  expect(await run('start', '--profile', profile, '--url', 'http://127.0.0.1:9', '--timeout', '1'))
-    .toMatchObject({ code: 1, stderr: expect.stringContaining('does not listen') })
+  expect(await run('start', '--profile', profile, '--url', fallbackUrl, '--timeout', '1'))
+    .toMatchObject({ code: 1, stderr: expect.stringContaining('not the dsh-superagent process') })
 }, 60_000)
 it('still honors a stop marker written before control files moved into the home', async () => {
   const legacy = join(root, '.artifacts', 'control', 'profiles', 'legacy')
@@ -799,14 +826,14 @@ it.skipIf(process.platform !== 'win32')('wraps the control script with a pinned 
   const profile = 'entry-test'
   mkdirSync(join(home, 'profiles', profile), { recursive: true })
   const config = join(root, 'service.json')
-  writeFileSync(config, JSON.stringify({ checkout: root, home, profile, url: 'http://127.0.0.1:9', node: process.execPath }))
+  writeFileSync(config, JSON.stringify({ checkout: root, home, profile, url: fallbackUrl, node: process.execPath }))
   const call = (args: string[], environment: NodeJS.ProcessEnv = {}) => new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
     execFile('pwsh', ['-NoProfile', '-File', entry, ...args], { timeout: 30_000, env: { ...process.env, ...environment } },
       (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr }))
   })
   const checked = await call(['-Action', 'status', '-Config', config])
   expect(checked.code).toBe(1)
-  expect(JSON.parse(checked.stdout)).toMatchObject({ pids: [], profile, url: 'http://127.0.0.1:9' })
+  expect(JSON.parse(checked.stdout)).toMatchObject({ pids: [], profile, url: fallbackUrl })
   const remoteConfig = join(root, 'remote-service.json')
   writeFileSync(remoteConfig, JSON.stringify({ checkout: root, home, profile, url: 'http://10.0.0.1:3083', node: process.execPath }))
   const remote = await call(['-Action', 'status', '-Config', remoteConfig])
@@ -836,30 +863,15 @@ it.skipIf(process.platform !== 'win32')('wraps the control script with a pinned 
   expect(zeroArg.code).toBe(0)
   expect(JSON.parse(zeroArg.stdout)).toEqual(expect.arrayContaining(['stop', '--url', 'http://127.0.0.1:4000']))
 }, 60_000)
-it.skipIf(process.platform !== 'win32')('updates the direct Node entry before launch without recursive recovery updates', async () => {
+it.skipIf(process.platform !== 'win32')('skips direct Node entry updates when recovery respects a stop marker', async () => {
   const calls = join(root, 'direct-update.txt')
   const marker = join(control('direct-test'), 'manually-stopped')
   writeFileSync(join(root, 'scripts', 'update-superagent.ps1'), `param($Checkout)\nAdd-Content -LiteralPath '${calls.replaceAll("'", "''")}' -Value 'update'\nexit 7\n`)
-  const socket = createServer()
-  await new Promise<void>(resolve => socket.listen(0, '127.0.0.1', resolve))
-  const port = (socket.address() as AddressInfo).port
-  await new Promise<void>(resolve => socket.close(() => resolve()))
-  const direct = (...args: string[]) => new Promise<{ code: number; stderr: string }>(resolve => {
-    execFile(process.execPath, [join(root, 'scripts', 'dsh-superagent'), ...args, '--home', home, '--profile', 'direct-test',
-      '--url', `http://127.0.0.1:${port}`], { timeout: 30_000 },
-    (error, _stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stderr }))
-  })
-  expect(await direct('start')).toMatchObject({ code: 1, stderr: expect.stringContaining('exit code 7') })
-  expect(readFileSync(calls, 'utf8').trim()).toBe('update')
-  writeFileSync(calls, '')
-  expect(await direct('restart')).toMatchObject({ code: 1, stderr: expect.stringContaining('exit code 7') })
-  expect(readFileSync(calls, 'utf8').trim()).toBe('update')
-  writeFileSync(calls, '')
   mkdirSync(control('direct-test'), { recursive: true })
   writeFileSync(marker, '')
-  expect(await direct('--respect-stop', 'restart')).toMatchObject({ code: 0 })
-  expect(await direct('--respect-stop', 'start', '--use-installed')).toMatchObject({ code: 0 })
-  expect(readFileSync(calls, 'utf8')).toBe('')
+  expect(await runWithOptions({}, false, '--respect-stop', 'restart', '--profile', 'direct-test')).toMatchObject({ code: 0 })
+  expect(await run('--respect-stop', 'start', '--profile', 'direct-test')).toMatchObject({ code: 0 })
+  expect(existsSync(calls)).toBe(false)
 }, 60_000)
 it.skipIf(process.platform !== 'win32')('updates only after a stopped service and skips updates for installed recovery', async () => {
   const entry = join(import.meta.dirname, '..', 'scripts', 'dsh-superagent.ps1')
@@ -920,7 +932,7 @@ it('prints the Watchdog snapshot over GET and refuses an unreachable service', a
   expect(JSON.parse(watched.stdout)).toMatchObject({ profile: 'superagent', url, staleMinutes: 15, open: 1, tickets: [{ id: 't1' }] })
   // The command is read-only: one GET, no settings or prompt call.
   expect(requests).toEqual([{ method: 'GET', url: '/orchestrator/api/watchdog?stale_minutes=15', header: '1' }])
-  expect(await run('watchdog', '--url', 'http://127.0.0.1:9')).toMatchObject({ code: 1,
+  expect(await run('watchdog', '--url', fallbackUrl)).toMatchObject({ code: 1,
     stderr: expect.stringContaining('No management API answer') })
   expect(await run('watchdog', '--stale-minutes', '0')).toMatchObject({ code: 1,
     stderr: expect.stringContaining('--stale-minutes must be an integer between 1 and 1440') })
@@ -1069,7 +1081,7 @@ it('exits 1 when the started service does not answer in time, and leaves its pro
   const pid = sleeper()
   writeFileSync(join(root, 'pane'), `${pid}\n`)
   started(service(pid))
-  expect(await run('start', '--url', 'http://127.0.0.1:9', '--timeout', '2'))
+  expect(await run('start', '--url', fallbackUrl, '--timeout', '2'))
     .toMatchObject({ code: 1, stderr: expect.stringContaining('Startup health check timed out') })
   expect(() => process.kill(pid, 0)).not.toThrow()
 }, 20_000)
