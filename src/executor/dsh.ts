@@ -532,6 +532,7 @@ export class DshExecutor implements Executor {
       }))
       lease.signal.throwIfAborted()
       for (const { collect } of this.left.values()) collect.abort()
+      while (this.stopping.size) await Promise.all(this.stopping.values())
       const failures = [...registrationFailures, ...results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])]
       if (failures.length) throw new AggregateError(failures, 'Could not finish worker shutdown')
     }
