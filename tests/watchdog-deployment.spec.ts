@@ -22,10 +22,11 @@ function fixture(script: string) {
   const request = join(directory, 'request.json')
   const resultFile = join(directory, 'results', 'result.json')
   const deployConfig = join(directory, 'config.json')
+  const serviceHome = join(directory, 'service-home')
   writeFileSync(join(checkout, 'scripts', 'deploy.mjs'), script.replaceAll('RECORD_PATH', JSON.stringify(record)))
-  writeFileSync(deployConfig, JSON.stringify({ requestPath: request, resultFile }))
+  writeFileSync(deployConfig, JSON.stringify({ checkout, serviceHome, requestPath: request, resultFile }))
   writeFileSync(request, '{"confirmation":"test","target":"latest"}')
-  return { checkout, deployConfig, record, request, resultFile }
+  return { checkout, deployConfig, serviceHome, record, request, resultFile }
 }
 
 it('runs asynchronously and claims a request across competing pollers', async () => {
@@ -46,9 +47,30 @@ it('chooses the checkout configured for deployment over the fallback checkout', 
   const fallback = join(directory!, 'fallback')
   mkdirSync(join(fallback, 'scripts'), { recursive: true })
   writeFileSync(join(fallback, 'scripts', 'deploy.mjs'), 'process.exitCode = 9')
-  writeFileSync(value.deployConfig, JSON.stringify({ checkout: value.checkout, requestPath: value.request, resultFile: value.resultFile }))
+  writeFileSync(value.deployConfig, JSON.stringify({ checkout: value.checkout, serviceHome: value.serviceHome, requestPath: value.request, resultFile: value.resultFile }))
   expect((await createDeploymentPoller({ ...value, checkout: fallback }).poll()).status).toBe('exited')
   expect(readFileSync(value.record, 'utf8')).toBe('configured')
+})
+
+it('ignores an inherited service home and its configured checkout', async () => {
+  const value = fixture("import { writeFileSync } from 'node:fs'; writeFileSync(RECORD_PATH, 'fixture')")
+  const inheritedHome = join(directory!, 'inherited-home')
+  const inheritedCheckout = join(directory!, 'inherited-checkout')
+  const inheritedRecord = join(directory!, 'inherited-record')
+  mkdirSync(inheritedHome, { recursive: true })
+  mkdirSync(join(inheritedCheckout, 'scripts'), { recursive: true })
+  writeFileSync(join(inheritedHome, 'service.json'), JSON.stringify({ checkout: inheritedCheckout, url: 'http://127.0.0.1:3083' }))
+  writeFileSync(join(inheritedCheckout, 'scripts', 'deploy.mjs'), `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(inheritedRecord)}, 'unexpected')`)
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = inheritedHome
+  try {
+    expect((await createDeploymentPoller(value).poll()).status).toBe('exited')
+    expect(readFileSync(value.record, 'utf8')).toBe('fixture')
+    expect(existsSync(inheritedRecord)).toBe(false)
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+  }
 })
 
 it('suppresses failed requests across restarts and accepts changed content', async () => {
