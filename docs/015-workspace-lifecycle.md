@@ -1,4 +1,4 @@
-# 014 Safe workspace lifecycle
+# 015 Safe workspace lifecycle
 
 Status: **implementation in progress**. This checkout replaces destructive cleanup with read-only per-Ticket observations and stores the latest report; it does not yet implement automatic resource deletion, retention, ownership adoption or automatic restoration. The selected policy is restricted automatic cleanup of verified Superagent-owned local resources and conditional deletion of verified merged Superagent-owned remote branches. This is not a claim about the deployed version and does not authorize operations on production. See [session retention](010-session-retention.md) and [worker handoff](012-worker-handoff.md).
 

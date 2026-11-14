@@ -320,7 +320,7 @@ observer 使用原子独占 PID 锁。异常退出可能留下锁，系统不会
    git -C C:\src\widgets worktree add -b "agent/$($env:DSH_SUPERAGENT_NAME)" "$($env:DSH_SUPERAGENT_DIR)" "refs/dsh-superagent/$($env:DSH_SUPERAGENT_TICKET)"
    ```
 
-   把个人 CLI（例如登录你自己账号的 CLI）列为禁止调用的命令。旧版执行器清理可能删除已结束工单的链接 worktree 和 ref，并尝试删除远端分支；已部署版本可能仍会这样做，其检查不能证明被忽略的数据、外部使用者或远端更新安全。取回的 ref 不能证明远端有持久副本，远端比较和删除也不是原子操作。lifecycle 候选版本改为逐工单只读对账，并在工单详情中保留最新报告；工单结束不会自动删除 worktree、本地分支或远端分支。这不代表该版本已部署。历史残留需要人工确认。恢复或考虑清理前参见 `docs/014-workspace-lifecycle.md`；不要未经恢复审查就用当前 prepare 命令重建缺失的旧工作树。
+   把个人 CLI（例如登录你自己账号的 CLI）列为禁止调用的命令。旧版执行器清理可能删除已结束工单的链接 worktree 和 ref，并尝试删除远端分支；已部署版本可能仍会这样做，其检查不能证明被忽略的数据、外部使用者或远端更新安全。取回的 ref 不能证明远端有持久副本，远端比较和删除也不是原子操作。lifecycle 候选版本改为逐工单只读对账，并在工单详情中保留最新报告；工单结束不会自动删除 worktree、本地分支或远端分支。这不代表该版本已部署。历史残留需要人工确认。恢复或考虑清理前参见 `docs/015-workspace-lifecycle.md`；不要未经恢复审查就用当前 prepare 命令重建缺失的旧工作树。
 
    rc.3 兼容候选从 worker 预设移除原生子智能体工具，并对已识别的受管理 worker 及子智能体拒绝已知原生工具，包括使用旧预设的 worker。它不能撤销已准备的调用，也不能覆盖其他入口、外部或 GUI 工作及未识别子智能体，并非完整隔离。rc.2/rc.3 路径尽力 interrupt 已登记 child 并等待树工作，而非释放 activation；待处理 inbox 或本地 activation 可能保留并再次唤醒，目录也可能遗漏工作。目录只要含 child 或 diagnostic（包括历史记录），或观察到树工作，即使没有其他错误也报告清理未确认；目录为空或等待返回 false 不能证明没有遗留活动。既有持久化 Ticket 隔离会阻断后续自动工作，重启后仍显示 worker 健康错误，且不会自动解除。意图记录前崩溃、GUI 直接操作及未确认的外部工作仍不受保护。rc.1 路径不同。同进程关闭失败时，候选保留数据库及状态锁，防止另一个 Runtime 打开；如果某 worker 的停止意图无法写入，候选不会取消或清理该 worker，必须人工核查。恢复前须核查原进程与残余工作。HTTP 请求关闭失败时，候选记录错误且不调用进程退出钩子；进程保留在关闭状态供排查，不再提供正常服务。这不能证明外部工作已停止，也不代表已部署到生产。
 4. **提示词。** 设置团队段落：GitHub 声明行、评审机器人、提交作者和自动合并条件。
@@ -409,7 +409,7 @@ Windows 上使用当前 Windows 版本自带的 `curl.exe`，把 `cli` 设为 `g
 
 本机普通升级由独立环境使用上文的机械部署入口：停止服务后拉取 `origin/main`、安装依赖、构建并启动。它不创建备份或回滚，失败可能停机；如需备份，应事先独立取得一致且验证过的备份，不能假定在线复制单个 SQLite 文件就是一致备份。
 
-重启会结束正在运行的派工，并带恢复说明启动替代的派工。这不能验证原工作区或隔离恢复后的 worker：恢复前应核验工作树、分支、未提交工作和 Session 工作目录；原目录缺失或不匹配时应停止并由运维恢复。参见 `docs/014-workspace-lifecycle.md`。团队文本和被覆盖的提示词段落会保留；没有覆盖的段落跟随新的默认内容。升级后检查标记为 **默认内容已更新** 的段落。
+重启会结束正在运行的派工，并带恢复说明启动替代的派工。这不能验证原工作区或隔离恢复后的 worker：恢复前应核验工作树、分支、未提交工作和 Session 工作目录；原目录缺失或不匹配时应停止并由运维恢复。参见 `docs/015-workspace-lifecycle.md`。团队文本和被覆盖的提示词段落会保留；没有覆盖的段落跟随新的默认内容。升级后检查标记为 **默认内容已更新** 的段落。
 
 由更新版本迁移过的数据库无法被旧版本打开。因此回滚需要升级前的备份。升级 DeepSeek Harness 本身之后，重启正在运行的实例，以便面板加载匹配的构建产物。
 
@@ -429,7 +429,7 @@ Windows 上使用当前 Windows 版本自带的 `curl.exe`，把 `cli` 设为 `g
 | `@… cannot read …` 或 `@… cannot push to …` | 给智能体账号授予仓库写权限 |
 | `The GitHub Source names no repository.` | 在 GitHub 卡片上设置仓库，`owner/name` |
 | 工单失败并报 `The prepare command failed: …` | 输出会指出原因，例如错误的克隆路径；修正命令，然后重试该工单 |
-| 已结束工单的 worktree 仍留在 `<stateDir>/work/…` | 这是候选版本的预期行为：工单结束不会自动删除 worktree 或分支。保留目录，并在任何手动操作前调查归属、被忽略及其他本地数据、活跃使用者和恢复需求。已部署的旧版本可能在宿主启动时再次尝试清理；历史残留需要人工确认。参见 `docs/014-workspace-lifecycle.md` |
+| 已结束工单的 worktree 仍留在 `<stateDir>/work/…` | 这是候选版本的预期行为：工单结束不会自动删除 worktree 或分支。保留目录，并在任何手动操作前调查归属、被忽略及其他本地数据、活跃使用者和恢复需求。已部署的旧版本可能在宿主启动时再次尝试清理；历史残留需要人工确认。参见 `docs/015-workspace-lifecycle.md` |
 | 找不到 `pwsh`，或准备命令报 PowerShell 错误 | 安装 PowerShell 7 并把 `pwsh` 放到 `PATH` 上；准备命令不使用 Windows PowerShell 5.1 |
 | Windows 上启动时报 `dsh must be on PATH.` | 全局安装 DSH 并打开新的 shell；`start` 会解析 npm 的 `dsh.cmd` |
 | PowerShell 或 `cmd.exe` 无法运行 `scripts\dsh-superagent` | 该脚本在 Windows 上没有 `.cmd` shim；请运行 `pwsh scripts\dsh-superagent.ps1 <action>`，环境已设置好时也可 `node scripts\dsh-superagent <command>` |
