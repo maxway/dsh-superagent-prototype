@@ -77,7 +77,7 @@ const status = async (profile: string, url = 'http://127.0.0.1:9') =>
     { pids: number[]; manually_stopped: boolean; listener: number[] | null; unlistening: number[]; foreign: { pid: number }[] }
 
 /** A fake management API process whose command line serves `profile` and that exits on the stop route. */
-async function fakeService(profile: string, superagent = true): Promise<{ child: ChildProcess; pid: number; url: string }> {
+async function fakeService(profile: string, superagent = true, drainFails = false): Promise<{ child: ChildProcess; pid: number; url: string }> {
   const directory = mkdtempSync(join(root, 'fake service '))
   const portFile = join(directory, 'port.txt')
   const entry = join(directory, 'entry.js')
@@ -91,7 +91,8 @@ const server = createServer((request, response) => {
   }
   if (request.method === 'POST' && request.url === '/orchestrator/api/service/stop') {
     response.writeHead(200, { 'content-type': 'application/json' }).end('{"stopping":true}')
-    setTimeout(() => process.exit(0), 50)
+    if (${drainFails}) { ready.health.runtime = { state: 'error', detail: 'shutdown_failed: drain unconfirmed' } }
+    else setTimeout(() => process.exit(0), 50)
     return
   }
   response.writeHead(404).end()
@@ -742,6 +743,16 @@ it.skipIf(process.platform !== 'win32')('stops the process that owns the managem
   expect((await status(profile, second.url)).pids).toEqual([second.pid])
   second.child.kill()
 }, 30_000)
+it.skipIf(process.platform !== 'win32')('reports a failed drain without killing the retained service', async () => {
+  const profile = `failed-drain-${randomUUID()}`
+  const service = await fakeService(profile, true, true)
+  expect(await run('stop', '--profile', profile, '--url', service.url, '--stop-timeout', '10'))
+    .toMatchObject({ code: 1, stderr: expect.stringContaining('shutdown_failed: drain unconfirmed') })
+  expect(service.child.exitCode).toBeNull()
+  const current = await run('status', '--profile', profile, '--url', service.url)
+  expect(current).toMatchObject({ code: 1, stdout: expect.stringContaining('shutdown_failed: drain unconfirmed') })
+}, 30_000)
+
 it.skipIf(process.platform !== 'win32')('stops an explicit superagent URL without relying on its process command line', async () => {
   const service = await fakeService(`other-${randomUUID()}`)
   expect(await run('stop', '--profile', `unknown-${randomUUID()}`, '--url', service.url, '--stop-timeout', '10'))

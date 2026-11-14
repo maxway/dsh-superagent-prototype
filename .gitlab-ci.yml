@@ -12,6 +12,7 @@ windows-check:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   timeout: 30m
   script:
+    - $env:DSH_HOME = Join-Path $env:TEMP ("dsh-ci-" + $env:CI_JOB_ID)
     - node --version
     - pnpm --version
     - pnpm install --frozen-lockfile

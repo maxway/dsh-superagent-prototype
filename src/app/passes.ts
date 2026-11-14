@@ -42,7 +42,9 @@ export class Passes {
     this.pump().then(() => {
       if (health.get()?.state !== 'error' || this.host.lifetime.aborted) return
       health.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
-    }, (error: unknown) => { health.set({ state: 'error', detail: `A pass failed: ${String(error)}`, at: now() }) })
+    }, (error: unknown) => {
+      if (!this.host.lifetime.aborted) health.set({ state: 'error', detail: `A pass failed: ${String(error)}`, at: now() })
+    })
   }
   /** Wait until no pass or effect that can start now is running. */
   async idle(): Promise<void> {
