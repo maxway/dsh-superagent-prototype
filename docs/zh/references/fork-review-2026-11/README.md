@@ -22,12 +22,11 @@
 
 ## 二、 问题索引与优先级排序
 
-以下 10 项问题按优先级（`P0 高优` → `P1 中优` → `P2 低优`）排序，每项问题均配有独立的根因分析与修复方案说明文档：
+以下未清理的问题按优先级（`P0 高优` → `P1 中优` → `P2 低优`）排序，每项问题均配有独立的根因分析与修复方案说明文档：
 
 | 序号 | 优先级 | 问题标题 | 核心涉及模块 | 修复方案文档 |
 | :---: | :---: | --- | --- | --- |
 | 01 | **P0** | 停机排空失败使服务滞留“监听存活但内部瘫痪”僵尸态，且无法再次优雅停机或被健康检查识别 | `src/app/runtime.ts`, `scripts/restart-superagent.ps1`, `scripts/dsh-superagent` | [01-p0-shutdown-drain-zombie-state.md](./01-p0-shutdown-drain-zombie-state.md) |
-| 02 | **P0** | 目录物理身份比较在未知态下缺少反向保守语义，且工单交接（Handoff）工作区分离校验无法识别软链 / Junction 与目录嵌套 | `src/infra/environment.ts`, `src/core/part.ts`, `src/core/tickets.ts`, `src/executor/dsh.ts`, `src/executor/workspace.ts` | [02-p0-windows-path-case-canonicalization.md](./02-p0-windows-path-case-canonicalization.md) |
 | 03 | **P0** | Fail-closed 后台停止隔离栅栏（`stopFailure`）与升级前排队工单缺乏受控运维解锁与迁移工具 | `src/executor/dsh.ts`, `src/executor/background.ts`, `scripts/dsh-superagent` | [03-p0-ticket-quarantine-and-legacy-pending-recovery.md](./03-p0-ticket-quarantine-and-legacy-pending-recovery.md) |
 | 04 | **P1** | `Sessions` 初始化类型签名遗漏 `tier`，且重启恢复已有 Session 时未挂载提示词变量同步钩子 | `src/app/sessions.ts`, `src/app/role-models.ts` | [04-p1-session-tier-signature-and-prompt-hook-resume.md](./04-p1-session-tier-signature-and-prompt-hook-resume.md) |
 | 05 | **P1** | IPv6 回环地址 `[::1]` 在运维脚本与服务端 `registerHttp` / `sameOrigin` 之间契约不一致 | `src/app/http.ts`, `scripts/restart-superagent.ps1`, `scripts/dsh-superagent` | [05-p1-loopback-ipv6-same-origin-alignment.md](./05-p1-loopback-ipv6-same-origin-alignment.md) |
@@ -41,7 +40,7 @@
 
 ## 三、 建议修复批次与实施注意事项
 
-1. **第一批（生产发布阻塞项 / P0）**：优先处理 **01、02、03**。这三项直接影响 Windows 原生部署下的停机可观测性、跨盘符/大小写路径恢复校验，以及升级到 `rc.3` 候选版后历史子代理工单与排队工单的恢复运维闭环。
+1. **第一批（生产发布阻塞项 / P0）**：优先处理 **01、03**，涉及停机可观测性及升级到 `rc.3` 候选版后的工单恢复运维。
 2. **第二批（运行时一致性与部署幂等 / P1）**：依次处理 **04、06、05、07**。其中 **04** 和 **06** 改动小、收益明确；**07** 涉及删除/收敛 `src/` 与 `tests/` 文件，需同步更新 `docs/007-architecture.md`（及 `docs/zh/007-architecture.md`）以通过 `tests/docs.spec.ts` 一致性测试。
 3. **第三批（防御纵深与演进整洁度 / P2）**：处理 **08、09、10**，可在常规迭代或启用自动引用清理前按需推进。
 4. **自举开发红线提醒**：所有实际代码修复均须遵循仓库根目录 `AGENTS.md` 规范，在独立任务 worktree 与非生产 Profile / DSH Home（禁用飞书）中开发并跑通 `pnpm check`，严禁在稳定检出目录直接执行构建或停止生产进程。

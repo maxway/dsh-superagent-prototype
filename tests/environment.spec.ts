@@ -5,7 +5,7 @@ import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { GIT_LOCATION, accountVariables, agentVariables, credentialHelper, deploymentAccountVariables, runAsWorker, verifyDirectory, withoutDirectory,
+import { GIT_LOCATION, accountVariables, agentVariables, credentialHelper, deploymentAccountVariables, runAsWorker, verifyDirectory, withoutDirectory, sameDirectory,
   workerBin, workerGitConfig, writeEnvironment } from '../src/infra/environment.ts'
 import { workerProbe } from '../src/deployment.ts'
 import { CliError } from '../src/infra/commands.ts'
@@ -184,6 +184,21 @@ it('fails instead of asking the operator\'s askpass helpers when the agent\'s cr
   fill.child.stdin?.end('protocol=https\nhost=github.com\n\n')
   await expect(fill).rejects.toMatchObject({ stderr: expect.stringContaining('terminal prompts disabled') })
   expect(() => readFileSync(log, 'utf8')).toThrow()
+})
+
+it('compares existing directories by filesystem identity', () => {
+  const original = join(dir, 'real'), alias = join(dir, 'alias'), other = join(dir, 'other')
+  mkdirSync(other)
+  symlinkSync(original, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  expect(sameDirectory(original, alias)).toBe(true)
+  expect(sameDirectory(original, other)).toBe(false)
+})
+
+it.skipIf(process.platform !== 'win32')('compares Windows directory spellings and removes missing shim spellings', () => {
+  const original = join(dir, 'real'), missing = join(dir, 'worker-bin'), other = join(dir, 'other')
+  expect(sameDirectory(original, original.toUpperCase().replaceAll('\\', '/'))).toBe(true)
+  expect(withoutDirectory([missing.toUpperCase() + '\\', other].join(delimiter), missing)).toBe(other)
+  expect(sameDirectory(missing.toUpperCase(), missing.toLowerCase())).toBe(false)
 })
 
 it('removes every spelling of a directory from PATH and keeps the other entries', () => {

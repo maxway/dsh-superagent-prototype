@@ -9,7 +9,7 @@
  * and `LARKSUITE_CLI_CONFIG_DIR` select the agent account for the real executables.
  */
 import { lstat, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
-import { realpathSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
 import type { SubprocessOutputReader, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import type { Deployment } from '../deployment.ts'
@@ -49,11 +49,18 @@ export function deploymentAccountVariables(deployment: Pick<Deployment, 'git' | 
 }
 
 export function sameDirectory(a: string, b: string): boolean {
+  try {
+    const first = statSync(a, { bigint: true }), second = statSync(b, { bigint: true })
+    if (first.isDirectory() && second.isDirectory() && first.ino !== 0n && second.ino !== 0n) {
+      return first.dev === second.dev && first.ino === second.ino
+    }
+  } catch {}
   const real = (path: string): string => { try { return realpathSync(path) } catch { return resolve(path) } }
   return real(a) === real(b)
 }
 export function withoutDirectory(path: string, dir: string): string {
-  return path.split(delimiter).filter(entry => !sameDirectory(entry, dir)).join(delimiter)
+  return path.split(delimiter).filter(entry => !sameDirectory(entry, dir) && !(process.platform === 'win32'
+    && (!existsSync(entry) || !existsSync(dir)) && resolve(entry).toLowerCase() === resolve(dir).toLowerCase())).join(delimiter)
 }
 
 /**
