@@ -1538,12 +1538,21 @@ it('reinitializes an existing worker without creating a Session', async () => {
 it('redecorates an existing worker after its bindings were released', async () => {
   const { ticket, sessionId } = await acceptedTicket()
   const agent = agents.get(sessionId)!
-  runtime.sessions.dispose()
+  const sessions = runtime.sessions as unknown as { release(agent: unknown): void }
+  sessions.release(agent)
   expect(tools.get(sessionId)!.has('orchestrator_report')).toBe(false)
   controller.create.mockClear()
   await runtime.sessions.existing(sessionId, ticket.title, 'worker', agent as never, ticket)
   expect(tools.get(sessionId)!.has('orchestrator_report')).toBe(true)
   expect(controller.create).not.toHaveBeenCalled()
+})
+
+it('does not redecorate a worker after the Session manager is disposed', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  const agent = agents.get(sessionId)!
+  runtime.sessions.dispose()
+  await runtime.sessions.existing(sessionId, ticket.title, 'worker', agent as never, ticket)
+  expect(tools.get(sessionId)!.has('orchestrator_report')).toBe(false)
 })
 
 it.each(['before', 'during'])('refuses a worker Session replaced %s initialization', async when => {
