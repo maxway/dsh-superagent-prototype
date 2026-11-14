@@ -191,6 +191,7 @@ it('tells the main Session of a follow-up to an ended ticket once the ticket res
   h = await startRuntime()
   const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
   await h.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'Done' })
+  await h.finishWorker(sessionId, ticket.id)
   expect(h.runtime.store.tickets.get(ticket.id)!.ended).toBeDefined()
   // While processing is paused the message waits for the ticket, which has not resumed: the main Session hears nothing yet.
   await h.runtime.settings.pause(true, 'panel')
@@ -208,6 +209,7 @@ it('tells the main Session nothing of a message it attached to an ended ticket, 
   h = await startRuntime()
   const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
   await h.runTool(sessionId, 'orchestrator_report', { state: 'dropped', summary: 'nothing to do' })
+  await h.finishWorker(sessionId, ticket.id)
   const request = feishu('40', '@bot 上次那个改动还要改一下', { root_id: undefined })
   h.runtime.receive(request); await h.runtime.idle()
   await h.route({ kind: 'attach', ticket_id: ticket.id, trigger_id: request.id })

@@ -26,7 +26,7 @@ Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory 
 
 Executor Sessions run commands without approval as the operator's OS user. Their `dsh-superagent-worker` preset contains the tools needed for work and moves foreground shell commands to background jobs after 5 seconds. This lets a worker receive new messages at the next step instead of waiting for a long command to finish.
 
-The main Session uses `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for routing. Sessions retain the preset selected at creation. Worker subagents use DeepSeek Harness's `standard` preset.
+The main Session uses `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for routing. Sessions retain the preset selected at creation. In the current candidate the worker preset no longer provides native subagent tools. A project guard also rejects known native subagent tools for recognized managed workers and their subagents, including workers using older presets. It follows available live and persisted ancestry for up to 128 levels and two seconds, but cannot identify missing, unreadable, cyclic, timed-out or deeper ancestry. It cannot revoke calls already prepared or block other entry points or external or GUI work; it is not an isolation boundary.
 
 ### Capability tiers and models
 
@@ -50,15 +50,15 @@ After each turn, background work has at most 30 minutes to finish. At that limit
 
 A handoff to a person frees the slot immediately and leaves the Report in effect. This applies after a `ready` Report or a question, unless another Input arrived since, and after any `blocked` or `failed` Report.
 
-At handoff, subagents stop. Shell jobs, such as a server offered for review, may continue until the Assignment ends. They hold no slot and are exempt from the 30-minute limit, including after later turns. Their completion does not wake the Executor; it reads the results on its next turn.
+At handoff, the Executor attempts to stop subagents, subject to the limitations below. Shell jobs, such as a server offered for review, may continue until the Assignment ends. They hold no slot and are exempt from the 30-minute limit, including after later turns. Their completion does not wake the Executor; it reads the results on its next turn.
 
 A person can also start a turn by writing directly in the Executor Session. Its background work follows the same rules.
 
-When an Assignment ends, its shell jobs are killed without waking the Session. Its subagents are released, and any completion turns they wake are dropped. The replacement Assignment and its waiting Inputs start after that shutdown finishes.
+When an Assignment ends, its shell jobs are killed without waking the Session. The rc.1 path releases live catalogued children. On rc.2/rc.3 the candidate instead best-effort interrupts catalogued children and waits for tree work; it does not release local activations or clear pending inboxes, which may wake later. A catalog containing any child or diagnostic, including historical entries, or observed tree work yields an unconfirmed cleanup even if no other error occurs. An empty catalog and a wait returning false do not prove there is no residual activity. Unconfirmed cleanup retains the existing persistent Ticket fence against later automated work, including for historical entries, with no automatic release. Crashes before intent recording, direct GUI actions and unconfirmed external or unrecognized work remain outside this safeguard. Replacement work must not be assumed safe merely because shutdown returned normally.
 
-Stopping or restarting the plugin inside the DeepSeek Harness process uses the same shutdown path. Inputs not yet taken into Session history are retained. Shutdown waits up to 10 seconds for each worker's background work; a process restart ends that work outright. An Assignment interrupted while busy restarts with a recovery note.
+Stopping or restarting the plugin inside the DeepSeek Harness process uses the same shutdown path. Inputs not yet taken into Session history are retained. Shutdown waits up to 10 seconds for each worker's background work. If in-process shutdown fails, the candidate retains its database and state lock; investigate the original process and remaining work before recovery. A process restart does not establish that external work stopped. An Assignment interrupted while busy restarts with a recovery note.
 
-Worker subagents, including nested ones, use DeepSeek Harness's `standard` preset with the worker's permissions. They retain only the worker's allowed work tools, and lose those tools when the Ticket ends. Under `standard`, a shell command moves to the background after 60 seconds. A subagent's jobs are killed when it ends.
+Existing worker subagents may use DeepSeek Harness's `standard` preset with the worker's permissions. The guard's recognition limits still apply; neither tool restrictions nor cleanup prove that all subagent work has stopped. Under `standard`, a shell command moves to the background after 60 seconds.
 
 ### Preparing a Ticket directory
 
@@ -66,7 +66,7 @@ Before the first Assignment, if the Ticket directory does not exist, the prepare
 
 A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A typical command uses `git worktree` to create a checkout. A pull request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
 
-When a Ticket ends, the Executor stops its background work but does not automatically delete its worktree, local branch, or remote branch. Before resuming an existing Ticket, verify its original worktree, branch, uncommitted work and Session working directory; if the directory is missing, ask an operator to recover it rather than assuming preparation can safely recreate it.
+When a Ticket ends, the Executor attempts to stop its background work as described above but does not automatically delete its worktree, local branch, or remote branch. Before resuming an existing Ticket, verify its original worktree, branch, uncommitted work and Session working directory; if the directory is missing, ask an operator to recover it rather than assuming preparation can safely recreate it.
 
 ### Concurrency
 

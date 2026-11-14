@@ -29,6 +29,28 @@ const DRAIN_LIMIT_MS = 10_000
 /** How long one wait that collects a job's end runs; one that ends with the job running is followed by the next. */
 const COLLECT_WAIT_MS = 10 * 60_000
 
+/** Marks subagent cleanup that requires operator investigation. */
+export class SubagentCleanupUnconfirmed extends Error {}
+
+export function hasUnconfirmedSubagentCleanup(error: unknown): boolean {
+  const pending: { error: unknown; depth: number }[] = [{ error, depth: 0 }]
+  const seen = new WeakSet<object>()
+  let visited = 0
+  while (pending.length && visited++ < 64) {
+    const current = pending.pop()!
+    try {
+      if (current.error instanceof SubagentCleanupUnconfirmed) return true
+      if (!(current.error instanceof AggregateError) || seen.has(current.error) || current.depth >= 8) continue
+      seen.add(current.error)
+      const errors = current.error.errors
+      if (!Array.isArray(errors)) continue
+      for (let index = 0; index < errors.length && index < 64 - visited; index++)
+        pending.push({ error: errors[index], depth: current.depth + 1 })
+    } catch { continue }
+  }
+  return false
+}
+
 const registry = (ctx: Context): Jobs | undefined => ctx.get('jobs') as Jobs | undefined
 const subagentsOf = (ctx: Context): Subagents | undefined => ctx.get('subagents') as Subagents | undefined
 const running = (status: string) => status === 'running' || status === 'stopping'
@@ -146,9 +168,9 @@ export async function collectJob(ctx: Context, sessionId: string, job: { id: str
 }
 
 /**
- * Stop the worker's subagents for a bounded time. rc.1 releases live children; rc.2 interrupts catalogued descendants
- * and waits for tree work. Interrupt does not release local activations or clear their inboxes. The worker's turn is
- * cancelled after, keeping its inbox when `keepInbox`; its Session still admits subagents.
+ * Stop the worker's subagents for a bounded time. rc.1 releases live children; rc.2 and later interrupt catalogued
+ * descendants and wait for tree work, but report observed work or catalog entries as unconfirmed. The worker's turn is
+ * cancelled after, keeping its inbox when `keepInbox`. An empty catalog and idle tree do not prove cleanup.
  */
 export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = false, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted()
@@ -181,10 +203,12 @@ export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = fals
   if (!subagents.listDescendants || !subagents.interrupt || !subagents.waitForTreeWork) {
     throw new Error('DSH subagent service does not provide supported background-work controls')
   }
-  const descendants = (await subagents.listDescendants(agent.id as SessionId)).filter(entry => entry.kind === 'child')
+  const catalog = await subagents.listDescendants(agent.id as SessionId)
+  const descendants = catalog.filter(entry => entry.kind === 'child')
   signal?.throwIfAborted()
   if (ctx.agents.get(agent.id as SessionId) !== agent) throw new Error(`Worker ${agent.id} was replaced during subagent cleanup`)
   let cancelWorker = descendants.length > 0
+  let observedTreeWork = false
   const failures: unknown[] = []
   for (const child of descendants) {
     signal?.throwIfAborted()
@@ -194,6 +218,7 @@ export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = fals
   try {
     const settled = await until(subagents.waitForTreeWork(agent).then(joined => ({ joined })), undefined, DRAIN_LIMIT_MS)
     if (!settled) throw new Error(`Waiting for subagent tree of ${agent.id} timed out`)
+    observedTreeWork = settled.joined
     cancelWorker ||= settled.joined
   } catch (error) { cancelWorker = true; failures.push(error) }
   signal?.throwIfAborted()
@@ -208,6 +233,7 @@ export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = fals
       if (!idle) throw new Error(`Waiting for ${agent.id} to become idle timed out`)
     } catch (error) { failures.push(error) }
   }
+  if (catalog.length > 0 || observedTreeWork) failures.push(new SubagentCleanupUnconfirmed(`Subagent cleanup for ${agent.id} is unconfirmed; operator investigation is required`))
   if (failures.length) throw new AggregateError(failures, `Stopping subagent tree of ${agent.id} failed`)
 }
 

@@ -12,6 +12,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { Runtime } from '../../src/app/runtime.ts'
 import { prepareArgv } from '../../src/executor/dsh.ts'
 import { Store } from '../../src/app/store.ts'
+import { KV } from '../../src/kv.ts'
 import { SettingsSchema } from '../../src/policy.ts'
 import { feishuKind, feishuTrigger } from '../../src/sources/feishu.ts'
 import { githubKind } from '../../src/sources/github.ts'
@@ -292,12 +293,19 @@ export async function startRuntime(seed?: (store: Store) => void) {
     await http(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
     return { status, body: JSON.parse(text) as Record<string, unknown> }
   }
+  async function finishWorker(sessionId: string, ticketId: string) {
+    const agent = agents.get(sessionId)!
+    await vi.waitFor(() => { if (!runtime.store.keys(KV.executor.stopPending(ticketId, '')).length) throw new Error('worker stop not started') })
+    agent.status = 'idle'
+    ctx.emit('agent/status', { agent, status: 'idle' } as never)
+    await vi.waitFor(() => { if (runtime.store.keys(KV.executor.stopPending(ticketId, '')).length) throw new Error('worker stop pending') })
+  }
   async function stop() { await runtime.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) }
   /** The Session's model takes its next step, which takes the messages steered in since its last. */
   const step = (sessionId: string) => { steps.get(sessionId)!() }
   /** A step of the worker claims what waits for it, and is cut off before the Session took it. */
   const claim = (sessionId: string) => { claims.get(sessionId)!() }
   return { runtime, ctx, directory, agents, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
-    jobs, subagents, step, claim, transcript }
+    jobs, subagents, step, claim, transcript, finishWorker }
 }
 export type Host = Awaited<ReturnType<typeof startRuntime>>

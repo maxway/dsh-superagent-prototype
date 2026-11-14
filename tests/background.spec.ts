@@ -2,7 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { expect, it, vi } from 'vitest'
-import { killJobs, stopBackground, stopSubagents, untilQuiet } from '../src/executor/background.ts'
+import { hasUnconfirmedSubagentCleanup, killJobs, stopBackground, stopSubagents, SubagentCleanupUnconfirmed, untilQuiet } from '../src/executor/background.ts'
 import { jobRegistry } from './fixtures/host.ts'
 
 /** A context with DSH's job registry and subagents, and an idle worker agent with one live subagent, `child-1`. */
@@ -15,6 +15,19 @@ function setup(waitForChildren: (agent: Agent) => Promise<boolean>, drainChildre
   const ctx = { get: (name: string) => services[name], agents: { get: () => agent } } as unknown as Context
   return { ctx, agent, jobs, subagents }
 }
+
+it('recognizes only bounded nested unconfirmed cleanup errors', () => {
+  const unconfirmed = new SubagentCleanupUnconfirmed('private detail')
+  expect(hasUnconfirmedSubagentCleanup(new AggregateError([new AggregateError([unconfirmed])]))).toBe(true)
+  expect(hasUnconfirmedSubagentCleanup(new Error('subagent_cleanup_unconfirmed'))).toBe(false)
+  const cycle = new AggregateError([])
+  cycle.errors.push(cycle)
+  expect(hasUnconfirmedSubagentCleanup(cycle)).toBe(false)
+  let deep: unknown = unconfirmed
+  for (let depth = 0; depth < 10; depth++) deep = new AggregateError([deep])
+  expect(hasUnconfirmedSubagentCleanup(deep)).toBe(false)
+  expect(hasUnconfirmedSubagentCleanup(new AggregateError(Array.from({ length: 1000 }, () => new Error('other'))))).toBe(false)
+})
 
 it('is not quiet when an end during the subagent check woke the worker, whose own idle looks again', async () => {
   const { ctx, agent, jobs } = setup(async () => {
@@ -94,7 +107,7 @@ it('reports when the runtime has no supported subagent controls', async () => {
   expect(agent.cancel).not.toHaveBeenCalled()
 })
 
-it('interrupts rc.2 descendants and waits without closing the root', async () => {
+it('interrupts rc.2 descendants but reports their cleanup as unconfirmed', async () => {
   const { ctx, agent, subagents } = setup(async () => false)
   const interrupt = vi.fn(), wait = vi.fn(async () => false), drain = vi.fn()
   Reflect.deleteProperty(subagents, 'listChildren')
@@ -105,7 +118,9 @@ it('interrupts rc.2 descendants and waits without closing the root', async () =>
   Reflect.set(subagents, 'interrupt', interrupt)
   Reflect.set(subagents, 'waitForTreeWork', wait)
   Reflect.set(subagents, 'drainDescendants', drain)
-  await stopSubagents(ctx, agent, true)
+  await expect(stopSubagents(ctx, agent, true)).rejects.toMatchObject({
+    errors: [expect.objectContaining({ message: 'Subagent cleanup for worker-t1 is unconfirmed; operator investigation is required' })],
+  })
   expect(interrupt.mock.calls).toEqual([
     ['child-1', { kind: 'ancestor', agent }], ['grandchild', { kind: 'ancestor', agent }],
   ])
@@ -128,6 +143,32 @@ it('does not cancel the worker when rc.2 has no catalogued children', async () =
   expect(agent.cancel).not.toHaveBeenCalled()
 })
 
+it('reports an unreadable descendant catalog as unconfirmed', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  Reflect.deleteProperty(subagents, 'listChildren')
+  Reflect.deleteProperty(subagents, 'drainChildren')
+  Reflect.set(subagents, 'listDescendants', vi.fn(async () => [{ kind: 'diagnostic', id: 'unknown' }]))
+  Reflect.set(subagents, 'interrupt', vi.fn())
+  Reflect.set(subagents, 'waitForTreeWork', vi.fn(async () => false))
+  await expect(stopSubagents(ctx, agent)).rejects.toMatchObject({
+    errors: [expect.objectContaining({ message: 'Subagent cleanup for worker-t1 is unconfirmed; operator investigation is required' })],
+  })
+  expect(agent.cancel).not.toHaveBeenCalled()
+})
+
+it('reports unconfirmed work even when the catalog is empty', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  Reflect.deleteProperty(subagents, 'listChildren')
+  Reflect.deleteProperty(subagents, 'drainChildren')
+  Reflect.set(subagents, 'listDescendants', vi.fn(async () => []))
+  Reflect.set(subagents, 'interrupt', vi.fn())
+  Reflect.set(subagents, 'waitForTreeWork', vi.fn(async () => true))
+  await expect(stopSubagents(ctx, agent)).rejects.toMatchObject({
+    errors: [expect.objectContaining({ message: 'Subagent cleanup for worker-t1 is unconfirmed; operator investigation is required' })],
+  })
+  expect(agent.cancel).toHaveBeenCalled()
+})
+
 it('attempts to interrupt remaining rc.2 descendants after an interrupt fails', async () => {
   const { ctx, agent, subagents } = setup(async () => false)
   const interrupt = vi.fn((id: string) => { if (id === 'child-1') throw new Error('interrupt failed') })
@@ -140,7 +181,7 @@ it('attempts to interrupt remaining rc.2 descendants after an interrupt fails', 
   Reflect.set(subagents, 'interrupt', interrupt)
   Reflect.set(subagents, 'waitForTreeWork', wait)
   await expect(stopSubagents(ctx, agent)).rejects.toMatchObject({
-    errors: [expect.objectContaining({ message: 'interrupt failed' })],
+    errors: [expect.objectContaining({ message: 'interrupt failed' }), expect.any(SubagentCleanupUnconfirmed)],
   })
   expect(interrupt).toHaveBeenCalledTimes(2)
   expect(wait).toHaveBeenCalledWith(agent)
@@ -206,7 +247,7 @@ it('reports when waiting for an interrupted rc.2 tree times out', async () => {
     const stopping = stopSubagents(ctx, agent)
     const rejected = expect(stopping).rejects.toMatchObject({
       message: 'Stopping subagent tree of worker-t1 failed',
-      errors: [expect.objectContaining({ message: 'Waiting for subagent tree of worker-t1 timed out' })],
+      errors: [expect.objectContaining({ message: 'Waiting for subagent tree of worker-t1 timed out' }), expect.any(SubagentCleanupUnconfirmed)],
     })
     await vi.advanceTimersByTimeAsync(10_000)
     await rejected
@@ -226,7 +267,7 @@ it('reports when the rc.2 worker does not become idle after cancellation', async
   try {
     const stopping = stopSubagents(ctx, agent)
     const rejected = expect(stopping).rejects.toMatchObject({
-      errors: [expect.objectContaining({ message: 'Waiting for worker-t1 to become idle timed out' })],
+      errors: [expect.objectContaining({ message: 'Waiting for worker-t1 to become idle timed out' }), expect.any(SubagentCleanupUnconfirmed)],
     })
     await vi.advanceTimersByTimeAsync(10_000)
     await rejected

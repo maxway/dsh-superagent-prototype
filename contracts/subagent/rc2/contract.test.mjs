@@ -9,6 +9,8 @@ import { AgentRegistry } from '@deepseek-ai/dsh-agent'
 import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
 import { stopSubagents, untilQuiet } from '../../../src/executor/background.ts'
 
+const unconfirmed = error => error instanceof AggregateError && error.errors.some(item => /cleanup.*unconfirmed/.test(item.message))
+
 async function fixture({ disposalError, beforePublication } = {}) {
   const ctx = new Context()
   const definitions = new Map()
@@ -75,7 +77,10 @@ test('rc2 stop waits for uncatalogued caller-delivered work without interrupting
     let resultSettled = false
     let stopSettled = false
     const result = activation.result.then(value => { resultSettled = true; return value })
-    const stopping = stopSubagents(ctx, root).then(() => { stopSettled = true })
+    const stopping = stopSubagents(ctx, root).then(
+      () => { stopSettled = true; return undefined },
+      error => { stopSettled = true; return error },
+    )
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(resultSettled, false)
     assert.equal(stopSettled, false)
@@ -83,7 +88,7 @@ test('rc2 stop waits for uncatalogued caller-delivered work without interrupting
     assert.deepEqual(disposed, [])
     completions.get(activation.childId).resolve({ output: [], stopReason: 'completed' })
     assert.equal((await result).stopReason, 'completed')
-    await stopping
+    assert.ok(unconfirmed(await stopping))
     assert.equal(stopSettled, true)
   } finally {
     if (activation) {
@@ -105,7 +110,10 @@ test('rc2 tree wait observes an external start not yet published to the catalog'
     await entered.promise
     assert.deepEqual(await runtime.listDescendants(root.id), [])
     let stopped = false
-    const stopping = stopSubagents(ctx, root).then(() => { stopped = true })
+    const stopping = stopSubagents(ctx, root).then(
+      () => { stopped = true; return undefined },
+      error => { stopped = true; return error },
+    )
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(stopped, false)
     publish.resolve()
@@ -114,7 +122,7 @@ test('rc2 tree wait observes an external start not yet published to the catalog'
     assert.equal(stopped, false)
     completions.get(activation.childId).resolve({ output: [], stopReason: 'completed' })
     await activation.result
-    await stopping
+    assert.ok(unconfirmed(await stopping))
     assert.equal(stopped, true)
   } finally {
     publish.resolve()
@@ -126,14 +134,14 @@ test('rc2 tree wait observes an external start not yet published to the catalog'
   }
 })
 
-test('project rc2 stop hides external disposal failure (unsafe observation, not a safety guarantee)', { timeout: 5000 }, async () => {
+test('rc2 reports unconfirmed cleanup even when external disposal failure is hidden', { timeout: 5000 }, async () => {
   assert.equal(createRequire(import.meta.url)('@deepseek-ai/dsh-subagent/package.json').version, '0.2.2-rc.2')
   const disposalError = new Error('provider disposal failed')
   const { ctx, root, runtime, start, aborted, disposed, fiber } = await fixture({ disposalError })
   try {
     const activation = await start()
     assert.ok((await runtime.listDescendants(root.id)).some(row => row.kind === 'child' && row.id === activation.childId))
-    await stopSubagents(ctx, root)
+    await assert.rejects(stopSubagents(ctx, root), unconfirmed)
     assert.deepEqual(aborted, [activation.childId])
     assert.deepEqual(disposed, [activation.childId])
     assert.equal((await activation.result).stopReason, 'aborted')
@@ -185,7 +193,7 @@ test('rc2 interrupt leaves a local child and its unclaimed inbox parked', { time
       interrupt: ctx.subagents.interrupt.bind(ctx.subagents),
       waitForTreeWork: ctx.subagents.waitForTreeWork.bind(ctx.subagents),
     }
-    await stopSubagents({ get: name => name === 'subagents' ? controls : undefined, agents: ctx.agents }, root.agent, true)
+    await assert.rejects(stopSubagents({ get: name => name === 'subagents' ? controls : undefined, agents: ctx.agents }, root.agent, true), unconfirmed)
     await child.whenIdle()
     assert.equal(child.status, 'idle')
     assert.equal(ctx.agents.get(child.id), child)
@@ -218,13 +226,13 @@ test('rc2 waits for external child, interrupts it, and keeps root reusable', { t
     const quiet = untilQuiet(ctx, root, new AbortController().signal).then(value => { settled = true; return value })
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(settled, false)
-    await stopSubagents(ctx, root)
+    await assert.rejects(stopSubagents(ctx, root), unconfirmed)
     assert.equal(await quiet, true)
     assert.deepEqual(aborted, [first.childId])
     assert.deepEqual(interrupts, [[first.childId, { kind: 'ancestor', agent: root }]])
     const second = await start()
     assert.notEqual(second.childId, first.childId)
-    await stopSubagents(ctx, root)
+    await assert.rejects(stopSubagents(ctx, root), unconfirmed)
     assert.deepEqual(aborted, [first.childId, second.childId])
   } finally {
     await fiber.dispose()

@@ -670,10 +670,12 @@ it('keeps a reported background stop failure across restart and fences only that
     deliverQueued(ticketId: string): Promise<void>
   }
   h.subagents.spawn(one.sessionId)
-  h.subagents.service.drainChildren.mockRejectedValueOnce(new Error('release failed'))
+  h.subagents.service.drainChildren.mockRejectedValueOnce(new Error('secret-token release failed'))
   h.agents.get(one.sessionId)!.status = 'idle'
   executor.stopWork(one.ticket.id, 'test failure')
   await vi.waitFor(() => expect(h.runtime.store.get(KV.executor.stopFailure(one.ticket.id))).toMatchObject({ error: expect.stringContaining('Stopping the background work') }))
+  expect(h.runtime.store.get(KV.executor.stopFailure(one.ticket.id))!.error).not.toContain('secret-token')
+  expect(h.runtime.store.get(KV.executor.stopFailure(one.ticket.id))!.error).not.toContain('reason=subagent_cleanup_unconfirmed')
   const ticket = h.runtime.store.tickets.get(one.ticket.id)!
   ticket.inputs.push({ id: 'blocked-input', kind: 'text', text: 'blocked', at: new Date().toISOString() })
   ticket.undelivered.push('blocked-input')
@@ -710,6 +712,33 @@ it('keeps a reported background stop failure across restart and fences only that
     restarted.store.tickets.save(blocked)
     await expect(resumed.deliverQueued(blocked.id)).rejects.toBeInstanceOf(Later)
   } finally { await stopRetained(restarted) }
+})
+
+it('fences a ticket when rc.3 descendant cleanup cannot be confirmed', async () => {
+  expectRetained = true
+  const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
+  const two = await h.acceptedTicket(feishu('5', '@bot 修二'))
+  const service = h.subagents.service
+  Reflect.deleteProperty(service, 'listChildren')
+  Reflect.deleteProperty(service, 'drainChildren')
+  Reflect.set(service, 'listDescendants', async (id: string) => id === one.sessionId ? [{ kind: 'child', id: 'old-child' }] : [])
+  Reflect.set(service, 'interrupt', vi.fn(() => { throw new Error('secret-interrupt-detail') }))
+  Reflect.set(service, 'waitForTreeWork', async () => false)
+  h.agents.get(one.sessionId)!.status = 'idle'
+  const executor = h.runtime.executor as unknown as { stopWork(ticketId: string, reason: string): void; deliverQueued(ticketId: string): Promise<void> }
+  executor.stopWork(one.ticket.id, 'handoff')
+  await vi.waitFor(() => expect(h.runtime.store.get(KV.executor.stopFailure(one.ticket.id))?.error).toContain('reason=subagent_cleanup_unconfirmed'))
+  expect(h.runtime.store.get(KV.executor.stopFailure(one.ticket.id))!.error).not.toContain('secret-interrupt-detail')
+  expect(h.runtime.store.keys(KV.executor.stopPending(one.ticket.id, '')).length).toBeGreaterThan(0)
+  expect(h.runtime.store.get(KV.executor.stopFailure(two.ticket.id))).toBeUndefined()
+  await expect(executor.deliverQueued(one.ticket.id)).rejects.toBeInstanceOf(Later)
+  await stopRetainedHost()
+  const reopened = new Store(join(h.directory, 'orchestrator.sqlite'))
+  try {
+    expect(reopened.get(KV.executor.stopFailure(one.ticket.id))!.error).toContain('reason=subagent_cleanup_unconfirmed')
+    expect(reopened.get(KV.executor.stopFailure(one.ticket.id))!.error).not.toContain('secret-interrupt-detail')
+    expect(reopened.keys(KV.executor.stopPending(one.ticket.id, '')).length).toBeGreaterThan(0)
+  } finally { reopened.close() }
 })
 
 it('does not enqueue a retry after its assignment ends during session resolution', async () => {

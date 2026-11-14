@@ -211,7 +211,7 @@ beforeEach(async () => {
     prompt: vi.fn(() => { throw new Error('Plugin delivery must not use user RPC') }),
   }
   jobs = jobRegistry()
-  services = { agents, llm: { resolveCallConfig: vi.fn(async value => value) }, sessionController: controller, sessionPersistence: { flush: vi.fn(async () => {}), open: vi.fn(async () => ({ read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} })) }, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer: { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }, jobs: jobs.service }
+  services = { agents, llm: { resolveCallConfig: vi.fn(async value => value) }, sessionController: controller, sessionPersistence: { flush: vi.fn(async () => {}), stat: vi.fn(async (_id: string): Promise<{ header: { id: string; parentSession?: string } } | undefined> => undefined), open: vi.fn(async () => ({ read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} })) }, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer: { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }, jobs: jobs.service }
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
   for (const cli of [AGENT(), OTHER(), BOT()]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
   const store = new Store(join(directory, 'orchestrator.sqlite')); seed(store); store.close()
@@ -1790,6 +1790,23 @@ it('refuses an ended ticket\'s worker its tools, and restricts the main Session 
   expect(restricts.get(sessionId)).toEqual([{ allow: ['read', 'read_image', 'grep', shellTool(), 'job_output', 'job_list', 'job_kill', 'web_search', 'skill'] }])
 })
 
+it('denies subagent creation and control for a worker under an old preset, including agent-local tools', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  const worker = agents.get(sessionId)! as unknown as { session: { header: { agentPreset: string } } }
+  worker.session.header = { agentPreset: 'standard' }
+  const guard = guards.get(sessionId)!
+  for (const name of ['subagent', 'subagent_fork', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent', 'wait_agent'])
+    expect(guard({ name, arguments: {} }), name).toBe('Subagent tools are disabled for managed workers')
+  for (const name of ['read', shellTool(), 'job_output', 'orchestrator_report'])
+    expect(guard({ name, arguments: {} }), name).toBeUndefined()
+  await (controller.create as (options: { sessionId: string }) => Promise<void>)({ sessionId: 'unmanaged' })
+  const other = agents.get('unmanaged')!
+  await (runtime as unknown as { ctx: Context }).ctx.parallel('agent/created', { agent: other } as never)
+  expect(guards.get('unmanaged')).toBeUndefined()
+  runtime.engine.stopTicket(ticket.id)
+  expect(guard({ name: 'subagent', arguments: {} })).toBe('Ticket ended; new work needs a new authorized ticket')
+})
+
 it('gives an explicit ticket\'s worker a prompt without the limits of an inferred Mandate', async () => {
   const { sessionId } = await acceptedTicket()
   await runtime.idle()
@@ -1966,6 +1983,152 @@ it('gives a subagent of a worker\'s subagent the same work tools and guard', asy
   expect(restricts.get('grandchild-1')).toEqual([{ allow: ['read', 'read_image', 'grep', shellTool(), 'job_output', 'job_list', 'job_kill', 'web_search', 'skill'] }])
   runtime.engine.stopTicket(ticket.id)
   expect(guards.get('grandchild-1')!()).toBe('Ticket ended; new work needs a new authorized ticket')
+})
+
+it('finds an offline worker ancestor beyond eight levels and keeps its ticket guard', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  const stat = (services.sessionPersistence as { stat: ReturnType<typeof vi.fn> }).stat
+  stat.mockImplementation(async (id: string) => {
+    const index = Number(id.replace('offline-', ''))
+    return { header: { id, parentSession: index === 11 ? sessionId : `offline-${index + 1}` } }
+  })
+  await (controller.create as (options: { sessionId: string }) => Promise<void>)({ sessionId: 'offline-child' })
+  const child = agents.get('offline-child')! as unknown as { session: { header: { parentSession?: string } } }
+  child.session.header = { parentSession: 'offline-0' }
+  await (runtime as unknown as { ctx: Context }).ctx.parallel('agent/created', { agent: child } as never)
+  expect(stat).toHaveBeenCalledTimes(12)
+  expect(restricts.get('offline-child')).toHaveLength(1)
+  expect(guards.get('offline-child')!({ name: 'subagent', arguments: {} })).toBe('Subagent tools are disabled for managed workers')
+  runtime.engine.stopTicket(ticket.id)
+  expect(guards.get('offline-child')!()).toBe('Ticket ended; new work needs a new authorized ticket')
+})
+
+it('leaves unrelated and unresolved ancestry unchanged, including cycles and storage errors', async () => {
+  const stat = (services.sessionPersistence as { stat: ReturnType<typeof vi.fn> }).stat
+  stat.mockImplementation(async (id: string) => {
+    if (id === 'broken') throw new Error('storage unavailable')
+    if (id === 'missing') return undefined
+    if (id === 'cycle') return { header: { id, parentSession: 'cycle' } }
+    if (id === 'invalid') return { header: { id: 'another-session' } }
+    if (id.startsWith('deep-')) return { header: { id, parentSession: `deep-${Number(id.slice(5)) + 1}` } }
+    return { header: { id } }
+  })
+  const ctx = (runtime as unknown as { ctx: Context }).ctx
+  for (const parent of ['ordinary-root', 'missing', 'broken', 'cycle', 'invalid', 'deep-0']) {
+    const id = `child-of-${parent}`
+    await (controller.create as (options: { sessionId: string }) => Promise<void>)({ sessionId: id })
+    const agent = agents.get(id)! as unknown as { session: { header: { parentSession?: string } } }
+    agent.session.header = { parentSession: parent }
+    await ctx.parallel('agent/created', { agent } as never)
+    expect(restricts.get(id), parent).toBeUndefined()
+    expect(guards.get(id), parent).toBeUndefined()
+  }
+})
+
+it('retries an unresolved ancestor on a later decoration', async () => {
+  const { sessionId } = await acceptedTicket()
+  const stat = (services.sessionPersistence as { stat: ReturnType<typeof vi.fn> }).stat
+  const ctx = (runtime as unknown as { ctx: Context }).ctx
+  await (controller.create as (options: { sessionId: string }) => Promise<void>)({ sessionId: 'retry-child' })
+  const agent = agents.get('retry-child')! as unknown as { session: { header: { parentSession?: string } } }
+  agent.session.header = { parentSession: 'offline-parent' }
+  await ctx.parallel('agent/created', { agent } as never)
+  expect(restricts.get('retry-child')).toBeUndefined()
+  stat.mockResolvedValue({ header: { id: 'offline-parent', parentSession: sessionId } })
+  await ctx.parallel('agent/created', { agent } as never)
+  expect(restricts.get('retry-child')).toHaveLength(1)
+})
+
+it('installs one restriction when concurrent decorations resolve the same offline ancestor', async () => {
+  const { sessionId } = await acceptedTicket()
+  let resolve!: (value: { header: { id: string; parentSession: string } }) => void
+  const lookup = new Promise<{ header: { id: string; parentSession: string } }>(done => { resolve = done })
+  const stat = (services.sessionPersistence as { stat: ReturnType<typeof vi.fn> }).stat
+  stat.mockReturnValue(lookup)
+  const ctx = (runtime as unknown as { ctx: Context }).ctx
+  await (controller.create as (options: { sessionId: string }) => Promise<void>)({ sessionId: 'shared-child' })
+  const agent = agents.get('shared-child')! as unknown as { session: { header: { parentSession?: string } } }
+  agent.session.header = { parentSession: 'offline-parent' }
+  const first = ctx.parallel('agent/created', { agent } as never)
+  const second = ctx.parallel('agent/created', { agent } as never)
+  await vi.waitFor(() => expect(stat).toHaveBeenCalledTimes(1))
+  resolve({ header: { id: 'offline-parent', parentSession: sessionId } })
+  await Promise.all([first, second])
+  expect(restricts.get('shared-child')).toHaveLength(1)
+  expect(guards.get('shared-child')!({ name: 'subagent', arguments: {} })).toBe('Subagent tools are disabled for managed workers')
+})
+
+it('shares an offline ancestry lookup and never decorates after disposal', async () => {
+  const { sessionId } = await acceptedTicket()
+  let resolve!: (value: { header: { id: string; parentSession: string } }) => void
+  const lookup = new Promise<{ header: { id: string; parentSession: string } }>(done => { resolve = done })
+  const stat = (services.sessionPersistence as { stat: ReturnType<typeof vi.fn> }).stat
+  stat.mockReturnValue(lookup)
+  const ctx = (runtime as unknown as { ctx: Context }).ctx
+  await (controller.create as (options: { sessionId: string }) => Promise<void>)({ sessionId: 'pending-child' })
+  const agent = agents.get('pending-child')! as unknown as { session: { header: { parentSession?: string } } }
+  agent.session.header = { parentSession: 'offline-parent' }
+  const first = ctx.parallel('agent/created', { agent } as never)
+  const second = ctx.parallel('agent/created', { agent } as never)
+  await vi.waitFor(() => expect(stat).toHaveBeenCalledTimes(1))
+  ctx.emit('agent/disposed', { agent } as never)
+  resolve({ header: { id: 'offline-parent', parentSession: sessionId } })
+  await Promise.all([first, second])
+  await ctx.parallel('agent/created', { agent } as never)
+  expect(restricts.get('pending-child')).toBeUndefined()
+  expect(guards.get('pending-child')).toBeUndefined()
+  expect(stat).toHaveBeenCalledTimes(1)
+})
+
+it('bounds the entire offline ancestry lookup even when storage ignores cancellation', async () => {
+  const { sessionId } = await acceptedTicket()
+  let resolveFirst!: (value: { header: { id: string; parentSession: string } }) => void
+  let resolveSecond!: (value: { header: { id: string; parentSession: string } }) => void
+  const first = new Promise<{ header: { id: string; parentSession: string } }>(done => { resolveFirst = done })
+  const second = new Promise<{ header: { id: string; parentSession: string } }>(done => { resolveSecond = done })
+  const stat = (services.sessionPersistence as { stat: ReturnType<typeof vi.fn> }).stat
+  stat.mockReturnValueOnce(first).mockReturnValueOnce(second)
+  const ctx = (runtime as unknown as { ctx: Context }).ctx
+  await (controller.create as (options: { sessionId: string }) => Promise<void>)({ sessionId: 'timeout-child' })
+  const agent = agents.get('timeout-child')! as unknown as { session: { header: { parentSession?: string } } }
+  agent.session.header = { parentSession: 'offline-first' }
+  vi.useFakeTimers()
+  try {
+    const created = ctx.parallel('agent/created', { agent } as never)
+    await vi.advanceTimersByTimeAsync(1500)
+    resolveFirst({ header: { id: 'offline-first', parentSession: 'offline-second' } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(stat).toHaveBeenCalledTimes(2)
+    const signal = (stat.mock.calls[1]![1] as { signal: AbortSignal }).signal
+    expect(signal.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(500)
+    await created
+    expect(signal.aborted).toBe(true)
+    expect(restricts.get('timeout-child')).toBeUndefined()
+    resolveSecond({ header: { id: 'offline-second', parentSession: sessionId } })
+    await Promise.resolve()
+    expect(restricts.get('timeout-child')).toBeUndefined()
+  } finally { vi.useRealTimers() }
+})
+
+it('cancels a hanging ancestry lookup when the runtime lifetime ends', async () => {
+  let reject!: (error: Error) => void
+  const lookup = new Promise<never>((_resolve, fail) => { reject = fail })
+  const stat = (services.sessionPersistence as { stat: ReturnType<typeof vi.fn> }).stat
+  stat.mockReturnValue(lookup)
+  const ctx = (runtime as unknown as { ctx: Context }).ctx
+  await (controller.create as (options: { sessionId: string }) => Promise<void>)({ sessionId: 'cancel-child' })
+  const agent = agents.get('cancel-child')! as unknown as { session: { header: { parentSession?: string } } }
+  agent.session.header = { parentSession: 'offline-parent' }
+  const created = ctx.parallel('agent/created', { agent } as never)
+  expect(stat).toHaveBeenCalledTimes(1)
+  const signal = (stat.mock.calls[0]![1] as { signal: AbortSignal }).signal
+  ;(runtime as unknown as { stopped: AbortController }).stopped.abort()
+  await created
+  expect(signal.aborted).toBe(true)
+  expect(restricts.get('cancel-child')).toBeUndefined()
+  reject(new Error('late storage failure'))
+  await Promise.resolve()
 })
 
 it('gives the Assignment a restart starts the messages the replaced one had delivered but no step took, once', async () => {

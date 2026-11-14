@@ -53,13 +53,14 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 /**
- * The DSH tools an Executor Session works with: files, search, the shell and its jobs, the web, skills, its todo list and
- * subagents. It gets no other tool the profile has, whenever it was registered: none that asks or shows a person something,
+ * The DSH tools an Executor Session works with: files, search, the shell and its jobs, the web, skills and its todo list.
+ * It gets no other tool the profile has, whenever it was registered: none that asks or shows a person something,
  * changes the profile, schedules work or starts goals outside the worker slots, the pause and a person's hold, starts or
  * messages other Sessions, or edits documents.
  */
 const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
-  'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
+  'web_fetch', 'skill', 'todo_write']
+const SUBAGENT_TOOLS = new Set(['subagent', 'subagent_fork', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent', 'wait_agent'])
 /** The shell tool the profile mounts on this platform: `pwsh` on Windows, `bash` on POSIX; a restriction may name only a mounted tool. */
 export const shellTool = (platform: NodeJS.Platform = process.platform): string => platform === 'win32' ? 'pwsh' : 'bash'
 /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
@@ -96,6 +97,9 @@ export class Sessions {
   private readonly agentDelivery: AgentDelivery
   /** Decorated agents mapped to their registered disposers and skill scope until the agent is disposed or `Sessions.dispose()` runs. */
   private readonly bindings = new Map<Agent, SessionBinding>()
+  private readonly decorating = new Map<Agent, Promise<void>>()
+  private readonly disposed = new WeakSet<Agent>()
+  private stopped = false
   private readonly retryHealth = new RetryHealth()
   private readonly ctx: Context
   /** Registers ordered `relay` and `notice` effect handlers that deliver to the main Session. */
@@ -110,6 +114,7 @@ export class Sessions {
   install(): void {
     const ctx = this.ctx
     ctx.on('agent/disposed', ({ agent }) => {
+      this.disposed.add(agent)
       this.release(agent)
       this.retryHealth.clear(agent.id); this.updateModelHealth()
     })
@@ -240,12 +245,23 @@ export class Sessions {
     const ticketId = ticketOfSession(agent.id)
     return ticketId === undefined ? undefined : this.host.store.tickets.get(ticketId)
   }
-  private async decorate(agent: Agent): Promise<void> {
-    if (this.bindings.has(agent)) return
+  private decorate(agent: Agent): Promise<void> {
+    const pending = this.decorating.get(agent)
+    if (pending) return pending
+    if (this.stopped || this.disposed.has(agent) || this.bindings.has(agent)) return Promise.resolve()
+    let start!: () => void
+    const work = new Promise<void>((resolve, reject) => { start = () => { this.decorateOnce(agent).then(resolve, reject) } })
+      .catch(error => { this.release(agent); throw error }).finally(() => { this.decorating.delete(agent) })
+    this.decorating.set(agent, work)
+    start()
+    return work
+  }
+  private async decorateOnce(agent: Agent): Promise<void> {
+    if (this.stopped || this.disposed.has(agent) || this.ctx.agents.get(agent.id) !== agent) return
     const host = this.host
     const master = agent.id === host.masterId
     const ticket = master ? undefined : this.ticketOf(agent)
-    if (!master && !ticket) { this.limitSubagent(agent); return }
+    if (!master && !ticket) { await this.limitSubagent(agent); return }
     const binding: SessionBinding = { disposers: [] }
     this.bindings.set(agent, binding)
     this.retryHealth.restore(agent.id, agent.session.snapshotEvents())
@@ -307,9 +323,10 @@ export class Sessions {
     const store = this.host.store
     const parent = scopeParentOf(agent)
     const allow = WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
-    return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
+    return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(execution => {
       const current = store.tickets.get(ticketId)
-      return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
+      if (!current || !liveTicket(current)) return 'Ticket ended; new work needs a new authorized ticket'
+      return execution && SUBAGENT_TOOLS.has(execution.name) ? 'Subagent tools are disabled for managed workers' : undefined
     })]
   }
   /**
@@ -317,15 +334,56 @@ export class Sessions {
    * permissions, gets the same work tools as the worker, and none once the worker's ticket ended. Any other agent is left as
    * it is.
    */
-  private limitSubagent(agent: Agent): void {
-    let parent = agent.session.header.parentSession
-    // Up the subagents' parents to the worker, which are loaded while their subagents run.
-    for (let depth = 0; parent !== undefined && ticketOfSession(parent) === undefined && depth < 8; depth++) {
-      parent = this.ctx.agents.get(parent)?.session.header.parentSession
+  private async limitSubagent(agent: Agent): Promise<void> {
+    let parent: string | undefined = agent.session.header.parentSession
+    const seen = new Set<string>([agent.id])
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    const cancelled = Symbol('ancestry cancelled')
+    const cancellation = new Promise<typeof cancelled>(resolve => controller.signal.addEventListener('abort', () => resolve(cancelled), { once: true }))
+    const timer = setTimeout(abort, 2_000)
+    this.host.lifetime.addEventListener('abort', abort, { once: true })
+    if (this.host.lifetime.aborted) abort()
+    try {
+      for (let depth = 0; parent !== undefined; depth++) {
+        if (controller.signal.aborted) {
+          this.ctx.logger.warn('dsh-superagent could not identify ancestry of %s: lookup cancelled or timed out', agent.id)
+          return
+        }
+        if (depth >= 128 || seen.has(parent)) {
+          this.ctx.logger.warn('dsh-superagent could not identify ancestry of %s: cycle or depth limit at %s', agent.id, parent)
+          return
+        }
+        seen.add(parent)
+        const ticketId = ticketOfSession(parent)
+        if (ticketId !== undefined && this.host.store.tickets.get(ticketId)) {
+          if (!this.stopped && !this.disposed.has(agent) && this.ctx.agents.get(agent.id) === agent)
+            this.bindings.set(agent, { disposers: this.workOnly(agent, ticketId), subagent: true })
+          return
+        }
+        const live = this.ctx.agents.get(parent as SessionId)
+        let snapshot
+        try {
+          snapshot = live ? undefined : await Promise.race([this.ctx.sessionPersistence.stat(parent as SessionId, { signal: controller.signal }), cancellation])
+        } catch (error) {
+          this.ctx.logger.warn('dsh-superagent could not identify ancestry of %s: %s', agent.id, String(error))
+          return
+        }
+        if (snapshot === cancelled || controller.signal.aborted) {
+          this.ctx.logger.warn('dsh-superagent could not identify ancestry of %s: lookup cancelled or timed out', agent.id)
+          return
+        }
+        const header = live?.session.header ?? snapshot?.header
+        if (!header || !live && header.id !== parent || header.parentSession !== undefined && typeof header.parentSession !== 'string') {
+          this.ctx.logger.warn('dsh-superagent could not identify ancestry of %s: unavailable or invalid parent %s', agent.id, parent)
+          return
+        }
+        parent = header.parentSession
+      }
+    } finally {
+      clearTimeout(timer)
+      this.host.lifetime.removeEventListener('abort', abort)
     }
-    const ticketId = parent === undefined ? undefined : ticketOfSession(parent)
-    if (ticketId === undefined || !this.host.store.tickets.get(ticketId)) return
-    this.bindings.set(agent, { disposers: this.workOnly(agent, ticketId), subagent: true })
   }
   /** Register the skills of a prompt version in the agent's skill scope, in place of an earlier version's. */
   private bindSkills(binding: SessionBinding, version: PromptVersion): void {
@@ -365,5 +423,8 @@ export class Sessions {
     }
   }
   /** Releases prompt sections, skills, and tools registered by `Sessions` across all decorated agents. */
-  dispose(): void { for (const agent of [...this.bindings.keys()]) this.release(agent) }
+  dispose(): void {
+    this.stopped = true
+    for (const agent of [...this.bindings.keys()]) this.release(agent)
+  }
 }
