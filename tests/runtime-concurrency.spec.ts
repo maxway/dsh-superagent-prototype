@@ -879,6 +879,20 @@ it('quarantines workers when final shutdown idle wait times out', async () => {
   } finally { idleAgent.whenIdle = whenIdle; agent.cancel = cancel; vi.useRealTimers() }
 })
 
+it('waits for a tracked stop to finish before shutdown succeeds', async () => {
+  const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
+  const pending = Promise.withResolvers<void>()
+  const executor = h.runtime.executor as unknown as { track(ticketId: string, stop: Promise<void>): void }
+  executor.track(one.ticket.id, pending.promise)
+  const stopping = h.runtime.stop()
+  let finished = false
+  void stopping.then(() => { finished = true })
+  await new Promise(resolve => setTimeout(resolve, 10))
+  expect(finished).toBe(false)
+  pending.resolve()
+  await stopping
+})
+
 it('retains the state lock while a tracked stop remains unconfirmed', async () => {
   expectRetained = true
   const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
