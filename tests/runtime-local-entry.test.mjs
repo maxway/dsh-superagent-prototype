@@ -16,7 +16,7 @@ function fixture() {
   const config = join(root, 'deploy-runtime.local.json')
   const marker = join(root, 'called.json')
   copyFileSync(entry, local)
-  writeFileSync(join(root, 'deploy-runtime.ps1'), `param($SourceRepo, $Remote, $Ref, $RuntimeRoot, $Config, $Node, $Git, $Pnpm)
+  writeFileSync(join(root, 'deploy-direct.ps1'), `param($SourceRepo, $Remote, $Ref, $RuntimeRoot, $Config, $Node, $Git, $Pnpm)
 @{ SourceRepo = $SourceRepo; Remote = $Remote; Ref = $Ref; RuntimeRoot = $RuntimeRoot; Config = $Config; Node = $Node; Git = $Git; Pnpm = $Pnpm } | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:TEST_MARKER
 if ($env:TEST_FAIL) { exit 23 }
 `)

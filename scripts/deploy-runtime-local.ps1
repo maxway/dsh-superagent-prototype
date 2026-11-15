@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $configPath = Join-Path $PSScriptRoot 'deploy-runtime.local.json'
-$coordinator = Join-Path $PSScriptRoot 'deploy-runtime.ps1'
+$coordinator = Join-Path $PSScriptRoot 'deploy-direct.ps1'
 foreach ($path in @($configPath, $coordinator)) {
   $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
   if ($item.PSIsContainer -or $item.LinkType -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { throw "Expected a regular deployment control file: $path" }

@@ -8,7 +8,7 @@ The local production host is native Windows with a DSH home separate from Deskto
 
 **Local runtime cutover (2026-11-14).** An operator-requested takeover started the service from `F:\dsh-superagent-runtime\current`, linked to `releases\20261114-164005-6802a90737ee-567f9342`. Its prepared record marks `sourceDirty: true` on base commit `16ec3dc54a7802697903ac7709efcb1b56167ae7`; it is a worktree snapshot, not a committed release. The service retains the existing `C:\Users\dd\.dsh-superagent` profile and `C:\Users\dd\.dsh\state\superagent` database, with the profile's bundle link pointing to runtime `current`. The runtime configuration is `F:\dsh-superagent-runtime\config\service.json`; the old `C:\Users\dd\.dsh-superagent\service.ps1` compatibility entry delegates to it. The independent verification observed one service process surviving 20 seconds with runtime, GitLab and Feishu ready. One prior assignment was running after startup; this is not an end-to-end GitLab or Feishu delivery test. Recheck current facts before operating.
 
-A mechanical latest-commit runtime deployment is not installed. Previously installed deployment tasks, their user-level wakeup settings and their dedicated records were removed with operator authorization; this does not modify scripts in the stable checkout. Do not invoke those scripts for this runtime.
+A mechanical latest-commit runtime deployment is not installed. Previously installed deployment tasks, their user-level wakeup settings and their dedicated records were removed with operator authorization; this does not modify scripts in the stable checkout. The repository now has a direct deployment entry described in `docs/runtime-windows.md`; it has not been installed or verified on this host. Do not invoke the removed legacy tasks for this runtime.
 
 **Local observation (2026-11-15).** The configured GitLab endpoint initially refused TCP connections, then became reachable; the configured GitLab CLI resolved its agent account, and the setup recheck reported runtime, GitLab and Feishu ready. These states do not prove end-to-end delivery. Already-running processes and WMI providers may retain inherited environment values even after user-level cleanup; explicitly pass empty `DSH_SUPERAGENT_DEPLOY_REQUEST` and `DSH_SUPERAGENT_DEPLOY_COMMAND` when starting the currently installed version.
 
@@ -30,7 +30,7 @@ Ordinary service start and restart use the installed build. This candidate does 
 
 The service's logs and control files are under `<DSH home>\service\`. During the Windows upgrade, the old checkout `.artifacts\` location remains readable for the stop marker, recorded PID and start facts; stopping a legacy-recorded service writes its marker there. Windows and WSL must not share a dependency tree.
 
-A Windows process cannot safely rely on WSL-created dependency links in a shared checkout. When replacing a dependency tree that a running service or other processes use, stop or otherwise quiesce those users before changing it. Preparing an independent release does not require stopping the production service. A pnpm `Already up to date` message is not proof: build and import the actual bundle with Windows Node, then require `GET /orchestrator/api/state` with `x-orchestrator-request: 1` to return 200 and check Source health. A listening web port alone is insufficient. Keep WSL and Windows dependency trees separate when both are needed. When running in the background, also verify the service and Feishu consumer have no visible console and the token-bearing startup log is accessible only to the intended user and administrators.
+A Windows process cannot safely rely on WSL-created dependency links in a shared checkout. The direct deployment builds a fresh Windows release before stopping the service; keep WSL and Windows dependency trees separate. The service start reports startup failure, but a successful start does not prove end-to-end Source delivery. Background service logs may contain sensitive information.
 
 ## What runs
 
@@ -310,7 +310,7 @@ A scheduled task has no console to inherit, so Windows gives the first console p
 
 ### Deployment requests
 
-A queued request is not evidence of deployment. The candidate versioned runtime workflow and its limitations are described in `docs/runtime-windows.md`; its latest-code entry is not installed or operationally verified. Separately installed legacy tasks and scripts do not disappear when the repository is cleaned up; do not invoke them.
+A queued request is not evidence of deployment. The repository's direct runtime deployment entry is described in `docs/runtime-windows.md`; it is not installed or operationally verified on this host. A deployment request itself authorizes the required restart, without a second confirmation. Separately installed legacy tasks and scripts do not disappear when the repository is cleaned up; do not invoke them.
 
 The separate `scripts/recover-superagent.ps1` helper starts the installed version without pulling or building and honors the intentional-stop marker; the intended observer does not invoke it. Any separately scheduled legacy caller must be assessed independently.
 
