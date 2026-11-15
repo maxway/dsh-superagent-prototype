@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, copyFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, copyFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +15,50 @@ const pathHelper = fileURLToPath(new URL('../scripts/runtime-paths.ps1', import.
 const allowedEnvironment = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'PROCESSOR_ARCHITECTURE'])
 const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => allowedEnvironment.has(key.toUpperCase())))
 const run = (command, args, options = {}) => spawnSync(command, args, { encoding: 'utf8', timeout: 30000, env: baseEnv, ...options })
+function safeGit(root, source, control, gitTemplate) {
+  const wrapper = join(root, 'safe-git.ps1')
+  const log = join(root, 'safe-git.log')
+  const quote = value => `'${value.replaceAll("'", "''")}'`
+  writeFileSync(wrapper, `
+$source = ${quote(source)}
+$control = ${quote(control)}
+$template = ${quote(gitTemplate)}
+$log = ${quote(log)}
+$checkoutPattern = '^' + [regex]::Escape($control + [IO.Path]::DirectorySeparatorChar) + 'deployment-[0-9a-f]{32}[/\\\\]source$'
+$valid = $false
+if ($args.Count -eq 2 -and $args[0] -eq 'check-ref-format') { $valid = $true }
+if ($args.Count -eq 6 -and $args[0] -eq 'clone' -and $args[1] -eq '--no-checkout' -and $args[2] -eq '--shared' -and $args[3] -eq '--' -and $args[4] -eq $source -and $args[5] -match $checkoutPattern) { $valid = $true }
+if ($args.Count -ge 4 -and $args[0] -eq '-C') {
+  if ($args[1] -eq $source) {
+    $valid = ($args.Count -eq 4 -and $args[2] -eq 'rev-parse' -and $args[3] -eq '--is-bare-repository') -or
+      ($args.Count -eq 5 -and $args[2] -eq 'rev-parse' -and $args[3] -eq '--verify' -and $args[4] -eq 'FETCH_HEAD^{commit}') -or
+      ($args.Count -eq 7 -and $args[2] -eq 'fetch' -and $args[3] -eq '--no-tags' -and $args[4] -eq '--no-recurse-submodules' -and $args[5] -eq 'local')
+  } elseif ($args[1] -match $checkoutPattern) {
+    $valid = $args.Count -eq 5 -and $args[2] -eq 'checkout' -and $args[3] -eq '--detach' -and $args[4] -cmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$'
+  }
+}
+if (-not $valid) { throw 'Unexpected Git invocation in test fixture' }
+$templateLeaked = $args.Count -ge 3 -and $args[2] -eq 'checkout' -and (Test-Path -LiteralPath (Join-Path $args[1] '.git/hostile-sentinel'))
+@{ command = @($args); templateWasCleared = -not (Test-Path Env:GIT_TEMPLATE_DIR); configWasCleared = -not (Test-Path Env:GIT_CONFIG_COUNT); templateLeaked = $templateLeaked } | ConvertTo-Json -Compress | Add-Content -LiteralPath $log
+$env:GIT_TEMPLATE_DIR = if ($env:TEST_HOSTILE_GIT_TEMPLATE) { $env:TEST_HOSTILE_GIT_TEMPLATE } else { $template }
+if ($env:TEST_HOSTILE_GIT_HOOKS) {
+  $env:GIT_CONFIG_COUNT = '1'
+  $env:GIT_CONFIG_KEY_0 = 'core.hooksPath'
+  $env:GIT_CONFIG_VALUE_0 = $env:TEST_HOSTILE_GIT_HOOKS
+}
+try {
+  if ($args[0] -eq 'clone') {
+    $cloneArgs = $args[1..($args.Count - 1)]
+    & git -c "core.hooksPath=$template" -c protocol.file.allow=always clone "--template=$template" @cloneArgs
+  } else {
+    & git -c "init.templateDir=$template" -c "core.hooksPath=$template" -c protocol.file.allow=always @args
+  }
+  $code = $LASTEXITCODE
+} finally { Remove-Item Env:GIT_TEMPLATE_DIR, Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue }
+exit $code
+`)
+  return { wrapper, log }
+}
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'runtime-deploy-test-'))
   const gitTemplate = join(root, 'git-template')
@@ -106,11 +150,12 @@ if ($env:ACTIVATE_MODE -eq 'bad-output-commit') { $output.commit = 'wrong' }
 $output | ConvertTo-Json -Compress
 }
 `)
-  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(control, 'deploy-runtime.ps1'), '-SourceRepo', source, '-Remote', 'local', '-Ref', ref, '-RuntimeRoot', runtime, '-Config', config, '-Node', process.execPath]
+  const safe = safeGit(root, source, control, gitTemplate)
+  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(control, 'deploy-runtime.ps1'), '-SourceRepo', source, '-Remote', 'local', '-Ref', ref, '-RuntimeRoot', runtime, '-Config', config, '-Node', process.execPath, '-Git', safe.wrapper]
   const env = { ...baseEnv, HOME: root, USERPROFILE: root, DSH_HOME: join(root, 'home'), LUMOS_API_KEY: 'test-only', GIT_CEILING_DIRECTORIES: root, GIT_OPTIONAL_LOCKS: '0' }
-  const invoke = (extra = {}, customArgs = args) => run('pwsh', customArgs, { env: { ...env, ...extra } })
+  const invoke = (extra = {}, customArgs = args) => run('pwsh', customArgs, { cwd: root, env: { ...env, ...extra } })
   const state = () => JSON.parse(readFileSync(join(runtime, 'control', 'deploy-runtime.json'), 'utf8'))
-  return { root, control, runtime, args, env, invoke, state, commit, source, ref }
+  return { root, control, runtime, args, env, invoke, state, commit, source, ref, gitLog: safe.log }
 }
 
 test('rejects control code inside the runtime before loading it', () => {
@@ -342,6 +387,27 @@ test('fetch, build and prepare failures never activate; successful release pins 
   } finally { rmSync(instance.root, { recursive: true, force: true }) }
 })
 
+test('deployment Git ignores hostile inherited templates and hooks', () => {
+  const instance = fixture()
+  try {
+    const template = join(instance.root, 'hostile-template')
+    const hooks = join(template, 'hooks')
+    const marker = join(instance.root, 'hostile-hook-called')
+    mkdirSync(hooks, { recursive: true })
+    const hook = join(hooks, 'post-checkout')
+    writeFileSync(hook, `#!/bin/sh\nprintf called > '${marker.replaceAll('\\', '/').replaceAll("'", "'\\''")}'\n`)
+    chmodSync(hook, 0o755)
+    writeFileSync(join(template, 'hostile-sentinel'), 'hostile')
+    const result = instance.invoke({ GIT_TEMPLATE_DIR: template, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: hooks, TEST_HOSTILE_GIT_TEMPLATE: template, TEST_HOSTILE_GIT_HOOKS: hooks })
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(existsSync(marker), false)
+    const calls = readFileSync(instance.gitLog, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line))
+    assert.ok(calls.some(call => call.command[0] === 'clone'))
+    assert.ok(calls.some(call => call.command[2] === 'checkout'))
+    assert.ok(calls.every(call => call.templateWasCleared && call.configWasCleared && !call.templateLeaked))
+  } finally { rmSync(instance.root, { recursive: true, force: true }) }
+})
+
 test('failed or interrupted activation requires manual inspection', () => {
   const instance = fixture()
   try {
@@ -401,7 +467,7 @@ test('crashed activation leaves direct activation fenced', async () => {
   const instance = fixture()
   const ready = join(instance.root, 'activate-ready')
   const proceed = join(instance.root, 'activate-proceed')
-  const child = spawn('pwsh', instance.args, { env: { ...instance.env, ACTIVATE_READY: ready, ACTIVATE_CONTINUE: proceed }, stdio: ['ignore', 'ignore', 'pipe'] })
+  const child = spawn('pwsh', instance.args, { cwd: instance.root, env: { ...instance.env, ACTIVATE_READY: ready, ACTIVATE_CONTINUE: proceed }, stdio: ['ignore', 'ignore', 'pipe'] })
   let errors = ''
   child.stderr.on('data', chunk => { errors += chunk })
   const exited = new Promise(resolve => child.on('close', resolve))
@@ -429,7 +495,7 @@ test('direct activation excludes a concurrent coordinator', async () => {
   const release = join(instance.runtime, 'releases', 'test-release')
   mkdirSync(release, { recursive: true })
   writeFileSync(join(release, 'runtime-prepared.json'), JSON.stringify({ commit: instance.commit }))
-  const child = spawn('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(instance.control, 'activate-runtime.ps1'), '-Config', join(instance.root, 'config.json'), '-Release', release, '-RuntimeRoot', instance.runtime], { env: { ...instance.env, ACTIVATE_READY: ready, ACTIVATE_CONTINUE: proceed }, stdio: ['ignore', 'ignore', 'pipe'] })
+  const child = spawn('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(instance.control, 'activate-runtime.ps1'), '-Config', join(instance.root, 'config.json'), '-Release', release, '-RuntimeRoot', instance.runtime], { cwd: instance.root, env: { ...instance.env, ACTIVATE_READY: ready, ACTIVATE_CONTINUE: proceed }, stdio: ['ignore', 'ignore', 'pipe'] })
   let errors = ''
   child.stderr.on('data', chunk => { errors += chunk })
   const exited = new Promise(resolve => child.on('close', resolve))
@@ -453,7 +519,7 @@ test('concurrent coordinators cannot deploy the same runtime', async () => {
   const instance = fixture()
   const ready = join(instance.root, 'ready')
   const proceed = join(instance.root, 'proceed')
-  const child = spawn('pwsh', instance.args, { env: { ...instance.env, BUILD_READY: ready, BUILD_CONTINUE: proceed }, stdio: ['ignore', 'ignore', 'pipe'] })
+  const child = spawn('pwsh', instance.args, { cwd: instance.root, env: { ...instance.env, BUILD_READY: ready, BUILD_CONTINUE: proceed }, stdio: ['ignore', 'ignore', 'pipe'] })
   let errors = ''
   child.stderr.on('data', chunk => { errors += chunk })
   const exited = new Promise(resolve => child.on('close', resolve))
