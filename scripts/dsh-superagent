@@ -16,7 +16,6 @@ import { accessSync, closeSync, constants, existsSync, mkdirSync, openSync, read
 import { createHash, randomUUID } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
-import { createServer as createTcpServer } from 'node:net'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -1546,41 +1545,6 @@ Watchdog options:
   --idempotency-key <k>  Optional stable recovery key; the default names the Ticket and snapshot.
   --limit <n>            How many recent runs \`watchdog runs\` prints (default: 20, at most 100).`
 
-export async function tcpPortAvailable(url) {
-  let target
-  try { target = new URL(url) } catch { return false }
-  if (!['http:', 'https:'].includes(target.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)) return false
-  const port = urlPort(url)
-  if (!port) return false
-  const available = (host, ipv6Only = false) => new Promise(resolve => {
-    const server = createTcpServer()
-    server.once('error', error => resolve(ipv6Only && ['EAFNOSUPPORT', 'EADDRNOTAVAIL', 'EPROTONOSUPPORT'].includes(error.code)))
-    server.listen({ port, host, ipv6Only, exclusive: true }, () => server.close(() => resolve(true)))
-  })
-  return await available('0.0.0.0') && await available('::', true)
-}
-
-export async function ensureUpdateSafe(args, inspect = target, probe = tcpPortAvailable, platform = PLATFORM) {
-  const found = inspect(args)
-  if (found.scan.length || (found.listener && found.listener.length)
-    || (found.listener === null && (platform === 'win32' || !await probe(args.url)))) {
-    throw new Error('The service may be running or its listener cannot be identified; refusing to update the checkout.')
-  }
-}
-
-async function updateCheckout(args) {
-  await ensureUpdateSafe(args)
-  const commands = WINDOWS
-    ? [['powershell.exe', ['-NoProfile', '-NonInteractive', '-File', join(ROOT, 'scripts', 'update-superagent.ps1'), '-Checkout', ROOT]]]
-    : [['git', ['-C', ROOT, 'pull', '--ff-only', 'origin', 'main']],
-        ['pnpm', ['--dir', ROOT, 'install', '--frozen-lockfile']], ['pnpm', ['--dir', ROOT, 'build']]]
-  for (const [file, commandArgs] of commands) {
-    const result = spawnSync(file, commandArgs, { stdio: 'inherit', windowsHide: true })
-    if (result.error) throw result.error
-    if (result.status !== 0) throw new Error(`${file} failed with exit code ${result.status}; the service was not started.`)
-  }
-}
-
 async function main(argv = process.argv.slice(2)) {
   const args = parseArgv(argv)
   const lifecycleLocked = process.env.DSH_SUPERAGENT_LIFECYCLE_LOCKED === '1'
@@ -1588,7 +1552,7 @@ async function main(argv = process.argv.slice(2)) {
   if (args.help) { process.stdout.write(USAGE + '\n'); return 0 }
   if (WINDOWS && !lifecycleLocked && !args.outside_job_child && ['start', 'restart', 'stop'].includes(args.action)) {
     const payload = Buffer.from(JSON.stringify({ home: args.home, profile: args.profile, node: process.execPath, script: SCRIPT,
-      arguments: argv, update: args.action !== 'stop' && !args.use_installed })).toString('base64')
+      arguments: argv })).toString('base64')
     const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File',
       join(ROOT, 'scripts', 'superagent-lifecycle-lock.ps1'), '-Payload', payload], { stdio: 'inherit', windowsHide: true })
     if (result.error) throw result.error
@@ -1620,7 +1584,6 @@ async function main(argv = process.argv.slice(2)) {
       await stop(args, args.action === 'stop')
     }
     if (args.action === 'start' || args.action === 'restart') {
-      if (!args.use_installed) await updateCheckout(args)
       return await start(args)
     }
     return 0

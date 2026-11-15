@@ -3,10 +3,9 @@
 * **优先级**：P1（中优 — 双栈 Windows 下可能导致合法回环配置被服务端 403/启动拒绝）
 * **涉及文件**：
   * `src/app/http.ts`（`sameOrigin` L88-93、`registerHttp` L429-431）
-  * `scripts/restart-superagent.ps1`（L16-19）
   * `scripts/dsh-superagent`（`windowsStopTarget` L1107-1112 及 URL 校验处）
   * `docs/006-deployment.md` / `docs/zh/006-deployment.md`
-  * `tests/http.spec.ts`、`tests/restart-superagent.spec.ts`、`tests/service-script.spec.ts`
+  * `tests/http.spec.ts`、`tests/service-script.spec.ts`
 
 ---
 
@@ -14,13 +13,7 @@
 
 当前仓库中，“什么算是合法的本地管理端回环地址”在脚本层与服务端 HTTP 层存在不一致：
 
-1. **运维与重启脚本显式允许 IPv6 回环 `::1` / `[::1]`**：
-   * `scripts/restart-superagent.ps1:17`：
-     ```powershell
-     if ($url.Scheme -notin @('http', 'https') -or $url.Host -notin @('localhost', '127.0.0.1', '::1')) {
-       throw 'The service URL must be a local HTTP(S) URL.'
-     }
-     ```
+1. **服务控制脚本显式允许 IPv6 回环 `::1` / `[::1]`**：
    * `scripts/dsh-superagent:1110`：
      ```js
      if (!['http:', 'https:'].includes(target.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)) {
@@ -44,7 +37,7 @@
      ```
      即便监听成功，任何以 `http://[::1]:<port>` 发起的管理请求（`Host: [::1]:<port>`）都会被 `sameOrigin` 判定为非法并返回 `403 Same-origin management request required`。
 3. **双栈 Windows 上的 `localhost` 附加隐患**：
-   * 在 Windows 10/11 上，DNS 客户端默认优先将 `localhost` 解析到 `::1`，而服务端只绑定在 `127.0.0.1`。部分 HTTP 客户端（如 Node `fetch` / `.NET HttpClient`）具备 Happy Eyeballs 回退到 `127.0.0.1`，但部分工具或 `netstat` 端口匹配逻辑（如 `restart-superagent.ps1:34`）混用 `localhost` 与 `::1` 时容易产生排查困惑。
+   * 在 Windows 10/11 上，DNS 客户端默认优先将 `localhost` 解析到 `::1`，而服务端只绑定在 `127.0.0.1`。部分 HTTP 客户端（如 Node `fetch` / `.NET HttpClient`）具备 Happy Eyeballs 回退到 `127.0.0.1`，不同工具混用 `localhost` 与 `::1` 时容易产生排查困惑。
 
 ---
 
@@ -54,7 +47,7 @@
 
 ### 方案 A（推荐，最小变更且兼容双栈回环）：服务端补齐 IPv6 回环 `[::1]` 支持
 
-既然控制脚本与重启脚本已经支持 `[::1]`，只需在 `src/app/http.ts` 中补齐对 IPv6 回环的对称校验，保持对非回环网卡（如 `0.0.0.0`、`::`、局域网 IP）的绝对拒绝：
+既然控制脚本已经支持 `[::1]`，只需在 `src/app/http.ts` 中补齐对 IPv6 回环的对称校验，保持对非回环网卡（如 `0.0.0.0`、`::`、局域网 IP）的绝对拒绝：
 
 1. **`registerHttp` 回环主机校验（`src/app/http.ts:430`）**：
    ```ts
@@ -74,12 +67,9 @@
        && (req.headers.origin === undefined || req.headers.origin === `http://${host}`)
    }
    ```
-3. **检查 `restart-superagent.ps1` 的 `Listening` 函数（`scripts/restart-superagent.ps1:30-37`）**：
-   * 当前正则 `^\s*TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+\d+\s*$`：对于 IPv6 监听行 `TCP    [::1]:3083    [::]:0    LISTENING    1234`，`\S+:(\d+)` 中贪婪 `\S+` 会回溯匹配最后一个冒号并正确捕获 `3083`（已兼容 IPv4 与 IPv6 `netstat` 输出），补充一条针对 `[::1]:3083` 输出格式的单元测试即可固化保证。
-
 ### 方案 B（备选，严格仅 IPv4）：从脚本中移除 `::1`
 
-若明确生产与测试只允许 IPv4 `127.0.0.1`，则从 `restart-superagent.ps1` 和 `scripts/dsh-superagent` 的白名单中移除 `'::1'` / `'[::1]'`，并在报错信息中明确提示“请使用 `http://127.0.0.1:<port>`”。
+若明确生产与测试只允许 IPv4 `127.0.0.1`，则从 `scripts/dsh-superagent` 的白名单中移除 `'::1'` / `'[::1]'`，并在报错信息中明确提示“请使用 `http://127.0.0.1:<port>`”。
 
 ---
 

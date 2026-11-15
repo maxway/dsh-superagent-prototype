@@ -3,7 +3,6 @@
 * **优先级**：P0（高优 — 影响服务停机、发布更新与健康监控准确性）
 * **涉及文件**：
   * `src/app/runtime.ts`（`requestShutdown` L209-219、`stop` L254-255、`shutdown` L256-288）
-  * `scripts/restart-superagent.ps1`（L55-70）
   * `scripts/dsh-superagent`（`stopServer` L1072-1105）
   * `docs/006-deployment.md` / `docs/zh/006-deployment.md`
   * `tests/runtime.spec.ts`、`tests/http.spec.ts`
@@ -33,7 +32,7 @@
 
 1. **假健康僵尸态**：进程继续监听 `127.0.0.1:<port>`，`GET /orchestrator/api/state` 仍返回 HTTP 200，且 `health.runtime` 依然显示 `'ready'`（仅 `worker` 可能为 `'error'`），外部状态检查与只读 Watchdog 无法直接从 `health.runtime` 识别出“服务已进入不可逆的停机失败瘫痪态”。
 2. **业务完全停摆但占锁占端口**：由于 `closingFlag === true` 且 `lifetime` 已 abort，所有依赖 `this.lifetime` 的 CLI 调用、数据源轮询和工单调度全部失效，但端口和 `orchestrator.sqlite` 锁仍被死死占住。
-3. **二次 `service/stop` 永久无效**：`stop()` 定义为 `return this.stopping ??= this.shutdown()`，缓存了首次 rejected 的 Promise。后续任何 `POST /orchestrator/api/service/stop` 都会立即命中同一个 rejected Promise，既不会重新尝试排空，也不会退出；`restart-superagent.ps1` 与 `scripts/dsh-superagent stop` 只能空等 5 分钟直至超时报错。
+3. **二次 `service/stop` 永久无效**：`stop()` 定义为 `return this.stopping ??= this.shutdown()`，缓存了首次 rejected 的 Promise。后续任何 `POST /orchestrator/api/service/stop` 都会立即命中同一个 rejected Promise，既不会重新尝试排空，也不会退出；`scripts/dsh-superagent stop` 只能空等 5 分钟直至超时报错。
 
 ---
 
@@ -43,7 +42,7 @@
 
 1. **立即可观测**：一旦 `shutdown()` 失败，`runtimeHealth` 必须立即变为 `'error'`，明确标注 `shutdown_failed` 及原因，使 `scripts/dsh-superagent status`（退出码 1）、Web 面板和只读 Watchdog 立即告警。
 2. **显式暴露生命周期阶段**：在 `/orchestrator/api/state` 中（或通过 `runtime` health detail）清晰反映 `closing` / `shutdownFailed` 状态，避免外部工具误判服务仍在正常工作。
-3. **明确重复调用 `POST service/stop` 的语义**：当进程已处于停机失败滞留态时，再次调用 `POST service/stop` 不应返回误导性的 `200 {"stopping": true}`，而应返回明确错误状态码（如 `409` 或 `500`）告知调用方“停机排空未确认，进程已滞留等待人工排查”，让 `restart-superagent.ps1` / `scripts/dsh-superagent stop` 立即失败并输出准确诊断，无需盲等 5 分钟端口关闭。
+3. **明确重复调用 `POST service/stop` 的语义**：当进程已处于停机失败滞留态时，再次调用 `POST service/stop` 不应返回误导性的 `200 {"stopping": true}`，而应返回明确错误状态码（如 `409` 或 `500`）告知调用方“停机排空未确认，进程已滞留等待人工排查”，让 `scripts/dsh-superagent stop` 立即失败并输出准确诊断，无需盲等 5 分钟端口关闭。
 
 ---
 
@@ -64,7 +63,7 @@
 * 在 `requestShutdown()` 入口检查 `this.shutdownError`：
   * 若 `this.shutdownError` 已存在，直接抛出包含该详情的错误（由 `http.ts` 返回 500，或自定义 409 状态错误），不再伪装返回 `{ stopping: true }`。
 
-### 2. 在控制脚本与重启脚本中快速识别停机滞留态（`scripts/dsh-superagent`、`scripts/restart-superagent.ps1`）
+### 2. 在控制脚本中快速识别停机滞留态（`scripts/dsh-superagent`）
 
 * 在发送 `POST /orchestrator/api/service/stop` 后的轮询等待循环中：
   * 除检查进程存活 / 端口监听外，每隔数秒探测一次 `GET /orchestrator/api/state`。
@@ -83,6 +82,6 @@
    * 构造 Worker 停止时抛出 `SubagentCleanupUnconfirmed` 或超时的夹具，调用 `POST /orchestrator/api/service/stop`。
    * 断言数据库与状态锁未释放的同时，`GET /orchestrator/api/state` 中 `health.runtime.state === 'error'` 且包含明确诊断信息。
    * 断言再次请求 `POST /orchestrator/api/service/stop` 时不再返回 `200 { stopping: true }`，而是返回错误响应。
-2. **脚本回归测试（`tests/service-script.spec.ts` & `tests/restart-superagent.spec.ts`）**：
-   * 模拟停机后服务进入 `runtime: error` 滞留态，验证 `stop` 与 `restart-superagent.ps1` 能快速退出并给出清晰的排查提示，而非耗尽 5 分钟超时。
+2. **脚本回归测试（`tests/service-script.spec.ts`）**：
+   * 模拟停机后服务进入 `runtime: error` 滞留态，验证 `stop` 能快速退出并给出清晰的排查提示，而非耗尽 5 分钟超时。
 3. **全量门禁**：在独立任务 worktree 中执行 `pnpm check` 确认类型检查、构建、文档一致性与测试全绿。
