@@ -81,6 +81,7 @@ export class Runtime extends Service implements SourceHost {
   private releaseLock?: () => Promise<void>
   private closingFlag = false
   private stopping?: Promise<void>
+  private shutdownError?: string
   private readonly sourceDeps: SourceContextDeps
   private readonly toolHost: MainToolsHost & ExecutorToolsHost
   /** Non-zero while a main-Session tool is executing an Engine command, suppressing self-triggered domain event notices. */
@@ -207,6 +208,7 @@ export class Runtime extends Service implements SourceHost {
   checkSetup(): void { this.setup.check() }
   /** Ask the plugin to drain Executors and then let DSH's launcher exit, after the current HTTP response. */
   requestShutdown(): void {
+    if (this.shutdownError) throw new Error(this.shutdownError)
     const exit = (this.ctx as unknown as { get(name: string): unknown }).get('appExit')
     if (typeof exit !== 'function') throw new Error('The launcher does not provide an exit hook; stop is unavailable')
     const shutdownExit = exit as (code?: number) => void
@@ -228,6 +230,7 @@ export class Runtime extends Service implements SourceHost {
     // Register management HTTP routes before setup completes so operators can fix setup problems in the UI.
     this.disposers.push(registerHttp(this.ctx, this.httpHost()))
     if (!await this.setup.run(this.store.settings())) {
+      if (this.closing()) return
       this.runtimeHealth.set({ ...health('paused', 'setupPending'), at: now() })
       return
     }
@@ -255,6 +258,7 @@ export class Runtime extends Service implements SourceHost {
   stop(): Promise<void> { return this.stopping ??= this.shutdown() }
   private async shutdown(): Promise<void> {
     this.closingFlag = true; const passes = this.passes.stop(); this.stopped.abort()
+    this.runtimeHealth.set({ state: 'starting', detail: 'shutdown_in_progress: Orchestrator is stopping', at: now() })
     let workersStopped = false
     try {
       this.assessor.stop()
@@ -274,6 +278,12 @@ export class Runtime extends Service implements SourceHost {
       this.sessions.dispose()
       for (const dispose of this.disposers.reverse()) dispose()
       await this.ctx.sessionPersistence.flush()
+    } catch (error) {
+      const causes = (reason: unknown): string => reason instanceof AggregateError
+        ? `${reason.message}: ${reason.errors.map(causes).join('; ')}` : String(reason)
+      this.shutdownError = `shutdown_failed: ${workersStopped ? 'Shutdown failed' : 'Shutdown drain unconfirmed; process, database and state lock retained for investigation'}: ${causes(error)}`
+      this.runtimeHealth.set({ state: 'error', detail: this.shutdownError, at: now() })
+      throw error
     } finally {
       // Close the database before releasing the directory lock so another process cannot open the database mid-write; a compromised lock may already be released.
       if (workersStopped) {

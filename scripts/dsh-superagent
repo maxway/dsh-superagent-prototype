@@ -1083,6 +1083,10 @@ async function stopServer(args, server, intentional) {
     const response = await stopRequest(server.url)
     if (response === null) throw new Error(`Could not ask ${server.url} to stop PID ${server.pid}; no forced kill was sent.`)
     if (response.status < 200 || response.status >= 300) {
+      const current = await state(server.url)
+      if (current?.health?.runtime === 'error' && current.errors?.runtime?.startsWith('shutdown_failed:')) {
+        throw new Error(`${current.errors.runtime} No forced kill was sent; investigate the original process and remaining work.`)
+      }
       throw new Error(`The management API at ${server.url} answered ${response.status} to the stop request; no forced kill was sent.`)
     }
   } else {
@@ -1092,6 +1096,12 @@ async function stopServer(args, server, intentional) {
   while (alive(server.pid)) {
     if (Date.now() >= deadline) throw new Error('Graceful stop timed out; no forced kill was sent. Check status.')
     await sleep(500)
+    if (WINDOWS && alive(server.pid)) {
+      const current = await state(server.url)
+      if (current?.health?.runtime === 'error' && current.errors?.runtime?.startsWith('shutdown_failed:')) {
+        throw new Error(`${current.errors.runtime} No forced kill was sent; investigate the original process and remaining work.`)
+      }
+    }
   }
   if (server.port) {
     const remaining = listenerPids(server.url) ?? []

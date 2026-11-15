@@ -208,7 +208,7 @@ Windows 上写作 `node scripts\dsh-superagent start` 等；该文件没有 `.cm
 
 Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以分离进程启动 `dsh --profile <profile> --no-open`，日志和控制文件与 POSIX 相同，并等待管理 API；它不使用 tmux。当调用者位于 Windows Job 中时，它通过 `scripts\service-start.ps1` 在 Job 之外创建服务，并把同一个 `--home` 传下去。`status` 通过 Windows PowerShell（`powershell.exe`，Windows 自带）列出进程。`stop` 通过 `POST /orchestrator/api/service/stop` 让 DSH 退出，而不是发送信号；它最多等待五分钟，绝不会强制杀死进程。上面的 tmux socket 与 `TMUX` 细节只适用于 POSIX。两种平台使用相同的退出码、日志名和 `manually-stopped` 标记。
 
-`stop` 和 `restart` 请求优雅 drain，并最多等待进程五分钟退出。执行器 drain 的上限是十秒，DSH 启动器再加五秒宽限，因此停止通常约十五秒完成；drain 之后仍在回合中的 worker 可能被打断。POSIX 上它们绝不会强制杀死进程，也不会碰其他 tmux 会话。
+`stop` 和 `restart` 请求优雅 drain，并最多等待进程五分钟退出。执行器 drain 的上限是十秒，DSH 启动器再加五秒宽限，因此停止通常约十五秒完成；drain 之后仍在回合中的 worker 可能被打断。POSIX 上它们绝不会强制杀死进程，也不会碰其他 tmux 会话。候选版本在 drain 未确认时保留进程、数据库和状态锁，运行时健康状态显示 `shutdown_failed` 错误（`status` 以 1 退出），并拒绝后续停机请求。Windows 停机与重启会直接报告该失败，不等待超时或启动替代进程。恢复前应排查原进程与残留工作；不要为继续部署而强制杀进程。现有安装需另行部署此候选版本。
 
 `status` 打印进程 id、健康状况和安装配置问题。要使用其他 profile 或端口，请用 `--profile` 和 `--url`，或设置 `DSH_SUPERAGENT_PROFILE` 和 `DSH_SUPERAGENT_URL`；PowerShell 中设置 `$env:DSH_SUPERAGENT_PROFILE` 和 `$env:DSH_SUPERAGENT_URL`。
 
@@ -331,7 +331,7 @@ observer 使用原子独占 PID 锁。异常退出可能留下锁，系统不会
 | `PUT settings/<block>`，带 `{"value": …, "revision": n}` | 保存一个块：`saved`、该块的新 `revision`、`policy_changed` 和 `restarting`。`value` 是整个块，与 `GET settings` 中的形式相同；缺失的键取默认值 |
 | `POST executor/pause`，带 `{"paused": true}` 或 `false` | 暂停或恢复处理：`paused` |
 | `POST setup/check` | 通过重启 dsh-superagent 再次运行安装配置：`restarting: true`。安装配置没有可修复项时拒绝 |
-| `POST service/stop` | 请求 dsh-superagent 先 drain 执行器（上限十秒），再通过 DSH 启动器退出：`stopping: true`。启动器没有退出钩子时返回 500；服务脚本用它来避免依赖 POSIX 信号 |
+| `POST service/stop` | 请求 dsh-superagent 先 drain 执行器（上限十秒），再通过 DSH 启动器退出：`stopping: true`。启动器没有退出钩子或上次停机失败时返回 500；服务脚本用它来避免依赖 POSIX 信号 |
 | `POST policy-sync/<source id>` | 立即同步该来源的允许名单：`policy`，即保存的来源部分 |
 | `GET prompts`、`PUT prompts`，带 `{"config", "baseRevision"}` | 读取提示词配置：`current`，带有 `revision` 和 `config`；`defaults`；`sections`，即团队段落，按 Session 读取的顺序排列；`skillName`，团队技能名称的模式；`builtin`，团队技能不能使用的名称；以及 `skillPrefix`，Session 加载技能名称时使用的前缀。或保存它：新的 `revision` |
 | `POST tickets/<id>/retry`、`POST tickets/<id>/stop` | 重试或停止一个工单，与面板的行为一致 |
