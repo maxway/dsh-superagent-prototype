@@ -1,6 +1,6 @@
 # Super-agent 设计差距分析
 
-> 对照 [super-agent-design.md](super-agent-design.md) 与当前实现，梳理设计中尚未落地、或只有近似实现的重要能力。基线：`main` @ `7ff7178`（2026-11-09）；与上一版基线（`e095162`，2026-11-07）相比，Watchdog 阶段 2（MR !30、!32）、部署指令与独立执行任务（MR !43）、Git 宿主切换（011 方案 A，MR !34）和 Windows 原生部署（见 [006 部署](../006-deployment.md)、[009 Windows 部署](../009-windows-deployment.md)）已并入主线。设计文档本身是一篇架构探讨，不是产品功能清单；本文只陈述实现与设计之间的差距，不改变设计。每项状态都给出可核查的代码入口或合并请求，剩余工作的拆分与并行边界见 [落地计划](super-agent-design-roadmap.md)，双向发布与看护的设计见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)。
+> 历史快照：以下“当前实现”“当前 main”均指所列基线，不代表现在的部署实现；现行部署限制见 [006 部署](../006-deployment.md)。对照 [super-agent-design.md](super-agent-design.md) 与当时实现，梳理设计中尚未落地、或只有近似实现的重要能力。基线：`main` @ `7ff7178`（2026-11-09）；与上一版基线（`e095162`，2026-11-07）相比，Watchdog 阶段 2（MR !30、!32）、Git 宿主切换（011 方案 A，MR !34）和 Windows 原生部署（见 [006 部署](../006-deployment.md)、[009 Windows 部署](../009-windows-deployment.md)）已并入主线。设计文档本身是一篇架构探讨，不是产品功能清单；本文只陈述实现与设计之间的差距，不改变设计。每项状态都给出可核查的代码入口或合并请求，剩余工作的拆分与并行边界见 [落地计划](super-agent-design-roadmap.md)，双向发布与看护的设计见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)。
 
 ## 结论
 
@@ -10,7 +10,7 @@
 
 - **已实现**：双层架构、两级过滤、订阅与直通、Inline & Spill 与链式召回（GitHub 与 GitLab）、异步后台作业、IM 与 Git 信道的定制交互；部署也支持原生 Windows 上的本机进程（[009 Windows 部署](../009-windows-deployment.md)）。
 - **未实现**：计算与状态分离（5.1）、计算与执行环境分离（5.2）。这是设计五个模块中缺失的两个。
-- **部分实现**：Watchdog（第 6 节）的只读巡检已落地（MR !28）；retry/stop 介入（MR !30、!32）已随外部独立 Watchdog 的启用而移除，缺从 Watchdog 修改设置或提示词；部署指令与独立执行任务已落地（MR !43），2026-11-09 的 Windows Job 归属问题已由 `scripts/service-start.ps1` 与 `verify` 修复；Watchdog 独立更新、Session 级看护和双向心跳仍未完成（见 [互辅助设计](watchdog-superagent-mutual-assist.md)）；投机执行（3.4）可以由主动规则近似，但没有决定前提前行动的独立机制。
+- **部分实现**：Watchdog（第 6 节）的只读巡检已落地（MR !28）；retry/stop 介入（MR !30、!32）已随外部独立 Watchdog 的启用而移除，缺从 Watchdog 修改设置或提示词；2026-11-09 的 Windows Job 归属问题已由 `scripts/service-start.ps1` 与 `verify` 修复；Watchdog 独立更新、Session 级看护和双向心跳仍未完成（见 [互辅助设计](watchdog-superagent-mutual-assist.md)）；投机执行（3.4）可以由主动规则近似，但没有决定前提前行动的独立机制。
 - **设计自身的开放问题**：长程记忆、Router 水平切分、A2A、安全与隐私（第 8 节）在设计里也没有答案，当前实现同样未解决，不应算作本项目的实现缺口。
 - **范围与限制**：飞书没有线程上下文读取，链式召回在飞书线程上受限；邮件、文档等信道未接入；没有第 7 节那样的架构级评测。
 
@@ -31,7 +31,7 @@
 | 7 | 架构实验 | 未实现 | `tests/` 有功能与并发测试，但没有批处理、直通或双层架构对比的负载脚本与指标 |
 | 8.1–8.4 | 长程记忆、Session 之外的协作、A2A、安全与隐私 | 未解决 | 设计标为开放问题；当前实现没有完整方案：8.2 已有执行中追加消息、停止与重试，8.4 见下文的权限限制；`src/core/memory.ts` 只是测试用的内存仓储，不是长程记忆 |
 
-**核查方式。** 上表的“已实现”以当前 `main` 的源码入口和测试为准，“未实现”以源码中没有对应入口、且 `tests/` 没有相应覆盖为准。合并请求可按编号在 GitLab 上查到，测试文件可在 `tests/` 直接检索。
+**核查方式。** 上表的“已实现”以所列基线的源码入口和测试为准，“未实现”以源码中没有对应入口、且 `tests/` 没有相应覆盖为准。合并请求可按编号在 GitLab 上查到，测试文件可在 `tests/` 直接检索。
 
 ## 已实现的部分
 

@@ -24,7 +24,6 @@
 | 独立 Watchdog 进程 | `scripts/watchdog` | 常驻 observer：自有配置/状态/日志/pid，用版本化长等待跟随变化（`GET /orchestrator/api/watchdog/wait`），记录运行、飞书日报与独立告警；配置 `agentConfig` 时新风险交给同版本完整 agent，observer 不再重复发机械报告 |
 | Watchdog observer 与风险 agent（本机） | `C:\Users\dd\.dsh\watchdog-independent` 的 `current.txt` 指向的版本化制品（`watchdog`、`agent\run.ps1`、`gate.mjs`、`prompt.md`） | 计划任务 `dsh-superagent-watchdog-observer` 在登录时经 `launch-observer.vbs`/`launch-observer.ps1` 常驻运行 observer；observer 在长连接发现新风险时调用同版本 `agent\run.ps1`，由完整 DSH agent 判定和报告；每 30 分钟的 `dsh-superagent-watchdog-agent` 定时 gate 已删除。2026-11-10 安装 `obs-525e65f`（提交 `525e65f`），常驻 observer 已运行并记录带版本的心跳 |
 | Superagent 侧部署入口 | `src/app/deployment.ts`、`orchestrator_deploy` | 主 Session 把操作者的部署原话写入请求文件，并执行 `DSH_SUPERAGENT_DEPLOY_COMMAND`；请求文件路径必须与部署任务的 `requestPath` 一致 |
-| 独立部署任务（本机） | 仓库 `scripts/deploy.ps1` → `scripts/deploy.mjs` + `C:\Users\dd\.dsh\watchdog-deploy\deploy-config.json`，计划任务 `dsh-superagent-deploy` | 配置了 `mechanical` 时由 `deploy.mjs` 机械停服、备份停机状态、按清单切换、启动并做存活校验，不调用模型；否则回退 headless DSH agent 按 `local-superagent-release` 技能执行。两条路径都归档请求并写结果文件；生产配置尚未启用 `mechanical` |
 
 ### 2.2 事故一：Feishu watch 关闭竞态（已修复，本 MR）
 
@@ -37,15 +36,9 @@
 
 修复（`src/sources/feishu-loops.ts`）：读取设置统一经过 `sourceOn()`，数据库已关闭时返回 `undefined` 并停止循环；收到 abort 时立即清除 interval；未就绪/关闭期间收到的事件直接丢弃。回归测试 `tests/sources.spec.ts` 的 “stops quietly when the state database closes before the consumer stops” 在修复前复现了同一条 `database is not open` 栈。
 
-### 2.3 事故二：部署 agent 退出杀死了服务（未修复，属于本设计范围）
+### 2.3 Windows Job 生命周期
 
-2026-11-09 10:33–10:43 的部署中，`deploy.ps1` 启动 headless DSH agent；agent 在 10:41 用 `service.ps1 start` 拉起生产服务，10:42 健康检查和飞书报告成功，10:43 agent 正常 `exit=0`。agent 一退出，服务进程和同一 agent 在 10:42 拉起的独立 Watchdog 进程同时消失，服务在 10:43–11:00 不可用。
-
-机制已经核实：DSH 的 Windows 子进程 provider 为每条工具命令创建 Windows Job，并设置 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`；普通后代默认继承 Job，`detached: true` 不能 breakaway（Job 未设置 breakaway 许可）。因此从 DSH agent 的工具中启动的“detached”服务仍在该 agent 的 Job 里，agent 退出时被 Job 一并终止，没有 JS 异常日志。部署的“成功”验证发生在 agent 退出前几秒，形成盲区。
-
-此外，2026-11-09 11:27 现场检查显示当前服务仍在桌面 DSH 的 Job 中（`IsProcessInJob=true`），关闭或重启桌面 DSH 仍可能再次静默杀死服务。这属于当前运维风险，需要操作员在独立的计划任务/普通终端中重启一次生产实例；本文不执行该重启。
-
-这两起事故说明：当前“互相部署”在**代码层**是连通的，但在**进程生命周期、制品版本和健康反馈**三方面没有解耦。
+服务启动必须避免继承短生命周期执行器的 Windows Job：`detached: true` 不保证进程脱离 Job。退出前的健康检查也不能证明执行器退出后的存活；应在独立进程中控制服务，并验证实际运行状态。
 
 ## 3. 设计原则
 
@@ -63,7 +56,6 @@ Windows Task Scheduler / systemd
 ├── dsh-superagent-service-start   ← 独立启动服务（不在任何 DSH Job 内）
 ├── dsh-superagent-watchdog-observer ← 常驻 observer（HTTP 长连接；新风险时运行完整 agent）
 ├── dsh-superagent-watchdog        ← 常驻 observer（scripts/watchdog 或安装后的制品）
-├── dsh-superagent-deploy          ← 受控发布 Superagent
 └── dsh-superagent-watchdog-update ← 独立更新/回滚 Watchdog
         │
         ├── Superagent 服务（管理 API、面板、Session、SQLite）
@@ -146,7 +138,7 @@ Windows Task Scheduler / systemd
 | P3（中期） | 快照增加 Session 观测与信号；enforce 下有界 retry/重启；服务/宿主机检查项（路线图 L）；服务不可用时的独立告警 | 杀死测试 Session 后 Watchdog 能识别并恢复/报告；服务停止期间 Watchdog 仍工作并留下记录 |
 | P4（可选） | 面板部署/更新入口与状态查询；审批与维护窗口配置；自动化边界评估 | 断线可恢复查看；未授权/未配置时不可执行 |
 
-**P1 状态（2026-11-09）。** `scripts/dsh-superagent start` 已改为在调用方位于 Windows Job 中时，通过 WMI 让 `scripts/service-start.ps1` 在 Job 之外启动服务，并由 `status` 报告实时归属与最近启动方式。生产实例已由独立部署任务切换到 `0cf6a69`，`DSH_SUPERAGENT_WATCHDOG_RECOVERY=enforce`，执行器退出后服务继续存活。验收时发现：Node v24（libuv 1.52）会在进程第一次 spawn 非 detached 子进程时，把进程自己加入一个由它创建并持有的 kill-on-close Job（服务的 Feishu 事件消费者即触发），因此 `IsProcessInJob=false` 对运行中的服务永远不成立；全量句柄枚举实测服务只在该自建 Job 内，不在任何外部/DSH Job 中。`status`/`verify` 因此区分 `inJob`（任意归属）与 `foreignJob`（是否位于非自身创建的 Job），验收以 `foreignJob=false` 且执行器退出后同一进程继续存活为准；`scripts/deploy.ps1` 在部署 agent 退出后运行该检查并记录结果。2026-11-10 00:39 的生产 `verify --survival-seconds 3` 已以 `foreignJob=false` 通过，修正后的控制脚本已在生产生效。2026-11-10 新增 `scripts/deploy.mjs`：配置 `mechanical` 时例行部署只做机械预检、停服、停机状态备份、清单切换、启动和存活校验，不调用模型，失败时恢复运行文件并重启上一版；没有 `mechanical` 时保留 headless agent 回退。生产配置尚未启用 `mechanical`，启用步骤见 `docs/zh/006-deployment.md`。
+**P1 历史观察（2026-11-09）。** 服务控制改用 WMI 在外部 Job 之外启动，状态检查区分服务自建 Job 与外部 Job。历史验收曾观察到进程在执行器退出后继续存活；这不证明当前部署状态。
 
 **P2 状态（2026-11-09）。** Watchdog agent 脚本已入仓并模板化；`scripts/watchdog-artifact.mjs` 构建带 manifest/摘要的不可变制品，`watchdog-smoke.mjs` 用本地 mock 验证自包含性；`watchdog-launch.ps1` 作为稳定启动器读取 `current.txt`；`watchdog-update.mjs` 实现请求校验、staging 根校验、smoke、安装、指针切换、锁、幂等、心跳和回滚，更新运行记录携带 `version`/`commit`。agent 包装支持独立 `workspace`，默认按 service profile 生成 `workspaces\watchdog_<profile>`（如 `watchdog_superagent`、`watchdog_sheepdoku`），启动 gate 与完整 agent 前切换进去，并拒绝等于 checkout 或位于其内的路径；提示词改用 checkout 绝对路径，因此 Watchdog 的 Session 不再进入 Desktop 的 checkout 工作区。面板已在执行页显示双方版本、最近心跳，以及 current/候选/上一版与最近更新（缺失/过期/失败显示警告）；更新任务支持持久 observer 的停止、切换、启动与失败回滚。2026-11-10 01:31 生产安装 `obs-525e65f`（提交 `525e65f`），常驻 observer 由登录任务启动、`lastRun` 携带新版本；agent 包装运行于独立 workspace（`watchdog-independent\workspace`）。每 30 分钟的定时 gate 任务已删除。P4 保持方案状态，其待决策项见下一节。
 
