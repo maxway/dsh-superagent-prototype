@@ -49,7 +49,7 @@
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run && node --test tests/workspace-inventory.test.mjs",
+    "test": "vitest run && node --test tests/workspace-inventory.test.mjs tests/runtime-installed.test.mjs tests/runtime-prepare.test.mjs tests/runtime-activate.test.mjs tests/runtime-artifact.test.mjs tests/runtime-deploy.test.mjs tests/runtime-paths.test.mjs tests/runtime-e2e.test.mjs tests/runtime-release-verify.test.mjs tests/runtime-service-lock.test.mjs tests/runtime-bundle-match.test.mjs tests/runtime-local-entry.test.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm build"
   },
   "engines": {

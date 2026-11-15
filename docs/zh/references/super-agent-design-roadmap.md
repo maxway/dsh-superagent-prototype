@@ -2,7 +2,7 @@
 
 > **历史规划快照：** 本文的“现状”、完成状态、生产部署记录和后续工作流均反映下述基线及当时的计划，并非当前功能或生产状态的证明。候选 Watchdog 改为固定间隔只读 GET 和本地记录，不运行 agent、自动恢复或轮询部署；控制入口的启停、部署及更新暂时停用。现有生产须单独部署新版本才生效，旧任务可能仍运行；现行说明见 [部署文档](../006-deployment.md#独立-watchdog-进程)。
 
-> 基于 [super-agent-design.md](super-agent-design.md) 和 [能力差距分析](super-agent-design-gap-analysis.md)，把尚未落地的工作拆成可独立交付的工作流和里程碑。基线：`main` @ `e7b6264`（2026-11-09）；Watchdog 只读巡检（MR !28）与独立进程已落地，阶段 2 的 retry/stop 介入（MR !30、!32）已随外部独立 Watchdog 的启用而移除；部署指令与独立执行任务（MR !43）已落地，2026-11-09 的 Windows Job 归属问题由 `scripts/service-start.ps1` 与 `verify` 修复；多 Git 来源方案 A（MR !34）与 Windows 原生部署系列（MR !10–!19）已落地。多 Git 来源的完整现状见 [011 多 Git 来源](../011-multi-git-sources.md)；双向发布与看护的设计见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)。
+> 基于 [super-agent-design.md](super-agent-design.md) 和 [能力差距分析](super-agent-design-gap-analysis.md)，把尚未落地的工作拆成可独立交付的工作流和里程碑。基线：`main` @ `e7b6264`（2026-11-09）；Watchdog 只读巡检（MR !28）与独立进程已落地，阶段 2 的 retry/stop 介入（MR !30、!32）已随外部独立 Watchdog 的启用而移除；2026-11-09 的 Windows Job 归属问题由 `scripts/service-start.ps1` 与 `verify` 修复；多 Git 来源方案 A（MR !34）与 Windows 原生部署系列（MR !10–!19）已落地。多 Git 来源的完整现状见 [011 多 Git 来源](../011-multi-git-sources.md)；双向发布与看护的设计见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)。
 
 ## 现状
 
@@ -17,7 +17,7 @@
 尚未完成：
 
 - Watchdog 阶段 3：从 Watchdog 修改设置或提示词。
-- Superagent 内的部署入口，以及由独立 Watchdog 执行受控发布和主机服务看护（检查项与有界恢复）：`orchestrator_deploy`、独立 `dsh-superagent-deploy` 任务与 `scripts/deploy.ps1` 已落地（MR !43），部署执行器改为在 agent 退出后做存活校验，P1 已由生产 `verify`（`foreignJob=false`）验证；Watchdog 制品已脱离 checkout。当时常驻 observer 曾取代定时 gate，并由长连接触发完整 agent；这不是候选模式。基线时仍未完成：主机检查项、独立飞书投递，以及运行中服务的部署请求路径加载（配置已修正，需下次启动生效）。设计与分阶段方案见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)。
+- 独立发布和主机服务看护的设计与分阶段方案见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)；历史部署链已废弃，候选 observer 不执行发布或自动恢复。
 - 设计第 5 节的两个模块：计算与状态分离（5.1）、计算与执行环境分离（5.2）。
 - 投机执行（3.4）、飞书线程上下文、架构级评测、安全与隐私加固，以及可选的邮件/文档信道。
 - 多 Git 的 B（同宿主多项目）和 C（跨宿主并发）；D（一个工单跨项目）不在第一版。
@@ -216,7 +216,7 @@
 
 ### K. Superagent 部署入口与独立 Watchdog
 
-> 状态：部署请求文件、独立执行任务与 `scripts/deploy.ps1` 已落地（MR !43）；执行器退出后的存活校验和 Job 归属判定已修复，生产 `verify` 于 2026-11-10 以 `foreignJob=false` 通过。2026-11-10 新增 `scripts/deploy.mjs` 机械执行器（只读计划、停服、停机状态备份、清单切换、启动、存活校验与回滚，不调用模型）；配置 `mechanical` 后例行部署不再使用 headless agent，生产配置尚未启用。版本化 Watchdog 制品、独立更新任务和面板安装/心跳信息已落地（P2）。仍未完成：面板发起部署的入口、部署状态查询与断线恢复；另外生产服务的 `DSH_SUPERAGENT_DEPLOY_REQUEST` 仍指向旧 `watchdog` 路径，与部署任务的 `requestPath`（`watchdog-deploy`）不一致，需在下次启动前对齐。当前生产发布仍由操作员批准维护窗口。详见 [Watchdog 与 Superagent 互辅助设计](watchdog-superagent-mutual-assist.md)。
+> 历史部署链已废弃；候选 observer 不执行部署，现行限制见 [部署文档](../006-deployment.md)。
 
 **目标。** 在 Superagent 面板提供部署入口，展示当前版本、候选版本和部署状态；由独立于被更新服务的 Watchdog 或部署监督器在授权后执行发布，服务停止或重启时监督器仍能继续工作。面板断线后可恢复查看结果，服务无法恢复时也能从监督器侧查询。
 

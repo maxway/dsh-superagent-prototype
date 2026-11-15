@@ -1,0 +1,9 @@
+{
+  "checkout": "F:\\dsh-superagent-runtime\\current",
+  "home": "F:\\dsh-superagent-runtime\\dsh-home",
+  "agentsHome": "F:\\dsh-superagent-runtime\\dsh-home\\agents",
+  "profile": "superagent",
+  "url": "http://127.0.0.1:3082",
+  "node": "C:\\Program Files\\nodejs\\node.exe",
+  "installedOnly": true
+}

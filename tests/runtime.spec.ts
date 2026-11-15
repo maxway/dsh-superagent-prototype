@@ -273,6 +273,31 @@ async function releaseRetainedRuntime(target: Runtime): Promise<void> {
   await retained.releaseLock?.()
 }
 
+it('exposes a retained shutdown failure and refuses a repeated stop', async () => {
+  const ctx = (runtime as unknown as { ctx: Context }).ctx
+  const exit = vi.fn()
+  ctx.reflect.provide('appExit', exit)
+  vi.spyOn(runtime.executor, 'shutdown').mockRejectedValue(new Error('subagent cleanup unconfirmed'))
+  const close = vi.spyOn(runtime.store, 'close')
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    expect(await api('POST', 'service/stop')).toEqual({ status: 200, body: { stopping: true } })
+    await vi.advanceTimersByTimeAsync(50)
+    expect(exit).not.toHaveBeenCalled()
+    expect(close).not.toHaveBeenCalled()
+    expect(await api('GET', 'state')).toMatchObject({ status: 200, body: { health: { runtime: {
+      state: 'error', detail: expect.stringContaining('shutdown_failed:') } } } })
+    expect(runtime.health.runtime?.detail).toContain('subagent cleanup unconfirmed')
+    expect(await api('POST', 'service/stop')).toMatchObject({ status: 500, body: { error: expect.stringContaining('shutdown_failed:') } })
+    const other = new Context()
+    for (const [name, service] of Object.entries(services)) other.reflect.provide(name, service)
+    expect(() => new Runtime(other, testMachine({ stateDir: directory }), vi.fn())).toThrow(/already being held/)
+  } finally {
+    vi.useRealTimers()
+    await releaseRetainedRuntime(runtime)
+  }
+})
+
 it.each([
   { failingAgent: 'main', executorFails: false },
   { failingAgent: 'worker', executorFails: false },

@@ -1,0 +1,10 @@
+{
+  "SourceRepo": "F:\\superagent-source.git",
+  "Remote": "origin",
+  "Ref": "refs/heads/main",
+  "RuntimeRoot": "F:\\dsh-superagent-runtime",
+  "Config": "F:\\dsh-superagent-runtime\\config\\service.json",
+  "Node": "C:\\path\\to\\node.exe",
+  "Git": "C:\\path\\to\\git.exe",
+  "Pnpm": "C:\\path\\to\\pnpm.cmd"
+}

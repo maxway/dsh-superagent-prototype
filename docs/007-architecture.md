@@ -359,12 +359,10 @@ Some generic modules still need provider-specific behavior:
 | `src/app/watchdog.ts` | Service-side observation recording from the live snapshot; its last run is not the independent observer heartbeat |
 | `src/app/watchdog-recovery.ts` | The bounded enforce-mode recovery: rechecks an absent worker Session, snapshot freshness, pause and the per-Session retry ceiling, then retries once and writes an audit row; never restarts the service |
 | `scripts/dsh-superagent` | The cross-platform service control script: start, stop, restart, status, verify and Watchdog commands; the listening owner of `--url` is authoritative, on Windows a stop without `--url` discovers the running superagent from its management state, logs and control files live under `<DSH home>/service/`, and it starts outside a Windows Job when needed |
-| `scripts/dsh-superagent.ps1` | The Windows operator entry: normal start and restart update and build latest; `-UseInstalled` is reserved for the internal start and dedicated crash recovery |
-| `scripts/restart-superagent.ps1`, `scripts/update-superagent.ps1` | Mechanical latest-code deployment: stop the configured server, pull, install, build and start; never controls Watchdog or calls a model |
+| `scripts/dsh-superagent.ps1` | The Windows operator entry for configured service lifecycle actions; installed runtime controls are described in [deployment](006-deployment.md) |
 | `scripts/recover-superagent.ps1` | Dedicated server-crash recovery: start the installed version while respecting an intentional stop |
-| `scripts/deploy.mjs`, `scripts/deploy.ps1` | Independent deployment task: validates requests, invokes the mechanical restart and archives successful unchanged requests without model fallback |
 | `scripts/watchdog` | Intended independent observer: reads GET snapshots at fixed intervals without long polling and writes local state, logs and heartbeat; no model, Feishu, service writes, automatic recovery, deployment polling or self-update. Existing installations require a separate Watchdog deployment to adopt this behavior |
-| `scripts/watchdog-deployment.mjs`, `scripts/watchdog-agent/`, `scripts/watchdog-bootstrap.mjs` | Legacy helpers, excluded from the new artifact; separately installed old tasks may still run |
+| `scripts/watchdog-agent/`, `scripts/watchdog-bootstrap.mjs` | Legacy helpers, excluded from the new artifact; separately installed old tasks may still run |
 | `scripts/watchdog-artifact.mjs`, `scripts/watchdog-smoke.mjs` | Artifact build and isolated smoke tooling; deployment is a separate operator action |
 | `scripts/watchdog-launch-observer.ps1`, `scripts/watchdog-launch-observer.vbs` | Intended launcher runs the currently installed observer version without fetching or updating; the VBS entry starts it hidden. Existing installations require separate deployment |
 | `scripts/launch-hidden.vbs` | Windowless entry point for non-interactive Windows tasks; starts the given command hidden, waits and returns its exit code |
@@ -446,8 +444,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/gitlab-webhook.spec.ts` | The GitLab webhook: listener verification, wake coalescing, and creation, update and removal of the project hook |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/deploy-command.spec.ts` | The main Session's deploy request: the configuration from the environment, the atomic request file, starting the independent task and a failing command |
-| `tests/deploy-executor.spec.ts` | The mechanical deployment entry: latest-only request, service configuration mapping, mock restart, request archival and failure reporting without model fallback |
-| `tests/restart-superagent.spec.ts` | Windows mechanical restart and crash recovery: target validation, stop, update, startup and failure handling |
+| `tests/restart-superagent.spec.ts` | Windows installed-version recovery and control safeguards |
 | `tests/commands-window.spec.ts` | The hidden window of a background CLI command |
 | `tests/github-read.spec.ts` | GitHub reads |
 | `tests/admission-context.spec.ts` | The Thread window of assessments |
@@ -480,7 +477,6 @@ Some generic modules still need provider-specific behavior:
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/watchdog.spec.ts` | The Watchdog view and its Feishu observation summary: stages, latest reports, silence, faults, off-peak and review waits, activity from Inputs, a missing worker Session, and the rendered report |
 | `tests/watchdog-process.spec.ts` | Independent observer behavior, configuration and local state |
-| `tests/watchdog-deployment.spec.ts` | Legacy deployment polling helper coverage; not behavior of the intended observer |
 | `tests/watchdog-gate.spec.ts` | Legacy gate helper coverage; the new artifact excludes the agent module |
 | `tests/watchdog-artifact.spec.ts` | Watchdog artifact file set, manifest and verification coverage |
 | `tests/watchdog-agent.spec.ts` | The Watchdog agent wrapper: the full agent starts in its own configured workspace with absolute checkout commands, a workspace inside the checkout is refused, and an unset workspace is named after its service profile (`watchdog_superagent`, `watchdog_sheepdoku`) |
