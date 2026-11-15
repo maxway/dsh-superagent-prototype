@@ -24,7 +24,8 @@ function Fail([string]$message) { throw $message }
 
 $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($env:HOME) { $env:HOME } else { (Get-Location).Path }
 $defaultConfig = [System.IO.Path]::Combine($userHome, '.dsh-superagent', 'service.json')
-$configExplicit = $PSBoundParameters.ContainsKey('Config') -and -not [string]::IsNullOrWhiteSpace($Config)
+$configExplicit = ($PSBoundParameters.ContainsKey('Config') -and -not [string]::IsNullOrWhiteSpace($Config)) -or
+  (-not $Config -and -not [string]::IsNullOrWhiteSpace($env:DSH_SUPERAGENT_SERVICE_CONFIG))
 if (-not $Config) { $Config = $env:DSH_SUPERAGENT_SERVICE_CONFIG }
 if (-not $Config) { $Config = $defaultConfig }
 
@@ -34,11 +35,11 @@ if (Test-Path -LiteralPath $Config) {
     Fail "Cannot read the service configuration $Config`: $($_.Exception.Message)"
   }
   $allowed = @('checkout', 'home', 'agentsHome', 'profile', 'url', 'node', 'timeout', 'stopTimeout', 'survivalSeconds',
-    'path', 'deployRequest', 'deployCommand')
+    'path', 'deployRequest', 'deployCommand', 'installedOnly')
   foreach ($property in $value.PSObject.Properties) {
     if ($property.Name -notin $allowed) { Fail "Unknown key '$($property.Name)' in $Config" }
   }
-} elseif ($configExplicit) {
+} elseif ($configExplicit -or $Action -in @('start', 'stop', 'restart')) {
   Fail "The service configuration does not exist: $Config"
 }
 
@@ -51,6 +52,8 @@ function Value([string]$name, $fallback) {
 }
 
 # The wrapper exposes one action; target facts and tuning live in the machine configuration, not in the command line.
+$installedOnly = Value 'installedOnly' $false
+if ($installedOnly -isnot [bool]) { Fail 'installedOnly must be a boolean.' }
 $Checkout = [string](Value 'checkout' (Split-Path -Parent $PSScriptRoot))
 $DshHome = [string](Value 'home' $env:DSH_HOME)
 if (-not $DshHome) { $DshHome = [System.IO.Path]::Combine($userHome, '.dsh') }
@@ -78,6 +81,7 @@ if ($target.Host -notin @('127.0.0.1', 'localhost', '::1', '[::1]')) {
 if ($target.Port -le 0) { Fail "The URL must name an explicit loopback port: $Url" }
 
 $node = [string](Value 'node' '')
+if ($installedOnly -and (-not $node -or -not [System.IO.Path]::IsPathFullyQualified($node))) { Fail 'Installed-only configuration must specify an absolute Node executable.' }
 if (-not $node) { $node = (Get-Command node -ErrorAction Stop).Source }
 if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { Fail "The Node executable does not exist: $node" }
 
@@ -92,8 +96,8 @@ if ($Action -in @('start', 'restart')) {
 }
 $deployRequest = [string](Value 'deployRequest' '')
 $deployCommand = [string](Value 'deployCommand' '')
-if ($deployRequest) { $env:DSH_SUPERAGENT_DEPLOY_REQUEST = $deployRequest }
-if ($deployCommand) { $env:DSH_SUPERAGENT_DEPLOY_COMMAND = $deployCommand }
+$env:DSH_SUPERAGENT_DEPLOY_REQUEST = $deployRequest
+$env:DSH_SUPERAGENT_DEPLOY_COMMAND = $deployCommand
 
 if ($RespectStop -and $Action -in @('start', 'restart')) {
   $markers = @(
@@ -106,32 +110,13 @@ if ($RespectStop -and $Action -in @('start', 'restart')) {
   }
 }
 
-$mutex = $null
-$locked = $false
+$serviceLock = $null
 try {
 if (-not $alreadyLocked -and $Action -in @('stop', 'start', 'restart')) {
   . (Join-Path $PSScriptRoot 'superagent-lifecycle-lock.ps1')
-  $mutex = Get-SuperagentLifecycleMutex $DshHome $DshProfile
-  try { $locked = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $locked = $true }
-  if (-not $locked) { Fail 'Another deployment or recovery is already in progress.' }
+  $serviceLock = Enter-SuperagentServiceLock $DshHome $DshProfile
 }
 $env:DSH_SUPERAGENT_LIFECYCLE_LOCKED = '1'
-if ($Action -in @('start', 'restart') -and -not $UseInstalled) {
-  if ($Action -eq 'restart') {
-    & $node $control 'stop' '--profile' $DshProfile '--home' $DshHome '--url' $Url '--stop-timeout' ([string]$StopTimeout)
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  }
-  $statusOutput = & $node $control 'status' '--profile' $DshProfile '--home' $DshHome '--url' $Url
-  try { $status = $statusOutput | ConvertFrom-Json } catch { Fail 'Cannot establish whether the service is stopped; refusing to update the checkout.' }
-  if ($null -eq $status -or $status.identity -ne 'listener' -or @($status.pids).Count -or @($status.foreign).Count -or @($status.unlistening).Count) {
-    Fail 'The service may be running or its listener cannot be identified; refusing to update the checkout.'
-  }
-  $shell = (Get-Process -Id $PID).Path
-  & $shell -NoProfile -NonInteractive -File (Join-Path $Checkout 'scripts\update-superagent.ps1') -Checkout $Checkout
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  $Action = 'start'
-}
-
 $arguments = @($control, $Action, '--profile', $DshProfile, '--home', $DshHome)
 # A stop without a named URL discovers the running server; keep a configured/explicit URL exact.
 if ($urlConfigured -or $Action -ne 'stop') { $arguments += @('--url', $Url) }
@@ -143,6 +128,6 @@ if ($RespectStop) { $arguments += '--respect-stop' }
 & $node @arguments
 exit $LASTEXITCODE
 } finally {
-  if ($locked) { $mutex.ReleaseMutex() }
-  if ($mutex) { $mutex.Dispose() }
+  Remove-Item Env:DSH_SUPERAGENT_LIFECYCLE_LOCKED -ErrorAction SilentlyContinue
+  if ($null -ne $serviceLock) { Exit-SuperagentServiceLock $serviceLock }
 }

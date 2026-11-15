@@ -15,8 +15,8 @@ it('reads the deploy request path and an optional wakeup command', () => {
   expect(deploymentConfig({ DSH_SUPERAGENT_DEPLOY_REQUEST: 'C:\\watchdog\\deploy-request.json' }))
     .toEqual({ requestPath: 'C:\\watchdog\\deploy-request.json' })
   expect(deploymentConfig({ DSH_SUPERAGENT_DEPLOY_REQUEST: ' C:\\watchdog\\deploy-request.json ',
-    DSH_SUPERAGENT_DEPLOY_COMMAND: ' schtasks /run /tn dsh-superagent-deploy ' }))
-    .toEqual({ requestPath: 'C:\\watchdog\\deploy-request.json', command: 'schtasks /run /tn dsh-superagent-deploy' })
+    DSH_SUPERAGENT_DEPLOY_COMMAND: ' executor --wake ' }))
+    .toEqual({ requestPath: 'C:\\watchdog\\deploy-request.json', command: 'executor --wake' })
 })
 
 it('writes the operator request atomically and starts the independent deployment task', async () => {
@@ -32,7 +32,7 @@ it('writes the operator request atomically and starts the independent deployment
   expect(request).toMatchObject({ confirmation: '部署superagent', target: 'latest' })
 })
 
-it('queues a request without a scheduler command for the standing Watchdog', async () => {
+it('queues a request without a scheduler command', async () => {
   directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-deploy-'))
   const requestPath = join(directory, 'deploy-request.json')
   const request = await requestDeployment({ requestPath }, '部署最新版本')

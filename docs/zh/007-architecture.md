@@ -361,12 +361,10 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `src/app/watchdog.ts` | 服务侧从实时快照记录观测；最近运行不是独立 observer 的心跳 |
 | `src/app/watchdog-recovery.ts` | enforce 模式下的有界恢复：重新检查缺失 worker Session、快照新鲜度、暂停状态和每 Session 恢复上限，然后 retry 一次并写审计行；绝不重启服务 |
 | `scripts/dsh-superagent` | 跨平台服务控制脚本：start、stop、restart、status、verify 与 Watchdog 命令；`--url` 的监听套接字所有者才是权威目标，Windows 上不传 `--url` 的 stop 会从管理状态自动发现正在运行的 superagent，日志和控制文件位于 `<DSH home>/service/`，需要时在 Windows Job 之外启动 |
-| `scripts/dsh-superagent.ps1` | Windows 操作入口：普通 start/restart 在确认停服后拉取并构建最新代码；`-UseInstalled` 供专用恢复和内部调用，`-RespectStop` 尊重主动停机标记；机器 JSON 固定 checkout/home/profile/回环 URL |
-| `scripts/restart-superagent.ps1`, `scripts/update-superagent.ps1` | 独立机械部署：确认本机目标、停服后 fast-forward 拉取 `origin/main`、安装依赖、构建并启动；不调用模型，不备份或回滚，失败可能停机 |
+| `scripts/dsh-superagent.ps1` | Windows 服务生命周期操作入口；已安装运行时的控制见[部署文档](006-deployment.md) |
 | `scripts/recover-superagent.ps1` | 独立服务器恢复 helper：尊重主动停机标记，启动已安装版本，不拉取或构建；预期 observer 不调用它 |
-| `scripts/deploy.mjs`, `scripts/deploy.ps1` | 独立部署任务：校验请求并调用机械重启脚本，成功归档未变更请求；不支持模型驱动回退 |
 | `scripts/watchdog` | 预期独立 observer：固定间隔以 GET 读取快照，不使用长轮询，写本地状态、日志和心跳；不运行模型、发飞书、写服务、自动恢复、轮询部署或自更新。现有安装须单独部署新版才能生效 |
-| `scripts/watchdog-deployment.mjs`, `scripts/watchdog-agent/`, `scripts/watchdog-bootstrap.mjs` | 旧辅助模块，不包含在新制品内；另行安装的旧任务仍可能运行 |
+| `scripts/watchdog-agent/`, `scripts/watchdog-bootstrap.mjs` | 旧辅助模块，不包含在新制品内；另行安装的旧任务仍可能运行 |
 | `scripts/watchdog-artifact.mjs`, `scripts/watchdog-smoke.mjs` | 制品构建与独立冒烟工具；部署须由操作员另行处理 |
 | `scripts/watchdog-launch-observer.ps1`, `scripts/watchdog-launch-observer.vbs` | 预期 launcher 只运行已安装的当前 observer，不拉取或更新；VBS 以隐藏窗口启动。现有安装须单独部署新版 |
 | `scripts/launch-hidden.vbs` | 非交互 Windows 任务的无窗口入口：隐藏启动命令、等待并返回退出码 |
@@ -448,8 +446,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/gitlab-webhook.spec.ts` | GitLab webhook：监听器校验、唤醒合并和项目 hook 的创建、更新与删除 |
 | `tests/commands.spec.ts` | 以部署账号执行的 CLI 调用、渠道的回答，以及限定在仓库范围内的 GitHub 调用 |
 | `tests/deploy-command.spec.ts` | 主 Session 的部署请求：从环境读取配置、原子写请求文件、启动独立任务，以及命令失败 |
-| `tests/deploy-executor.spec.ts` | 机械部署执行器：配置映射、只读计划、请求归档、失败时保留请求，以及拒绝旧版本目标和 agent 模式 |
-| `tests/restart-superagent.spec.ts` | Windows 机械重启和崩溃恢复：目标校验、停服、更新、启动和失败处理 |
+| `tests/restart-superagent.spec.ts` | Windows 已安装版本的恢复和控制保护 |
 | `tests/commands-window.spec.ts` | 后台 CLI 命令运行时隐藏窗口 |
 | `tests/github-read.spec.ts` | GitHub 读取 |
 | `tests/admission-context.spec.ts` | 研判的线程窗口 |
@@ -482,7 +479,6 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/views.spec.ts` | 管理视图从 Store 推导出的内容，例如被丢弃的消息属于哪个线程 |
 | `tests/watchdog.spec.ts` | Watchdog 视图及其飞书观察汇总：阶段、最近报告、静默时长、故障、谷价与评审等待、来自输入的活跃度、缺失的 worker Session，以及渲染出的报告 |
 | `tests/watchdog-process.spec.ts` | 独立 observer 行为、配置和本地状态覆盖 |
-| `tests/watchdog-deployment.spec.ts` | 旧部署轮询辅助模块的覆盖，不代表预期 observer 行为 |
 | `tests/watchdog-gate.spec.ts` | 旧 gate 辅助模块覆盖；新制品不包含 agent 模块 |
 | `tests/watchdog-artifact.spec.ts` | Watchdog 制品的文件集、manifest 和校验覆盖 |
 | `tests/watchdog-agent.spec.ts` | Watchdog agent 包装：完整 agent 在配置的独立工作区启动并使用 checkout 绝对路径命令、checkout 内的工作区被拒绝、未配置时按 service profile 使用 `watchdog_superagent`/`watchdog_sheepdoku` 等工作区 |

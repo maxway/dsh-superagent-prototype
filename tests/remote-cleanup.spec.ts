@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { deleteRemoteBranch, type RemoteDeletion, type TrustedRemoteDeletionRun } from '../src/executor/remote-cleanup.ts'
+import { gitEnv } from './fixtures/git.ts'
 
 vi.setConfig({ testTimeout: 30_000 })
 const exec = promisify(execFile)
@@ -17,6 +18,12 @@ let remote: string
 let expectedOid: string
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
+  if (cwd !== directory && cwd !== main) throw new Error('Unexpected Git directory')
+  if (args[0] === 'push' || args[0] === 'ls-remote') {
+    const separator = args.indexOf('--')
+    const destination = separator < 0 ? undefined : args[separator + 1]
+    if (destination !== remote && destination !== join(directory, 'missing.git')) throw new Error('Unexpected Git remote')
+  }
   return (await exec('git', args, { cwd, env, windowsHide: true, timeout: 20_000 })).stdout
 }
 
@@ -33,16 +40,15 @@ const remoteTip = async (name = ref) => (await git(directory, 'ls-remote', '--',
 
 beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), 'remote-cleanup-'))
-  const home = join(directory, 'home'), hooks = join(directory, 'hooks')
+  const home = join(directory, 'home'), hooks = join(directory, 'hooks'), template = join(directory, 'template')
   mkdirSync(home)
   mkdirSync(hooks)
-  env = {
-    PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
-    TEMP: directory, TMP: directory, HOME: home, USERPROFILE: home,
-    XDG_CONFIG_HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, 'config'),
+  mkdirSync(template)
+  env = gitEnv({
+    TEMP: directory, TMP: directory, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: home,
     GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: hooks,
-    GIT_TERMINAL_PROMPT: '0', GIT_ATTR_NOSYSTEM: '1',
-  }
+    GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', GIT_ATTR_NOSYSTEM: '1', GIT_TEMPLATE_DIR: template, GIT_ALLOW_PROTOCOL: 'file',
+  })
   main = join(directory, 'main')
   remote = join(directory, 'remote.git')
   await git(directory, 'init', '--bare', remote)

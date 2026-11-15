@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:http'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -11,9 +11,13 @@ const script = join(import.meta.dirname, '..', 'scripts', 'watchdog')
 let server: ReturnType<typeof createServer> | undefined
 let directory: string | undefined
 
-afterEach(() => {
-  server?.close()
-  server = undefined
+afterEach(async () => {
+  if (server) {
+    const closing = new Promise<void>((resolve, reject) => server!.close(error => error ? reject(error) : resolve()))
+    server.closeAllConnections()
+    await closing
+    server = undefined
+  }
   if (directory) rmSync(directory, { recursive: true, force: true })
   directory = undefined
 })
@@ -31,13 +35,17 @@ function snapshot(overrides: Record<string, unknown> = {}) {
 }
 
 /** Start a fake management API that answers the snapshot, run and report routes and records each request. */
-async function fakeService(answer: () => unknown) {
+async function fakeService(answer: () => unknown, unavailable: () => boolean = () => false) {
   const calls: { method?: string; url?: string; body?: string }[] = []
   server = createServer((request, response) => {
     let body = ''
     request.on('data', chunk => { body += chunk })
     request.on('end', () => {
       calls.push({ method: request.method, url: request.url, body })
+      if (unavailable()) {
+        request.socket.destroy()
+        return
+      }
       response.writeHead(200, { 'content-type': 'application/json' })
       if (request.url?.startsWith('/orchestrator/api/watchdog/runs')) {
         response.end(JSON.stringify({ id: 'watchdog-run-1', text: '**Watchdog 观察汇总**' }))
@@ -66,6 +74,14 @@ function run(args: string[], cwd?: string) {
   return new Promise<{ code: number, stdout: string, stderr: string }>((resolve, reject) => {
     execFile(process.execPath, [script, ...args], { cwd: cwd ?? directory, timeout: 20_000 },
       (error, stdout, stderr) => error && error.code !== 1 && error.code !== 2 ? reject(error) : resolve({ code: error?.code as number ?? 0, stdout, stderr }))
+  })
+}
+
+async function stopChild(child: ChildProcess) {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  await new Promise<void>(resolve => {
+    child.once('exit', () => resolve())
+    child.kill()
   })
 }
 
@@ -128,7 +144,8 @@ it('validates configuration, finds mechanical problems and keeps finding identit
 })
 
 it('writes a local heartbeat even when the service is unreachable', async () => {
-  const config = configure('http://127.0.0.1:1', { report: false })
+  const { url } = await fakeService(() => snapshot(), () => true)
+  const config = configure(url, { report: false })
   const child = spawn(process.execPath, [script, '--config', config], { stdio: 'ignore' })
   const heartbeat = join(directory!, 'state', 'heartbeat.json')
   try {
@@ -141,8 +158,7 @@ it('writes a local heartbeat even when the service is unreachable', async () => 
     expect(second.code).toBe(2)
     expect(second.stderr).toContain('Watchdog lock exists')
   } finally {
-    child.kill()
-    await new Promise<void>(resolve => child.once('exit', () => resolve()))
+    await stopChild(child)
   }
 }, 15_000)
 
@@ -198,8 +214,7 @@ it('continues periodic observation after a malformed snapshot', async () => {
     expect(JSON.parse(readFileSync(state, 'utf8'))).toMatchObject({ reachable: true })
     expect(calls.length).toBeGreaterThanOrEqual(2)
   } finally {
-    child.kill()
-    await new Promise<void>(resolve => child.once('exit', () => resolve()))
+    await stopChild(child)
   }
 }, 15_000)
 
@@ -230,8 +245,19 @@ it('enforces a total deadline even while the response keeps streaming', async ()
   expect(JSON.parse(readFileSync(join(directory!, 'state', 'state.json'), 'utf8'))).toMatchObject({ reachable: false })
 }, 18_000)
 
+it('records an HTTP error response as unreachable', async () => {
+  server = createServer((_request, response) => response.writeHead(503).end())
+  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
+  const config = configure(url)
+  const result = await run(['--config', config, '--once'])
+  expect(result.code).toBe(1)
+  expect(JSON.parse(readFileSync(join(directory!, 'state', 'state.json'), 'utf8'))).toMatchObject({ reachable: false })
+})
+
 it('logs an unreachable service and exposes the local status', async () => {
-  const unreachable = configure('http://127.0.0.1:1')
+  const { url } = await fakeService(() => snapshot(), () => true)
+  const unreachable = configure(url)
   const result = await run(['--config', unreachable, '--once'])
   expect(result.code).toBe(1)
   expect(JSON.parse(readFileSync(join(dirname(unreachable), 'state', 'state.json'), 'utf8'))).toMatchObject({ reachable: false })
@@ -244,7 +270,8 @@ it('logs an unreachable service and exposes the local status', async () => {
 })
 
 it('ignores recovery and deployment requests in a running observer', async () => {
-  const config = configure('http://127.0.0.1:1', { crashRecovery: { serviceConfig: 'service.json', recoveryScript: 'recover.ps1', retrySeconds: 1 },
+  const { url } = await fakeService(() => snapshot(), () => true)
+  const config = configure(url, { crashRecovery: { serviceConfig: 'service.json', recoveryScript: 'recover.ps1', retrySeconds: 1 },
     powershell: 'pwsh', deployConfig: 'deploy.json', agentConfig: 'missing-agent.json' })
   const recovery = join(directory!, 'recovery-ran')
   writeFileSync(join(directory!, 'service.json'), '{}')
@@ -267,12 +294,12 @@ it('ignores recovery and deployment requests in a running observer', async () =>
     expect(readdirSync(directory!).some(name => name.startsWith('result.json.watchdog-'))).toBe(false)
     expect(readFileSync(join(directory!, 'state', 'watchdog.log'), 'utf8')).not.toMatch(/Crash recovery|Deployment/)
   } finally {
-    child.kill()
-    await new Promise<void>(resolve => child.once('exit', () => resolve()))
+    await stopChild(child)
   }
 }, 15_000)
 it('refuses an existing lock without replacing it', async () => {
-  const config = configure('http://127.0.0.1:1')
+  const { url } = await fakeService(() => snapshot(), () => true)
+  const config = configure(url)
   const stateDir = join(directory!, 'state')
   mkdirSync(stateDir)
   const lock = join(stateDir, 'watchdog.pid')
@@ -309,17 +336,19 @@ it('retries failed local alerts and recovery records without falsely acknowledgi
 })
 
 it('writes one independent alert after consecutive unreachable reads and a recovery record when the service returns', async () => {
-  const { url } = await fakeService(() => snapshot())
-  const config = configure('http://127.0.0.1:1', { report: false, alertFile: 'alerts.jsonl', alertAfterFailures: 2 })
+  let unavailable = true
+  const { url } = await fakeService(() => snapshot(), () => unavailable)
+  const config = configure(url, { report: false, alertFile: 'alerts.jsonl', alertAfterFailures: 2 })
   expect((await run(['--config', config, '--once'])).code).toBe(1)
   expect(existsSync(join(directory!, 'alerts.jsonl'))).toBe(false)
   expect((await run(['--config', config, '--once'])).code).toBe(1)
   const alertPath = join(directory!, 'alerts.jsonl')
   const first = readFileSync(alertPath, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line))
-  expect(first).toEqual([expect.objectContaining({ kind: 'unreachable', failures: 2, url: 'http://127.0.0.1:1' })])
+  expect(first).toEqual([expect.objectContaining({ kind: 'unreachable', failures: 2, url })])
   expect((await run(['--config', config, '--once'])).code).toBe(1)
   expect(readFileSync(alertPath, 'utf8').trim().split(/\r?\n/)).toHaveLength(1)
 
+  unavailable = false
   const recoveredPath = join(directory!, 'recovered.json')
   writeFileSync(recoveredPath, JSON.stringify({ url, report: false, stateDir: 'state', alertFile: 'alerts.jsonl', alertAfterFailures: 2 }))
   expect((await run(['--config', recoveredPath, '--once'])).code).toBe(0)

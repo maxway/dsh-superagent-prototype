@@ -7,7 +7,7 @@
     * `src/app/watchdog.ts`、`src/app/watchdog-recovery.ts`、`src/app/store.ts`（`watchdog_run` / `watchdog_recovery` 表）
   * 脚本目录：
     * `scripts/watchdog`（L40-41 兼容忽略的 9 个废弃配置项）
-    * `scripts/watchdog-control.mjs`、`scripts/watchdog-artifact.mjs`、`scripts/watchdog-bootstrap.mjs`、`scripts/watchdog-deployment.mjs`、`scripts/watchdog-smoke.mjs`、`scripts/watchdog-update.mjs`、`scripts/watchdog-launch-observer.ps1`、`scripts/watchdog-launch-observer.vbs`、`scripts/watchdog-agent/*`
+    * `scripts/watchdog-control.mjs`、`scripts/watchdog-artifact.mjs`、`scripts/watchdog-bootstrap.mjs`、`scripts/watchdog-smoke.mjs`、`scripts/watchdog-update.mjs`、`scripts/watchdog-launch-observer.ps1`、`scripts/watchdog-launch-observer.vbs`、`scripts/watchdog-agent/*`
   * 架构与部署文档：
     * `docs/006-deployment.md`、`docs/007-architecture.md`（及对应 `docs/zh/*`）
 
@@ -33,7 +33,7 @@
 ### 2. 脚本与测试存在大量“半残废/已禁用”资产
 
 * `scripts/watchdog-control.mjs:22-32` 中 `stopLauncherProcesses`、`buildFromRepo`、`installLaunchers`、`prepareArtifact`、`deployArtifact`、`startObserver`、`stopObserver` 7 个导出函数全部直接抛出 `'Watchdog lifecycle and deployment are temporarily disabled for safety'`。
-* `scripts/watchdog-agent/*`（含模型补丁与提示词）、`scripts/watchdog-artifact.mjs`、`scripts/watchdog-update.mjs`、`scripts/watchdog-deployment.mjs` 等多套脚本及其 10 余个 `tests/watchdog-*.spec.ts` 仍在维护与 CI 中运行，但与当前推荐架构脱节，容易误导后续参与自举开发的 Worker。
+* `scripts/watchdog-agent/*`（含模型补丁与提示词）、`scripts/watchdog-artifact.mjs`、`scripts/watchdog-update.mjs` 等多套脚本及其 10 余个 `tests/watchdog-*.spec.ts` 仍在维护与 CI 中运行，但与当前推荐架构脱节，容易误导后续参与自举开发的 Worker。
 
 ---
 
@@ -50,9 +50,9 @@
 
 ### 第二阶段（确认宿主机无旧版计划任务后）：清理废弃脚本与归档模块
 
-1. **核查生产宿主机计划任务**：只读检查 Windows Task Scheduler 中 `dsh-superagent-watchdog*` 任务的实际命令行，确认无任务指向 `scripts/watchdog-agent/run.ps1` 或旧版 `watchdog-deployment.mjs`。
+1. **核查生产宿主机计划任务**：只读检查 Windows Task Scheduler 中 `dsh-superagent-watchdog*` 任务的实际命令行，确认无任务指向 `scripts/watchdog-agent/run.ps1`。
 2. **清理废弃脚本与未用模块**：
-   * 归档或移除 `scripts/watchdog-agent/`、`scripts/watchdog-artifact.mjs`、`scripts/watchdog-bootstrap.mjs`、`scripts/watchdog-deployment.mjs`、`scripts/watchdog-update.mjs` 及已废止的 `src/app/watchdog-recovery.ts`。
+   * 归档或移除 `scripts/watchdog-agent/`、`scripts/watchdog-artifact.mjs`、`scripts/watchdog-bootstrap.mjs`、`scripts/watchdog-update.mjs` 及已废止的 `src/app/watchdog-recovery.ts`。
    * **注意 SQLite 向后兼容**：即使下线 `src/app/watchdog-recovery.ts` 和 `POST watchdog/runs`，`Store` 中已存在的历史表 `watchdog_run` / `watchdog_recovery` 可保留只读或不强制 `DROP TABLE`，以免产生不必要的数据库迁移风险。
    * **同步更新架构清单（关键！）**：`tests/docs.spec.ts` 强制校验 `src/` 下每一个模块文件与 `tests/` 下每一个 `.spec.ts(x)` 文件都必须精确列在 `docs/007-architecture.md`（及 `docs/zh/007-architecture.md`）的 `## Modules` 与 `## Tests` 表格中。增删任何 `src/` 或 `tests/` 文件时必须在同一提交中同步更新中英文 `007-architecture.md`！
 

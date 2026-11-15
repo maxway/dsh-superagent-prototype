@@ -6,9 +6,13 @@
 
 ## 本检出的生产主机
 
-目标生产主机是原生 Windows，使用固定检出目录 `F:\code\dsh-superagent-prototype`，以及与 Desktop 分离的 DSH 根目录。仅使用不同的 profile 并不能隔离工作区和会话存储。2026-11-08，操作员批准切换到 `C:\Users\dd\.dsh-superagent`，并将 `DSH_AGENTS_HOME` 设置为其中的 `agents` 子目录。带版本的入口 `scripts\dsh-superagent.ps1` 读取 checkout 之外的 `%USERPROFILE%\.dsh-superagent\service.json`，固定 checkout、DSH home、profile、本机回环 URL、Node 路径、可选的 PATH 追加项以及部署请求/命令；没有该文件而直接使用通用脚本，可能重新使用 Desktop 的共享目录。本机 `C:\Users\dd\.dsh-superagent\service.ps1` 仍是既有工具的兼容入口；切换后应缩减为向带版本入口传 `-Config` 的 shim。原有专属状态目录仍位于新根目录之外的 `C:\Users\dd\.dsh\state\superagent`。启动报告显示运行时和飞书 ready、GitLab starting；根据操作员要求，切换后未独立验证工作区、会话恢复和端到端行为。这种分离不是操作系统安全边界。profile 直接链接 F: 检出；不要为了匹配包名而重命名目录。Windows profile 示例位于 `examples/profile.cordis.patch.yml`；POSIX / WSL 示例保留在 `examples/profile.posix.cordis.patch.yml`，供独立部署使用。历史 WSL 状态与工作树不是 Windows worker 目录，不得清理或在 Windows 上直接恢复。
+2026-11-14 运行时切换之前，目标生产主机为原生 Windows，使用固定检出目录 `F:\code\dsh-superagent-prototype`，以及与 Desktop 分离的 DSH 根目录。仅使用不同的 profile 并不能隔离工作区和会话存储。2026-11-08，操作员批准切换到 `C:\Users\dd\.dsh-superagent`，并将 `DSH_AGENTS_HOME` 设置为其中的 `agents` 子目录。带版本的入口 `scripts\dsh-superagent.ps1` 读取 checkout 之外的 `%USERPROFILE%\.dsh-superagent\service.json`，固定 checkout、DSH home、profile、本机回环 URL、Node 路径、可选的 PATH 追加项以及部署请求/命令；没有该文件而直接使用通用脚本，可能重新使用 Desktop 的共享目录。本机 `C:\Users\dd\.dsh-superagent\service.ps1` 仍是既有工具的兼容入口；切换后应缩减为向带版本入口传 `-Config` 的 shim。原有专属状态目录仍位于新根目录之外的 `C:\Users\dd\.dsh\state\superagent`。启动报告显示运行时和飞书 ready、GitLab starting；根据操作员要求，切换后未独立验证工作区、会话恢复和端到端行为。这种分离不是操作系统安全边界。profile 直接链接 F: 检出；不要为了匹配包名而重命名目录。Windows profile 示例位于 `examples/profile.cordis.patch.yml`；POSIX / WSL 示例保留在 `examples/profile.posix.cordis.patch.yml`，供独立部署使用。历史 WSL 状态与工作树不是 Windows worker 目录，不得清理或在 Windows 上直接恢复。
 
 Windows 进程不能安全依赖共享检出内 WSL 创建的依赖链接。应在生产服务停止、其他使用该依赖树的进程静止后，于最终路径准备并验证完整的 Windows 依赖安装。pnpm 的 `Already up to date` 不代表可用：用 Windows Node 构建并导入实际 bundle，再确认带 `x-orchestrator-request: 1` 的 `GET /orchestrator/api/state` 返回 200，并检查来源健康。仅监听 Web 端口不够。两种平台都需要运行时，应分离各自的依赖树。后台运行时还要确认服务与飞书消费者没有可见控制台，且含令牌的启动日志只允许目标用户和管理员访问。
+
+### 版本化运行时候选（Windows）
+
+候选流程与已知限制见 `docs/runtime-windows.md`；最新代码部署入口尚未安装或完成运维验证。当前生产事实须重新核实，不能从候选实现推断。
 
 ## 运行哪些东西
 
@@ -176,24 +180,18 @@ Windows 上用 PowerShell 运行同一段内容，把 `> /dev/null` 换成 `> $n
 
 ## 启动与停止
 
-Windows 上，带版本的入口就是操作命令。它读取 checkout 之外的机器配置，因此目标不会随当前目录或无关的环境变量漂移：
+Windows 上，从独立操作环境使用已安装运行时的带版本入口及经核实的服务配置。以下为本机入口；操作前核实目标，启动或重启前清空继承的旧部署变量。它们不会部署新版本：
 
 ```powershell
-pwsh scripts\dsh-superagent.ps1 status
-pwsh scripts\dsh-superagent.ps1 start
-pwsh scripts\dsh-superagent.ps1 stop
-pwsh scripts\dsh-superagent.ps1 restart
+$env:DSH_SUPERAGENT_DEPLOY_REQUEST = ''
+$env:DSH_SUPERAGENT_DEPLOY_COMMAND = ''
+pwsh F:\dsh-superagent-runtime\current\scripts\dsh-superagent.ps1 status -Config F:\dsh-superagent-runtime\config\service.json
+pwsh F:\dsh-superagent-runtime\current\scripts\dsh-superagent.ps1 start -Config F:\dsh-superagent-runtime\config\service.json -UseInstalled
+pwsh F:\dsh-superagent-runtime\current\scripts\dsh-superagent.ps1 stop -Config F:\dsh-superagent-runtime\config\service.json
+pwsh F:\dsh-superagent-runtime\current\scripts\dsh-superagent.ps1 restart -Config F:\dsh-superagent-runtime\config\service.json -UseInstalled
 ```
 
-除非用 `-Config` 或 `DSH_SUPERAGENT_SERVICE_CONFIG` 指定其他文件，它读取 `%USERPROFILE%\.dsh-superagent\service.json`；`examples/service.windows.json` 是模板。该文件固定 `checkout`、`home`、`agentsHome`、`profile`、回环 `url`、`node` 可执行文件、可选的 `path` 追加项以及可选的 `deployRequest`/`deployCommand`，并且不保存密钥。启动还需要用户级 `LUMOS_API_KEY`，包装脚本从用户环境复制。入口接受动作以及可选的 `-Config` 和 `-RespectStop`；`-UseInstalled` 供专用恢复和内部调用使用，目标和时序信息留在文件里。普通启动和重启会先更新构建，详见下文。它会拒绝不存在的 checkout 和非回环 URL。
-
-切换完成后，把旧的硬编码 `C:\Users\dd\.dsh-superagent\service.ps1` 换成兼容 shim，让既有工具继续工作：
-
-```powershell
-param([ValidateSet('start', 'stop', 'restart', 'status', 'verify')][string]$Action = 'status')
-& 'F:\code\dsh-superagent-prototype\scripts\dsh-superagent.ps1' $Action -Config "$env:USERPROFILE\.dsh-superagent\service.json"
-exit $LASTEXITCODE
-```
+除非用 `-Config` 或 `DSH_SUPERAGENT_SERVICE_CONFIG` 指定其他文件，它读取 `%USERPROFILE%\.dsh-superagent\service.json`；`examples/service.windows.json` 是模板。该文件固定 `checkout`、`home`、`agentsHome`、`profile`、回环 `url`、`node` 可执行文件、可选的 `path` 追加项以及可选的 `deployRequest`/`deployCommand`，并且不保存密钥。启动还需要用户级 `LUMOS_API_KEY`，包装脚本从用户环境复制。入口接受动作以及可选的 `-Config` 和 `-RespectStop`；`-UseInstalled` 供专用恢复和内部调用使用，目标和时序信息留在文件里。服务控制应使用已安装运行时配置。它会拒绝不存在的 checkout 和非回环 URL。
 
 Node 脚本仍是实现，也是两个平台上已设置好环境时的可用入口：
 
@@ -210,11 +208,11 @@ Windows 上写作 `node scripts\dsh-superagent start` 等；该文件没有 `.cm
 
 Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以分离进程启动 `dsh --profile <profile> --no-open`，日志和控制文件与 POSIX 相同，并等待管理 API；它不使用 tmux。当调用者位于 Windows Job 中时，它通过 `scripts\service-start.ps1` 在 Job 之外创建服务，并把同一个 `--home` 传下去。`status` 通过 Windows PowerShell（`powershell.exe`，Windows 自带）列出进程。`stop` 通过 `POST /orchestrator/api/service/stop` 让 DSH 退出，而不是发送信号；它最多等待五分钟，绝不会强制杀死进程。上面的 tmux socket 与 `TMUX` 细节只适用于 POSIX。两种平台使用相同的退出码、日志名和 `manually-stopped` 标记。
 
-`stop` 和 `restart` 请求优雅 drain，并最多等待进程五分钟退出。执行器 drain 的上限是十秒，DSH 启动器再加五秒宽限，因此停止通常约十五秒完成；drain 之后仍在回合中的 worker 可能被打断。POSIX 上它们绝不会强制杀死进程，也不会碰其他 tmux 会话。候选版本在 drain 未确认时保留进程、数据库和状态锁，运行时健康状态显示 `shutdown_failed` 错误（`status` 以 1 退出），并拒绝后续停机请求。Windows 停机与部署重启入口会直接报告该失败，不等待超时或执行更新。恢复前应排查原进程与残留工作；不要为继续部署而强制杀进程。现有安装需另行部署此候选版本。
+`stop` 和 `restart` 请求优雅 drain，并最多等待进程五分钟退出。执行器 drain 的上限是十秒，DSH 启动器再加五秒宽限，因此停止通常约十五秒完成；drain 之后仍在回合中的 worker 可能被打断。POSIX 上它们绝不会强制杀死进程，也不会碰其他 tmux 会话。候选版本在 drain 未确认时保留进程、数据库和状态锁，运行时健康状态显示 `shutdown_failed` 错误（`status` 以 1 退出），并拒绝后续停机请求。Windows 停机与重启会直接报告该失败，不等待超时或启动替代进程。恢复前应排查原进程与残留工作；不要为继续部署而强制杀进程。现有安装需另行部署此候选版本。
 
 `status` 打印进程 id、健康状况和安装配置问题。要使用其他 profile 或端口，请用 `--profile` 和 `--url`，或设置 `DSH_SUPERAGENT_PROFILE` 和 `DSH_SUPERAGENT_URL`；PowerShell 中设置 `$env:DSH_SUPERAGENT_PROFILE` 和 `$env:DSH_SUPERAGENT_URL`。
 
-底层服务控制的 `status`、`start` 和 `restart` 使用以下退出码；Windows 普通启动或重启的更新步骤也可能返回 Git、pnpm 等命令的失败退出码：
+底层服务控制的 `status`、`start` 和 `restart` 使用以下退出码：
 
 | 退出码 | 含义 |
 | --- | --- |
@@ -238,7 +236,7 @@ Windows 上，`start` 要求 `dsh` 在 `PATH` 上（npm 的 `.cmd` shim），以
 
 ### 服务检查
 
-在独立于 `superagent` 的环境检查状态；退出码 2 或 3 分别报告部件错误或安装配置要求，不要把重启当作修复。退出码 1 时检查输出和服务日志并诊断原因。主动停止标记表示服务应保持停止；普通重启使用下文的最新代码部署路径。
+在独立于 `superagent` 的环境检查状态；退出码 2 或 3 分别报告部件错误或安装配置要求，不要把重启当作修复。退出码 1 时检查输出和服务日志并诊断原因。主动停止标记表示服务应保持停止；服务控制应使用已安装版本和经过确认的实例配置。
 
 ### 任务级巡检（Watchdog）
 
@@ -262,21 +260,11 @@ DSH 运行的工具命令属于一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` �
 
 `node scripts/dsh-superagent verify --profile superagent --url <url> --survival-seconds 30` 在执行器退出后证明发布有效：恰好一个进程服务该 profile，管理 API 返回 ready（或 paused），进程不在外部 Windows Job 内，且在存活窗口之后仍是同一进程。退出码 1 会指出未通过的条件。
 
-### 部署最新 superagent
+### 部署请求
 
-普通启动、重启或部署都以最新代码为目标。从独立于服务 worker 的环境运行 `pwsh scripts\restart-superagent.ps1`：它在停止前检查本机监听者是否匹配配置的 profile 和已记录的服务 PID，并拒绝其他监听者或同 profile 的其他进程；停止后再次确认目标进程和监听均已消失，然后在配置的 checkout 执行 `git pull --ff-only origin main`、`pnpm install --frozen-lockfile` 和 `pnpm build`，最后启动已安装版本。整个流程机械执行，不调用 LLM 做停启或发布决策，不要求管理员权限，也不操作 Watchdog。普通 `pwsh scripts\dsh-superagent.ps1 start` 和 `restart` 同样先更新构建再启动；`start` 在无法确认服务已停止时拒绝更新，`restart` 先停服。
+请求排队不代表部署成功。版本化运行时的候选流程和限制见 [runtime 指南](../runtime-windows.md)；最新代码部署入口尚未安装或完成运维验证。已有主机上的旧任务和脚本不会因仓库清理而消失，不得调用。
 
-该原地流程不做备份或自动回滚：拉取、安装、构建或启动失败可能使服务保持停机，应如实报告失败阶段和服务状态。部署执行器不再使用持久文件锁，并忽略旧的 `<resultFile>.lock`。服务生命周期互斥仍会阻止停服、更新和启动同时进行，但多个执行器可能在结果记录或请求去重时发生竞态。停机期间飞书消息可能丢失。需要备份时由操作员事先独立取得一致且经验证的备份；在线复制单个 SQLite 文件不是一致备份。
-
-独立的 `pwsh scripts\recover-superagent.ps1` 可尊重主动停机标记并启动已安装版本，不拉取或构建；预期的新 observer 不调用它。另行调度的旧调用方须独立核实。
-
-主 Session 的 `orchestrator_deploy` 可把操作者明确的部署请求写到 `DSH_SUPERAGENT_DEPLOY_REQUEST`；`DSH_SUPERAGENT_DEPLOY_COMMAND` 是可选的独立任务唤醒命令。独立执行器由 `deploy.mjs` 校验非空确认与 `latest` 目标后调用同一机械重启脚本，不经模型。请求路径必须与部署配置的 `requestPath` 一致。工具返回成功只表示请求已排队，不表示 Watchdog 在线或部署已完成；以独立 `resultFile` 为准。执行后保留请求文件；成功时另存归档并记录请求摘要。成功或 `started_needs_attention`（重启退出码 2 或 3）后，重复消费同一请求不会再次部署；后者仍表示失败，应先排查再发出新请求。新的请求可安全覆盖原文件。
-
-#### 配置
-
-部署配置至少指定 `requestPath` 和 `resultFile`，可指定 `checkout`、`serviceConfig`、`serviceHome`、`serviceAgentsHome`、`serviceProfile`、`url`、`node`、`restartScript` 和 `logFile`；服务配置可提供其余机器参数。`deploy.ps1 -Validate` 只打印解析的路径；`-Plan` 校验请求和脚本并打印最新代码部署计划，不执行或归档请求。`-Agent` 被明确拒绝。独立任务可使用 `wscript.exe <checkout>\scripts\launch-hidden.vbs <pwsh> -NoLogo -NoProfile -NonInteractive -File <checkout>\scripts\deploy.ps1 -Config <configuration>` 隐藏窗口；任务是否已安装须由操作员核实。
-
-**历史记录（2026-11-09 至 2026-11-10）。** 2026-11-09 两次旧式部署分别从 08:46:58 到 08:56:53、从 10:33:47 到 10:43:09；第二次服务约 10:40:56 停止、约 10:41:50 就绪。详情见 [部署提速证据](../evidence/deployment-speed/) 和 `C:\Users\dd\.dsh\watchdog-archive-20261109-2234\watchdog-deploy.log`。当时独立部署任务切到 `0cf6a69`，2026-11-10 00:39 的 `verify --survival-seconds 3` 报告 `foreignJob=false`、`recovery=enforce`、管理 API ready。历史结果不证明当前部署状态或现行流程已在生产运行。
+独立的 `scripts/recover-superagent.ps1` 可尊重主动停机标记并启动已安装版本；预期的新 observer 不调用它。另行调度的旧调用方须独立核实。
 
 ### 版本化 Watchdog 制品与安装
 
@@ -405,9 +393,9 @@ Windows 上使用当前 Windows 版本自带的 `curl.exe`，把 `cli` 设为 `g
 
 ## 升级
 
-**自举部署注意：**运行中的 superagent 不能在自己的 worker 中执行原地升级或重启。开发与验证使用隔离的非生产实例，生产与测试必须隔离 profile、DSH home、状态、控制文件、端口、凭据及外部来源；飞书只在生产启用。恢复旧工单前须核验其工作树和 Session 工作目录。具体保护规则见仓库根目录的 `AGENTS.md`。
+**自举部署注意：**运行中的 superagent 不能在自己的 worker 中执行原地升级或重启。开发与验证使用隔离的非生产实例，生产与测试必须隔离 profile、DSH home、状态、控制文件、端口、凭据及外部来源；飞书只在生产启用。部署和生命周期测试夹具须显式指定临时 service home、checkout 及假执行器或在操作期间持续持有的测试端点；继承的 `DSH_HOME` 或提前释放端口可能将测试引向生产目标。修改 Git 的测试须显式创建临时仓库，并清除继承的 Git 路径和配置覆盖。独立任务 worktree、runtime 目录和环境变量不能阻止访问生产回环端口或进程。部署测试覆盖真实状态检查拒绝测试自持的外部监听端点，以及使用假的已停止状态成功部署；它们未验证真实已停止状态与部署预检的端到端兼容性。恢复旧工单前须核验其工作树和 Session 工作目录。具体保护规则见仓库根目录的 `AGENTS.md`。
 
-本机普通升级由独立环境使用上文的机械部署入口：停止服务后拉取 `origin/main`、安装依赖、构建并启动。它不创建备份或回滚，失败可能停机；如需备份，应事先独立取得一致且验证过的备份，不能假定在线复制单个 SQLite 文件就是一致备份。
+候选版本化发布流程及限制见 [runtime 指南](../runtime-windows.md)；如需备份，应事先独立取得一致且验证过的备份，不能假定在线复制单个 SQLite 文件就是一致备份。
 
 重启会结束正在运行的派工，并带恢复说明启动替代的派工。已存在目录在可获取身份时按文件系统身份比较；Windows 的 PATH 垫片过滤对缺失路径还会忽略大小写。两者都不能证明历史工作区身份或保证交接时工作区隔离。这不能验证原工作区或隔离恢复后的 worker：恢复前应核验工作树、分支、未提交工作和 Session 工作目录；原目录缺失或不匹配时应停止并由运维恢复。参见 `docs/015-workspace-lifecycle.md`。团队文本和被覆盖的提示词段落会保留；没有覆盖的段落跟随新的默认内容。升级后检查标记为 **默认内容已更新** 的段落。
 

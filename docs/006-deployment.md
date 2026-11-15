@@ -4,7 +4,27 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 ## Production host for this checkout
 
-The intended production host is native Windows, using the stable checkout at `F:\code\dsh-superagent-prototype` and a DSH home separate from Desktop. A different profile alone does not isolate workspace and session storage. On 2026-11-08 the operator authorized a cutover to `C:\Users\dd\.dsh-superagent`, with `DSH_AGENTS_HOME` set to its `agents` subdirectory. The versioned entry `scripts\dsh-superagent.ps1` reads a machine configuration from `%USERPROFILE%\.dsh-superagent\service.json` outside the checkout and pins the checkout, DSH home, profile, loopback URL, Node path, optional PATH additions and deployment request/command; a generic invocation without that file can start against the shared Desktop home. `C:\Users\dd\.dsh-superagent\service.ps1` remains the compatibility entry for the operator's existing tools; after cutover it should be reduced to a shim that passes `-Config` to the versioned entry. The existing dedicated state directory remains at `C:\Users\dd\.dsh\state\superagent`, outside the new home. Startup reported runtime and Feishu ready, with GitLab starting; workspace and session recovery and end-to-end behavior were not independently verified after cutover at the operator's request. This separation is not an OS security boundary. The profile links the bundle directly to the F: checkout; do not rename that checkout to match the package name. Use the Windows profile example in `examples/profile.cordis.patch.yml`; the POSIX / WSL example remains in `examples/profile.posix.cordis.patch.yml` for a separately managed deployment. Historical WSL state and worktrees are not Windows worker directories and must not be pruned or resumed on Windows.
+The local production host is native Windows with a DSH home separate from Desktop. Its service configuration pins the runtime, home, profile, loopback URL and Node path. The state directory is separate from the home. Windows and WSL dependency trees, state and worktrees remain separate; a worktree or profile is not an OS security boundary.
+
+**Local runtime cutover (2026-11-14).** An operator-requested takeover started the service from `F:\dsh-superagent-runtime\current`, linked to `releases\20261114-164005-6802a90737ee-567f9342`. Its prepared record marks `sourceDirty: true` on base commit `16ec3dc54a7802697903ac7709efcb1b56167ae7`; it is a worktree snapshot, not a committed release. The service retains the existing `C:\Users\dd\.dsh-superagent` profile and `C:\Users\dd\.dsh\state\superagent` database, with the profile's bundle link pointing to runtime `current`. The runtime configuration is `F:\dsh-superagent-runtime\config\service.json`; the old `C:\Users\dd\.dsh-superagent\service.ps1` compatibility entry delegates to it. The independent verification observed one service process surviving 20 seconds with runtime, GitLab and Feishu ready. One prior assignment was running after startup; this is not an end-to-end GitLab or Feishu delivery test. Recheck current facts before operating.
+
+A mechanical latest-commit runtime deployment is not installed. Previously installed deployment tasks, their user-level wakeup settings and their dedicated records were removed with operator authorization; this does not modify scripts in the stable checkout. Do not invoke those scripts for this runtime.
+
+**Local observation (2026-11-15).** The configured GitLab endpoint initially refused TCP connections, then became reachable; the configured GitLab CLI resolved its agent account, and the setup recheck reported runtime, GitLab and Feishu ready. These states do not prove end-to-end delivery. Already-running processes and WMI providers may retain inherited environment values even after user-level cleanup; explicitly pass empty `DSH_SUPERAGENT_DEPLOY_REQUEST` and `DSH_SUPERAGENT_DEPLOY_COMMAND` when starting the currently installed version.
+
+### Versioned runtime candidate (Windows)
+
+See the standalone `docs/runtime-windows.md`, also included in the artifact. This is a candidate workflow, not a claim that any existing service has been migrated. It separates the Superagent program from both its source checkout and the Git repository managed by its workers. The managed repository, provider accounts, credentials, profile and state are independently configured; none is packaged in the runtime. `F:\dsh-superagent-runtime` is an example root, not a hard-coded path.
+
+On a build host with Node, Git, tar, PowerShell, npm and the package's pinned pnpm, run `node scripts/runtime-artifact.mjs --commit <full-commit-id> --out <existing-directory>`. It exports that committed revision, builds in an isolated temporary directory, and writes a uniquely named ZIP and SHA-256 file. The ZIP contains compiled bundle files, package assets, the lockfile and Windows control scripts; it does not contain `node_modules`, DSH, Node, source history, state, managed repositories or credentials. Review the selected commit and artifacts: filename filtering cannot establish that their contents contain no secrets. A trusted channel must deliver both the artifact and its expected hash; a hash from the same untrusted source is not authentication. The builder and target install ignore dependency lifecycle scripts; dependencies that require those scripts need a separately reviewed solution.
+
+An independent operator can use a local checkout or a trusted artifact distribution channel. On the Windows target, install compatible Node, DSH, PowerShell and the exact pnpm version in `package.json`, plus Git and the relevant Git-host CLI for the managed repository. Obtain the trusted `prepare-runtime.ps1`, `initialize-runtime.ps1`, `activate-runtime.ps1`, `runtime-activation-core.ps1`, `runtime-paths.ps1`, `runtime-verify.ps1` and `superagent-lifecycle-lock.ps1` control files independently of `current`. Run `pwsh prepare-runtime.ps1 -Archive <zip> -Sha256 <trusted-sha256> -RuntimeRoot F:\dsh-superagent-runtime` to install locked dependencies in a new final `releases` directory and import-check the server entries. It installs the lockfile's full dependency set, including development dependencies, so the ZIP is small but the prepared directory is not a minimal production-only dependency tree. Online pnpm security policies such as minimum release age can delay a new dependency, and preparation fails rather than overriding them. It does not stop or change a service. Failure leaves an unprepared directory for inspection; `runtime-prepared.json` appears only after successful checks. This is an import check, not a DSH or live Source acceptance test.
+
+For a new instance, create a dedicated service configuration with `checkout` set to the absolute `current` path, `home`, `profile`, loopback `url`, and `installedOnly: true`; use `examples/service.runtime.windows.json` as a starting point and supply the appropriate Node and PATH for that machine. Then run `pwsh initialize-runtime.ps1 -Config <service.json> -Release <prepared-release> -RuntimeRoot F:\dsh-superagent-runtime`. It creates the initial junction and binds this runtime to that home, profile and URL; it refuses to overwrite an existing binding or junction. A failed initialization may leave a binding and needs manual inspection. Separately create the DSH home and profile, install a bundle link whose direct target is `current`, configure the managed repository, and validate startup. In a local isolated DSH 0.2.2-rc.3 check, the profile linked directly to `current` and the candidate management API returned 200; startup reported setup required without credentials and the candidate was stopped. Other DSH versions, a fully configured instance and the complete activation workflow still require verification. Never copy a live production database or another instance's credentials for candidate validation.
+
+After initial setup, an independent operator may invoke `pwsh activate-runtime.ps1 -Config <service.json> -Release <prepared-release> -RuntimeRoot F:\dsh-superagent-runtime`. The candidate checks the runtime binding and profile link and takes runtime and service locks. It currently refuses to stop a running service because it cannot establish the loaded release; it is not an automatic upgrade path. Use one runtime root per service: binding and mutexes coordinate these entries but do not detect or fence arbitrary processes or profiles that also consume its files. An operator must ensure no other consumer uses the root. Junction replacement is not assumed atomic. The activation journal under `control` records the phase and old/new target; an incomplete or unreadable journal blocks further activations and requires manual investigation. No automatic rollback or old-version cleanup is provided. Existing-version rollback is unsafe without checking database compatibility, worktrees and external effects. A service stop can interrupt work and lose Feishu messages; ready state does not establish a successful worker operation.
+
+Ordinary service start and restart use the installed build. This candidate does not install itself, update the independent control files, configure a scheduled task, or perform a production cutover.
 
 **Historical service isolation (2026-11-06).** Production reached ready with GitLab and Feishu before exiting. A recovered worker ran `tmux kill-server` while sharing a server with a test panel; logs and isolated reproduction strongly indicate inherited `TMUX` selected the shared socket, but the historical client's socket and exit signal were not recorded. The service was isolated and its profile and prepare command pointed to the F: checkout. The old ticket was stopped, its changes were pushed to GitLab branch `stage1-node/windows-deploy-stage2-a14b20f9bf4f`, and its former WSL worktree and clone were removed; its historical session still names the missing directory and cannot be assumed resumable. Recheck live facts before acting.
 
@@ -178,14 +198,15 @@ After the first start, edit machine limits in **Settings → Deployment** or the
 
 ## Start and stop
 
-On Windows the versioned entry is the operator command. It reads a machine configuration outside the checkout, so the
-target cannot drift with the current directory or an unrelated environment variable:
+On Windows use the installed runtime's versioned entry and its verified service configuration from an independent operator session. These local examples do not deploy a new version; verify the target before operating, and clear inherited legacy deployment variables before starting or restarting:
 
 ```powershell
-pwsh scripts\dsh-superagent.ps1 status
-pwsh scripts\dsh-superagent.ps1 start
-pwsh scripts\dsh-superagent.ps1 stop
-pwsh scripts\dsh-superagent.ps1 restart
+$env:DSH_SUPERAGENT_DEPLOY_REQUEST = ''
+$env:DSH_SUPERAGENT_DEPLOY_COMMAND = ''
+pwsh F:\dsh-superagent-runtime\current\scripts\dsh-superagent.ps1 status -Config F:\dsh-superagent-runtime\config\service.json
+pwsh F:\dsh-superagent-runtime\current\scripts\dsh-superagent.ps1 start -Config F:\dsh-superagent-runtime\config\service.json -UseInstalled
+pwsh F:\dsh-superagent-runtime\current\scripts\dsh-superagent.ps1 stop -Config F:\dsh-superagent-runtime\config\service.json
+pwsh F:\dsh-superagent-runtime\current\scripts\dsh-superagent.ps1 restart -Config F:\dsh-superagent-runtime\config\service.json -UseInstalled
 ```
 
 It reads `%USERPROFILE%\.dsh-superagent\service.json` unless `-Config` or `DSH_SUPERAGENT_SERVICE_CONFIG` names another
@@ -193,18 +214,7 @@ file; `examples/service.windows.json` is a template. The file pins `checkout`, `
 loopback `url`, the `node` executable, optional `path` additions and the optional `deployRequest`/`deployCommand`, and it
 holds no secret. A start also needs the user-level `LUMOS_API_KEY`, which the wrapper copies from the user environment.
 The entry exposes only the action (plus optional `-Config` and `-RespectStop`); target and timing facts stay in the
-file. It refuses a checkout that does not exist or a non-loopback URL; ordinary `start` and `restart` update and build the latest code before starting.
-
-After cutover, replace the old hard-coded `C:\Users\dd\.dsh-superagent\service.ps1` with a compatibility shim so existing
-tools keep working:
-
-```powershell
-param([ValidateSet('start', 'stop', 'restart', 'status', 'verify')][string]$Action = 'status')
-& 'F:\code\dsh-superagent-prototype\scripts\dsh-superagent.ps1' $Action -Config "$env:USERPROFILE\.dsh-superagent\service.json"
-exit $LASTEXITCODE
-```
-
-For a simple Windows deployment from an independent operator session, `pwsh scripts\restart-superagent.ps1` sends the stop request to the configured loopback URL, waits for the port to close, pulls `origin/main`, installs locked dependencies, builds and starts the service. Pass `-Config <path>` to select another service configuration. It does not control Watchdog or ask a model to decide. A failed stop, pull, install or build prevents the subsequent start. Before stopping, the script checks the listener against the configured profile and the recorded service PID, and refuses foreign or other matching processes; it checks again that no target process or listener remains before updating. If process identity cannot be established, it stops rather than guessing. These checks are not an OS isolation boundary. A restart of an existing build alone is not a latest-code deployment.
+file. It refuses a checkout that does not exist or a non-loopback URL. Use the installed runtime configuration for service controls.
 
 The Node script remains the implementation and is available on both platforms when the environment is already set:
 
@@ -236,7 +246,7 @@ names and `manually-stopped` marker apply on both.
 `stop` and `restart` request a graceful drain and wait up to five minutes for the process to exit. The Executor drain is
 bounded at ten seconds and DSH's launcher adds a five-second grace, so a stop normally finishes within about fifteen
 seconds; a worker still in a turn after the drain can be interrupted. On POSIX they never force-kill the process or
-touch other tmux sessions. If drain is unconfirmed, the candidate retains the process, database and state lock, reports `shutdown_failed` as a runtime health error (`status` exits 1), and rejects subsequent stop requests. Windows stop and the deployment restart entry report this failure without waiting for the timeout or updating. Investigate the original process and remaining work before recovery; do not force-kill it to proceed. Existing installations require a separate deployment of this candidate.
+touch other tmux sessions. If drain is unconfirmed, the candidate retains the process, database and state lock, reports `shutdown_failed` as a runtime health error (`status` exits 1), and rejects subsequent stop requests. Windows stop and restart report this failure without waiting for the timeout or starting a replacement. Investigate the original process and remaining work before recovery; do not force-kill it to proceed. Existing installations require a separate deployment of this candidate.
 
 `status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or
 set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`; in PowerShell, set `$env:DSH_SUPERAGENT_PROFILE` and
@@ -272,7 +282,7 @@ Open the URL printed in the log, then choose **Superagent** in the sidebar.
 
 ### Service check
 
-Check status from an environment independent of `superagent`; exit codes 2 and 3 report a component error and setup requirements respectively, so do not treat a restart as a fix. For exit code 1, inspect the output and service logs and diagnose the cause. An intentional stop marker means the service should remain stopped; use the latest-code deployment path below for a normal restart.
+Check status from an environment independent of `superagent`; exit codes 2 and 3 report a component error and setup requirements respectively, so do not treat a restart as a fix. For exit code 1, inspect the output and service logs and diagnose the cause. An intentional stop marker means the service should remain stopped; use the installed runtime configuration for service controls.
 
 ### Task-level check (Watchdog)
 
@@ -298,23 +308,11 @@ A scheduled task has no console to inherit, so Windows gives the first console p
 
 `node scripts/dsh-superagent verify --profile superagent --url <url> --survival-seconds 30` proves a release after its executor has exited: exactly one process serves the profile, the management API answers ready (or paused), the process belongs to no Windows Job it did not create, and the same process is alive after the survival window. Exit 1 names the failed condition.
 
-### Deploying the latest superagent
+### Deployment requests
 
-The main Session can queue the operator's explicit deployment request without releasing anything itself. The `orchestrator_deploy` tool writes the request to `DSH_SUPERAGENT_DEPLOY_REQUEST`; `DSH_SUPERAGENT_DEPLOY_COMMAND`, such as `schtasks /run /tn dsh-superagent-deploy`, is an optional wakeup command for the independent task. The request path must match the independent deployment configuration's `requestPath`. A successful tool response means only that the request was queued, not that the observer is running or the deployment succeeded; inspect the independent result file for the outcome. The request file remains in place; success records its digest and archive. A matching request is not deployed again after success or `started_needs_attention` (restart exit code 2 or 3); the latter remains a failure requiring investigation before issuing a new request. A newer request may safely replace it. The executor checks that confirmation is nonempty and uses the mechanical latest-code restart, without asking a model to make the release decision.
-
-`scripts/deploy.ps1` is the scheduled task's Windows entry point over `scripts/deploy.mjs`. Deployment is mechanical: the script calls `restart-superagent.ps1`, which stops the configured service, pulls `origin/main`, installs dependencies, builds and starts. It does not call a model or control Watchdog; the old agent fallback is disabled. Failure to stop, pull, install or build is reported rather than silently starting old code.
-
-`-Validate` prints resolved configuration; `-Plan` displays the target and script without starting a deployment. The executor does not use a persistent deployment lock file; old `<resultFile>.lock` files are ignored. The service lifecycle mutex still prevents overlapping stop, update and start operations, but concurrent executors can race while recording results or deduplicating requests. This minimal in-place path does not create a database backup or roll back on failure. An update failure can leave the service stopped, and Feishu messages received while it is offline may be lost.
+A queued request is not evidence of deployment. The candidate versioned runtime workflow and its limitations are described in `docs/runtime-windows.md`; its latest-code entry is not installed or operationally verified. Separately installed legacy tasks and scripts do not disappear when the repository is cleaned up; do not invoke them.
 
 The separate `scripts/recover-superagent.ps1` helper starts the installed version without pulling or building and honors the intentional-stop marker; the intended observer does not invoke it. Any separately scheduled legacy caller must be assessed independently.
-
-#### Configuration
-
-The deployment configuration names `checkout`, `requestPath`, `resultFile`, `serviceHome`, `serviceProfile`, `url`, and optionally `node` and `serviceAgentsHome`. The service's own `service.json` supplies its PATH and deployment command. The old `mechanical` candidate, manifest, pinned revision and observer commands are no longer needed. Existing request and result paths remain in use, so scheduled-task entry points do not need to change. A new service-crash recovery task is not installed automatically.
-
-**Historical baseline.** The 2026-11-09 deployments took about ten minutes each; the second spent about 54 seconds stopped. See [deployment-speed evidence](evidence/deployment-speed/). Those timings describe the retired agent-driven flow, not the current in-place mechanical path.
-
-The `dsh-superagent-deploy` task runs the entry in the background through `scripts/launch-hidden.vbs`. Its result file records whether the restart completed. Historical production version and readiness observations are not evidence that this revised script has been deployed; the task and its configuration must be checked separately when installing it.
 
 ### Versioned Watchdog artifact and installation
 
@@ -375,7 +373,7 @@ Agents may rely on these routes and fields. The other routes in `src/app/api.ts`
 
 | Request | Answer |
 | --- | --- |
-| `GET state` | What every page reads: `setup`, with `problem` and `feishuProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, and `accounts` once setup resolved them; `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId` |
+| `GET state` | What every page reads: `setup`, with `problem` and `feishuProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, and `accounts` once setup resolved them; `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId`. |
 | `GET settings` | `blocks`: `policy`, `eval` and `executor`, each with its `value` and its `revision`; `sources`: the Source instances, each with `id`, `kind`, `installed`, its block's `value`, `{"enabled": …, "config": {…}}`, and `revision`, its kind's form, and its setup `problem` when it has one; `policyVersion`; and `environment`, the execution environment's `root` and `variables` |
 | `GET sources` | Each Source's status: `state` (`missing`, `off`, `error`, `setup`, `starting`, `paused` or `ready`), the `health` of its parts, its setup `problem`, the last day's `stats`, the Triggers it `filtered` in that day, and the messages it `dropped` in that day, newest drop first, each with its `channel`, `preview`, `ticket` (`id` and `title`) when it was for one, its `thread` when the store has it, and `dropped.at` and `dropped.reason`, `channelGone` or `channelIgnored` |
 | `PUT settings/<block>` with `{"value": …, "revision": n}` | Saves one block: `saved`, the block's new `revision`, `policy_changed` and `restarting`. `value` is the whole block, as `GET settings` holds it; a missing key takes its default |
@@ -443,18 +441,7 @@ From an allowed GitHub account, open an Issue or post a comment containing `@<ag
 
 ## Upgrade
 
-**Self-hosted development:** Do not have the running service perform its own in-place upgrade from a worker session; use an independent operator or deployment task. Development tests must use separate profiles, DSH homes, state, controls, ports and credentials, with Feishu disabled. The minimal production deployment described above does not create a backup or rollback point; a build failure can leave it stopped. If restoring a database manually, reconcile external side effects and do not treat a copy of a live SQLite file as a consistent backup. See `AGENTS.md` for the task-worktree and production boundaries.
-
-The steps below apply only to deployments where an in-place upgrade has been explicitly deemed appropriate; they are not an automated self-hosted release procedure:
-
-1. Wait until no Executor is in the middle of a turn.
-2. Back up `<stateDir>/orchestrator.sqlite`.
-3. Run `git pull && pnpm install && pnpm build`.
-4. Run `scripts/dsh-superagent restart` and inspect its status.
-
-On Windows, run the same steps in PowerShell; `&&` works in PowerShell 7, and the service command is
-`pwsh scripts\dsh-superagent.ps1 restart`. The entry takes only the action (and an optional `-Config`/`-RespectStop`);
-target facts stay in `%USERPROFILE%\.dsh-superagent\service.json`, created from `examples/service.windows.json`.
+**Self-hosted development:** Use an independent operator for service lifecycle operations, not the service's own worker. Development and validation require separate profiles, DSH homes, state, controls, ports and credentials, with Feishu disabled. Deployment and lifecycle fixtures must explicitly select temporary service homes and checkouts and use fake executors or test-owned endpoints held for the operation; inheriting `DSH_HOME` or releasing a port before use can redirect a test to production. Git-mutating tests must use temporary repositories and clear inherited Git location and configuration overrides. A task worktree, separate runtime directories and environment variables do not block access to production loopback ports or processes. The deployment tests cover a real status check against a held foreign listener and a successful deployment with a fake stopped status; they do not establish end-to-end compatibility of a real stopped status with deployment preflight. See `AGENTS.md` for the production boundaries and `docs/runtime-windows.md` for the candidate release workflow and its limitations. An online copy of a live SQLite file is not a consistent backup; reconcile external effects before restoring state.
 
 A restart ends running Assignments and starts replacements with recovery notes. Existing directory comparisons use filesystem identity when available; Windows PATH shim filtering also folds case for missing paths. Neither establishes handoff workspace isolation or proves historical identity. This does not verify the original workspace or isolate recovered workers: before resuming, verify the worktree, branch, uncommitted work and Session working directory, and stop for operator recovery if the original directory is missing or mismatched. See `docs/015-workspace-lifecycle.md`. Team text and overridden prompt parts are retained; parts without overrides follow the new defaults. Review parts marked **Default updated** after upgrading.
 
