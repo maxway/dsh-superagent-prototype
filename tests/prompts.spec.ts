@@ -67,6 +67,10 @@ it('adds GPT guidance only to GPT workers, preserving other prompts and override
     expect(worker(model)).toContain('Arrange a bounded wait using a managed background job')
     expect(worker(model)).toContain('On wake, inspect the outcome, address actionable failures')
     expect(worker(model)).toContain('A final message in the Session is not delivery')
+    expect(worker(model)).toContain('state=blocked and human_action containing one concrete question')
+    expect(worker(model)).toContain('a blocked state or summary alone does not send the question')
+    expect(worker(model)).toContain('For Feishu-origin work the orchestrator routes the attention request or result back to the source conversation')
+    expect(worker(model)).toContain('Do not raise attention for a managed wait, routine progress or an interruption you can resolve yourself')
   }
   expect(composePrompt(config, 'orchestrator', undefined, undefined, 'gpt-6.1-terra')).not.toContain('Own the outcome:')
   const overridden = { ...config, overrides: { 'runtime/work/gpt': { text: 'GPT team guidance.' } } }
