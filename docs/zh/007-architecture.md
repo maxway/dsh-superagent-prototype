@@ -453,6 +453,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/assessment.spec.ts` | MasterAssessor 为每个评估保留什么，以及何时放手 |
 | `tests/background.spec.ts` | 等待 worker 的 shell 作业和子智能体：唤醒它的结束，以及宿主机停止 |
 | `tests/worker-guard.spec.ts` | 经 rc.3 工具管线验证 worker guard：拒绝原生子智能体调用、允许工作工具及 guard 启用前准备的调用 |
+| `tests/git-fixture.spec.ts` | Git 测试环境与继承的配置、仓库路径、模板和钩子的隔离 |
 | `tests/workspace.spec.ts` | 针对真实仓库的只读工作区清点：保留 worktree、ref 和已跟踪、未跟踪及被忽略的数据，覆盖未知和工单恢复等情况 |
 | `tests/workspace-journal.spec.ts` | 本地 ref 操作的持久意图与结果、重复和未解决操作以及仓库身份 |
 | `tests/provenance.spec.ts` | 可选工作区创建来源：预检、验证以及拒绝认领预先存在或不匹配的资源 |
@@ -495,7 +496,7 @@ Runtime 把 `ticket.ended`、`trigger.requeued` 和 `thread.unsubscribed` 变成
 | `tests/cards.spec.ts` | 内置文本必须陈述的规则，逐文件验证 |
 | `tests/model-surface.spec.ts` | 模型读到的一切：工具、提示词、技能和输入，对照工具 schema、执行环境和术语表检查，每种角色有大小预算 |
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | 插件配置和安装配置、智能体的进程环境、插件入口 |
-| `tests/service-script.spec.ts` | `scripts/dsh-superagent` 对照伪造的 `ps`、`tmux` 和 `dsh`，加上真实 Windows 监听所有者停止、零参数发现选择、启动事实指向另一 home 时的停止、外部监听者拒绝、按 home 存放的控制文件、旧停止标记兼容，以及它的 Watchdog 快照、观测记录、部署事实与飞书报告 |
+| `tests/service-script.spec.ts` | `scripts/dsh-superagent` 对照伪造的 `ps`、`tmux` 和 `dsh`、隔离的模拟端点、按 home 存放的控制文件、旧停止标记兼容，以及 Watchdog 和部署报告 |
 | `tests/launch.spec.ts` | Windows 启动器：`.cmd` shim 解析、`.js` 入口，以及拒绝只能走 shell 的包装 |
 | `tests/commands-window.spec.ts` | CLI 传输在运行后台命令时隐藏窗口 |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | 客户端插件的注册和轮询、Session 导航和路由记忆、本地控件，以及面板的导入（没有循环） |

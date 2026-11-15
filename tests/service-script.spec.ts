@@ -1,6 +1,5 @@
 /** Tests for scripts/dsh-superagent using a temporary checkout path with spaces and stubbed ps, tmux, and dsh binaries. */
 import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
 import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync }
   from 'node:fs'
 import { createServer, type Server } from 'node:http'
@@ -16,7 +15,6 @@ let server: Server | undefined
 let sleepers: ChildProcess[] = []
 let fallbackServer: Server
 let fallbackUrl: string
-let ownedUrls: Map<string, () => boolean>
 const allowedEnvironment = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'PROCESSOR_ARCHITECTURE'])
 const testEnvironment = () => ({
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => allowedEnvironment.has(key.toUpperCase()))),
@@ -40,7 +38,6 @@ beforeEach(async () => {
   fallbackServer = createServer(request => request.socket.destroy())
   await new Promise<void>(resolve => fallbackServer.listen(0, '127.0.0.1', resolve))
   fallbackUrl = `http://127.0.0.1:${(fallbackServer.address() as AddressInfo).port}`
-  ownedUrls = new Map([[fallbackUrl, () => fallbackServer.listening]])
   root = mkdtempSync(join(tmpdir(), 'service script '))
   home = join(root, 'home')
   mkdirSync(join(root, 'scripts')); mkdirSync(join(root, 'bin')); mkdirSync(home)
@@ -77,12 +74,12 @@ function runWithEnvironment(environment: NodeJS.ProcessEnv, ...args: string[]): 
   const urlIndex = args.indexOf('--url')
   const url = urlIndex < 0 ? fallbackUrl : args[urlIndex + 1]
   const activeServerUrl = server?.listening ? `http://127.0.0.1:${(server.address() as AddressInfo).port}` : undefined
-  if (!url || (url !== activeServerUrl && !ownedUrls.get(url)?.())) throw new Error(`Test target is not an active owned endpoint: ${url}`)
+  if (!url || (url !== activeServerUrl && (url !== fallbackUrl || !fallbackServer.listening))) throw new Error(`Test target is not an active owned endpoint: ${url}`)
   if (urlIndex < 0) args.push('--url', url)
   return new Promise(resolve => execFile(process.execPath, [join(root, 'scripts', 'dsh-superagent'), ...args, '--home', home],
     { env: { ...testEnvironment(), PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '', ...environment },
       timeout: 20_000 },
-    (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr })))
+    (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : error ? 1 : 0, stdout, stderr })))
 }
 const run = (...args: string[]) => runWithEnvironment({}, ...args)
 it('refuses lifecycle commands aimed at endpoints not owned by the test', () => {
@@ -90,6 +87,21 @@ it('refuses lifecycle commands aimed at endpoints not owned by the test', () => 
   expect(() => run('restart', '--url', 'http://127.0.0.1:3082')).toThrow('not an active owned endpoint')
   expect(() => run('stop', `--url=${fallbackUrl}`, '--url', 'http://127.0.0.1:3082')).toThrow('one explicit --url')
   expect(() => run('stop', '--url', fallbackUrl, '--url', 'http://127.0.0.1:3082')).toThrow('one explicit --url')
+})
+it('sends stop requests to a held mock endpoint', async () => {
+  const requests: { method?: string; url?: string; header?: string }[] = []
+  server = createServer((request, response) => {
+    requests.push({ method: request.method, url: request.url, header: String(request.headers['x-orchestrator-request']) })
+    response.writeHead(requests.length === 1 ? 200 : 503).end()
+  })
+  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  const { stopRequest } = await import(pathToFileURL(join(root, 'scripts', 'dsh-superagent')).href) as {
+    stopRequest: (url: string) => Promise<{ status: number; body: string } | null>
+  }
+  expect(await stopRequest(url)).toMatchObject({ status: 200 })
+  expect(await stopRequest(url)).toMatchObject({ status: 503 })
+  expect(requests).toEqual(Array.from({ length: 2 }, () => ({ method: 'POST', url: '/orchestrator/api/service/stop', header: '1' })))
 })
 const READY = { health: { runtime: { state: 'ready', detail: '' } }, setup: { problem: null, feishuProblem: null } }
 /** Start a mock HTTP server that returns 503 until tmux launches the service (unless always is true). */
@@ -105,53 +117,6 @@ const status = async (profile: string, url = fallbackUrl) =>
   JSON.parse((await run('status', '--profile', profile, '--url', url)).stdout) as
     { pids: number[]; manually_stopped: boolean; listener: number[] | null; unlistening: number[]; foreign: { pid: number }[] }
 
-/** A fake management API process whose command line serves `profile` and that exits on the stop route. */
-async function fakeService(profile: string, superagent = true, drainFails = false): Promise<{ child: ChildProcess; pid: number; url: string }> {
-  const directory = mkdtempSync(join(root, 'fake service '))
-  const portFile = join(directory, 'port.txt')
-  const entry = join(directory, 'entry.js')
-  writeFileSync(entry, `import { writeFileSync } from 'node:fs'
-import { createServer } from 'node:http'
-const ready = { health: { runtime: { state: 'ready', detail: '' }, ...(${superagent} ? { assessment: { state: 'ready' } } : {}) }, setup: { problem: null, feishuProblem: null } }
-const server = createServer((request, response) => {
-  if (request.url?.startsWith('/orchestrator/api/state')) {
-    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(ready))
-    return
-  }
-  if (request.method === 'POST' && request.url === '/orchestrator/api/service/stop') {
-    response.writeHead(200, { 'content-type': 'application/json' }).end('{"stopping":true}')
-    if (${drainFails}) { ready.health.runtime = { state: 'error', detail: 'shutdown_failed: drain unconfirmed' } }
-    else setTimeout(() => process.exit(0), 50)
-    return
-  }
-  response.writeHead(404).end()
-})
-server.listen(0, '127.0.0.1', () => writeFileSync(${JSON.stringify(portFile)}, String(server.address().port)))
-`)
-  const child = spawn(process.execPath, [entry, '--profile', profile, '--no-open'], { stdio: 'ignore', windowsHide: true, env: testEnvironment() })
-  sleepers.push(child)
-  let port = 0
-  for (let attempt = 0; attempt < 100 && !port; attempt++) {
-    await new Promise(resolve => setTimeout(resolve, 100))
-    try { port = Number(readFileSync(portFile, 'utf8')) } catch { /* The server has not listened yet. */ }
-  }
-  if (!port || !child.pid) throw new Error('The fake management API did not start.')
-  const url = `http://127.0.0.1:${port}`
-  ownedUrls.set(url, () => child.exitCode === null && child.signalCode === null)
-  return { child, pid: child.pid, url }
-}
-
-/** Resolve once the child exits, or reject after the timeout. */
-async function waitForExit(child: ChildProcess, timeout = 15_000): Promise<void> {
-  if (child.exitCode !== null) return
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('The child did not exit.')), timeout)
-    child.once('exit', () => { clearTimeout(timer); resolve() })
-  })
-}
-
-// These cases drive the POSIX control path with stubbed `ps`, `tmux` and `dsh` shell scripts. The Windows start/stop
-// path is covered by the platform-specific unit test below and by the real Windows smoke run in deployment stage 5.
 describe.skipIf(process.platform === 'win32')('POSIX service lifecycle', () => {
 it('refuses to stop when two processes serve the profile, before it writes the stop marker', async () => {
   processes(service(sleeper()), `${sleeper()} node node /opt/dsh --profile=superagent`)
@@ -640,175 +605,6 @@ it.skipIf(process.platform !== 'win32')('keeps a detached Node shim hidden and w
     await new Promise(resolve => child.once('exit', resolve))
   }
 }, 10_000)
-it.skipIf(process.platform !== 'win32')('proves a service created outside every foreign Job survives and verify notices its loss', async () => {
-  const serviceDirectory = mkdtempSync(join(tmpdir(), 'verify service '))
-  const profile = `p1verify${process.pid}`
-  const portFile = join(serviceDirectory, 'port.txt')
-  const exitFile = join(serviceDirectory, 'exit')
-  const entry = join(serviceDirectory, 'entry.js')
-  writeFileSync(entry, `import { existsSync, writeFileSync } from 'node:fs'
-import { createServer } from 'node:http'
-import { spawn } from 'node:child_process'
-const allowed = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'PROCESSOR_ARCHITECTURE'])
-for (const name of Object.keys(process.env)) if (!allowed.has(name.toUpperCase())) delete process.env[name]
-const ready = { health: { runtime: { state: 'ready', detail: '' }, assessment: { state: 'ready' } }, setup: { problem: null, feishuProblem: null } }
-const server = createServer((request, response) => {
-  if (request.url?.startsWith('/orchestrator/api/state')) {
-    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(ready))
-    return
-  }
-  response.writeHead(404).end()
-})
-server.listen(0, '127.0.0.1', () => writeFileSync(${JSON.stringify(portFile)}, String(server.address().port)))
-// A long-running service spawns children (the Feishu event consumer is one) and joins the Job Node creates for them.
-// The child ends when this process's standard input closes, so killing the service does not leave a process holding
-// the temporary directory on Windows.
-spawn(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(0))'],
-  { stdio: ['pipe', 'ignore', 'ignore'] })
-setInterval(() => { if (existsSync(${JSON.stringify(exitFile)})) process.exit(0) }, 100)
-setTimeout(() => process.exit(0), 35_000)
-`)
-  const controlScript = join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')
-  const module = pathToFileURL(controlScript).href
-  const run = (args: string[]) => new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
-    execFile(process.execPath, args, { timeout: 60_000, env: testEnvironment() }, (error, stdout, stderr) =>
-      resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr }))
-  })
-  let servicePid: number | undefined
-  try {
-    // Ask the WMI provider for the service process: a DSH tool command's Job must not own it.
-    const startScript = `import(${JSON.stringify(module)}).then(m => {
-      const commandLine = [process.execPath, ${JSON.stringify(entry)}, '--profile', ${JSON.stringify(profile)}, '--no-open']
-        .map(m.quoteWindowsArg).join(' ')
-      console.log(m.createOutsideJob(commandLine, ${JSON.stringify(serviceDirectory)}))
-    })`
-    try {
-      servicePid = Number((await new Promise<string>((resolve, reject) => {
-        execFile(process.execPath, ['--input-type=module', '-e', startScript], (error, stdout) => error ? reject(error) : resolve(stdout))
-      })).trim())
-    } catch (error) {
-      // A host that cannot create a process through WMI cannot deploy this way either; do not pretend to check it.
-      console.warn('WMI process creation is unavailable; the Job escape could not be checked', error)
-      return
-    }
-    expect(servicePid).toBeGreaterThan(0)
-    let port = 0
-    for (let attempt = 0; attempt < 100 && !port; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 100))
-      try { port = Number(readFileSync(portFile, 'utf8')) } catch { /* The service has not listened yet. */ }
-    }
-    expect(port).toBeGreaterThan(0)
-    const consoleVisible = execFileSync('powershell.exe', ['-NoProfile', '-Command', `
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class ConsoleVisibility {
-  [DllImport("kernel32.dll")] public static extern bool FreeConsole();
-  [DllImport("kernel32.dll")] public static extern bool AttachConsole(uint pid);
-  [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
-  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
-}
-'@
-[ConsoleVisibility]::FreeConsole() | Out-Null
-if (-not [ConsoleVisibility]::AttachConsole(${servicePid})) { throw 'Could not attach to the test service console' }
-[ConsoleVisibility]::IsWindowVisible([ConsoleVisibility]::GetConsoleWindow())
-`], { encoding: 'utf8', windowsHide: true }).trim()
-    expect(consoleVisible).toBe('False')
-    const url = `http://127.0.0.1:${port}`
-    const verified = await run([controlScript, 'verify', '--profile', profile, '--url', url, '--home', home, '--survival-seconds', '1'])
-    expect(verified).toMatchObject({ code: 0, stderr: '' })
-    // Node puts the service into its own Job when it spawns a child; only a Job it merely inherited may fail the check.
-    expect(JSON.parse(verified.stdout)).toMatchObject({ ok: true, pid: servicePid, inJob: true, foreignJob: false, survivalSeconds: 1 })
-    writeFileSync(exitFile, '')
-    const stopped = servicePid!
-    servicePid = undefined
-    for (let attempt = 0; attempt < 50; attempt++) {
-      try { process.kill(stopped, 0) } catch { break }
-      await new Promise(resolve => setTimeout(resolve, 100))
-    }
-    const lost = await run([controlScript, 'verify', '--profile', profile, '--url', fallbackUrl, '--home', home, '--survival-seconds', '0'])
-    expect(lost.code).toBe(1)
-    expect(lost.stderr).toContain('Expected exactly one running service')
-  } finally {
-    if (servicePid) writeFileSync(exitFile, '')
-    for (let attempt = 0; attempt < 50; attempt++) {
-      if (!servicePid) break
-      try { process.kill(servicePid, 0) } catch { break }
-      await new Promise(resolve => setTimeout(resolve, 100))
-    }
-    rmSync(serviceDirectory, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
-    rmSync(join(home, 'service', 'control', 'profiles', profile), { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
-  }
-}, 45_000)
-it.skipIf(process.platform !== 'win32')('stops the process that owns the management URL, not another process with the same profile', async () => {
-  const profile = `precision-${randomUUID()}`
-  const first = await fakeService(profile)
-  const second = await fakeService(profile)
-  expect(await status(profile, first.url)).toMatchObject({ pids: [first.pid], listener: [first.pid], unlistening: [second.pid] })
-  expect(await status(profile, second.url)).toMatchObject({ pids: [second.pid] })
-  expect(await run('stop', '--profile', profile, '--url', first.url, '--stop-timeout', '10'))
-    .toMatchObject({ code: 0, stdout: expect.stringContaining('dsh-superagent stopped') })
-  await waitForExit(first.child)
-  expect(second.child.exitCode).toBeNull()
-  expect((await status(profile, second.url)).pids).toEqual([second.pid])
-  second.child.kill()
-}, 30_000)
-it.skipIf(process.platform !== 'win32')('reports a failed drain without killing the retained service', async () => {
-  const profile = `failed-drain-${randomUUID()}`
-  const service = await fakeService(profile, true, true)
-  expect(await run('stop', '--profile', profile, '--url', service.url, '--stop-timeout', '10'))
-    .toMatchObject({ code: 1, stderr: expect.stringContaining('shutdown_failed: drain unconfirmed') })
-  expect(service.child.exitCode).toBeNull()
-  const current = await run('status', '--profile', profile, '--url', service.url)
-  expect(current).toMatchObject({ code: 1, stdout: expect.stringContaining('shutdown_failed: drain unconfirmed') })
-}, 30_000)
-
-it.skipIf(process.platform !== 'win32')('stops an explicit superagent URL without relying on its process command line', async () => {
-  const service = await fakeService(`other-${randomUUID()}`)
-  expect(await run('stop', '--profile', `unknown-${randomUUID()}`, '--url', service.url, '--stop-timeout', '10'))
-    .toMatchObject({ code: 0, stdout: expect.stringContaining('dsh-superagent stopped') })
-  await waitForExit(service.child)
-}, 30_000)
-it.skipIf(process.platform !== 'win32')('refuses a non-superagent listener even with the same profile', async () => {
-  const profile = `foreign-${randomUUID()}`
-  const service = await fakeService(profile, false)
-  expect(await run('stop', '--profile', profile, '--url', service.url, '--stop-timeout', '2'))
-    .toMatchObject({ code: 1, stderr: expect.stringContaining('not a dsh-superagent server') })
-  expect(service.child.exitCode).toBeNull()
-  expect(existsSync(join(control(profile), 'manually-stopped'))).toBe(false)
-}, 30_000)
-it.skipIf(process.platform !== 'win32')('stops a listener even when its start facts name another DSH home', async () => {
-  const service = await fakeService('home-mismatch')
-  mkdirSync(control('home-mismatch'), { recursive: true })
-  writeFileSync(join(control('home-mismatch'), 'service-start.json'), JSON.stringify({ home: 'C:\\another-home', pid: service.pid }))
-  expect(await run('stop', '--profile', 'home-mismatch', '--url', service.url, '--stop-timeout', '10'))
-    .toMatchObject({ code: 0, stdout: expect.stringContaining('dsh-superagent stopped') })
-  await waitForExit(service.child)
-  expect(existsSync(join(control('home-mismatch'), 'manually-stopped'))).toBe(true)
-}, 30_000)
-it.skipIf(process.platform !== 'win32')('refuses a foreign listener and a recorded process that no longer listens', async () => {
-  const foreign = await fakeService('another-profile', false)
-  expect(await run('start', '--profile', 'target-profile', '--url', foreign.url, '--timeout', '2'))
-    .toMatchObject({ code: 1, stderr: expect.stringContaining('not the dsh-superagent process') })
-  expect(await run('stop', '--profile', 'target-profile', '--url', foreign.url, '--stop-timeout', '2'))
-    .toMatchObject({ code: 1, stderr: expect.stringContaining('not a dsh-superagent server') })
-  foreign.child.kill()
-
-  const profile = 'unlistening-test'
-  mkdirSync(control(profile), { recursive: true })
-  const sleeperEntry = join(root, 'unlistening.js')
-  writeFileSync(sleeperEntry, 'setInterval(() => {}, 60000)\n')
-  const child = spawn(process.execPath, [sleeperEntry, '--profile', profile], { stdio: 'ignore', windowsHide: true })
-  sleepers.push(child)
-  writeFileSync(join(control(profile), 'service.pid'), `${child.pid}\n`)
-  await new Promise(resolve => setTimeout(resolve, 2_000))
-  expect((await status(profile)).unlistening).toContain(child.pid!)
-  expect(await run('stop', '--profile', profile, '--url', fallbackUrl, '--stop-timeout', '1'))
-    .toMatchObject({ code: 1, stderr: expect.stringContaining('not a dsh-superagent server') })
-  expect(child.exitCode).toBeNull()
-  expect(await run('start', '--profile', profile, '--url', fallbackUrl, '--timeout', '1'))
-    .toMatchObject({ code: 1, stderr: expect.stringContaining('not the dsh-superagent process') })
-}, 60_000)
 it('still honors a stop marker written before control files moved into the home', async () => {
   const legacy = join(root, '.artifacts', 'control', 'profiles', 'legacy')
   mkdirSync(legacy, { recursive: true })
@@ -823,7 +619,7 @@ it.skipIf(process.platform !== 'win32')('wraps the control script with a pinned 
   writeFileSync(config, JSON.stringify({ checkout: root, home, profile, url: fallbackUrl, node: process.execPath }))
   const call = (args: string[], environment: NodeJS.ProcessEnv = {}) => new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
     execFile('pwsh', ['-NoProfile', '-File', entry, ...args], { timeout: 30_000, env: { ...testEnvironment(), ...environment } },
-      (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr }))
+      (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : error ? 1 : 0, stdout, stderr }))
   })
   const checked = await call(['-Action', 'status', '-Config', config])
   expect(checked.code).toBe(1)

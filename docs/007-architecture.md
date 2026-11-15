@@ -451,6 +451,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
 | `tests/worker-guard.spec.ts` | Worker guard through the rc.3 tool pipeline: denied native subagent calls, allowed work tools and calls prepared before the guard |
+| `tests/git-fixture.spec.ts` | Git test environment isolation from inherited configuration, repository paths, templates and hooks |
 | `tests/workspace.spec.ts` | Read-only workspace inventory against real repositories: preserves worktrees, refs and tracked, untracked and ignored data, with unknown and resumed cases |
 | `tests/workspace-journal.spec.ts` | Durable local ref operation intents and results, duplicate and unresolved operations, and repository identity |
 | `tests/provenance.spec.ts` | Optional workspace creation provenance: preflight, verification and refusal to claim pre-existing or mismatched resources |
@@ -493,7 +494,7 @@ Some generic modules still need provider-specific behavior:
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, the agent's process environment, the plugin entry |
-| `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh`, plus real Windows listener-owner stop, zero-parameter discovery selection, a stop whose start facts name another home, foreign-listener refusal, home-scoped control files, legacy stop-marker compatibility, and its Watchdog snapshot, recorded runs, deployment facts and Feishu report |
+| `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh`, isolated mock endpoints, home-scoped control files, legacy stop-marker compatibility, and Watchdog and deployment reporting |
 | `tests/launch.spec.ts` | The Windows launcher: `.cmd` shim resolution, `.js` entries and the refusal of a shell-only wrapper |
 | `tests/commands-window.spec.ts` | The CLI transport hides the window when it runs a background command |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
