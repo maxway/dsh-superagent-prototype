@@ -6,6 +6,11 @@ import { afterEach, expect, it } from 'vitest'
 
 const recoverScript = join(import.meta.dirname, '..', 'scripts', 'recover-superagent.ps1')
 let directory: string | undefined
+const allowedEnvironment = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'PROCESSOR_ARCHITECTURE'])
+const testEnvironment = () => ({
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => allowedEnvironment.has(key.toUpperCase()))),
+  HOME: directory, USERPROFILE: directory, DSH_HOME: directory, LUMOS_API_KEY: 'test-only',
+})
 
 afterEach(() => {
   if (directory) rmSync(directory, { recursive: true, force: true })
@@ -24,7 +29,7 @@ it.skipIf(process.platform !== 'win32').each([0, 2, 3, 1])('normal start ignores
   writeFileSync(join(scripts, 'dsh-superagent'), `if (process.argv[2] === 'status') console.log(JSON.stringify({ identity: 'listener', pids: [], foreign: [], unlistening: [] })); else process.exit(${code})`)
   writeFileSync(config, JSON.stringify({ checkout: directory, home: directory, profile: 'recovery-test', node: process.execPath, url: 'http://127.0.0.1:19382' }))
   const wrapper = join(import.meta.dirname, '..', 'scripts', 'dsh-superagent.ps1')
-  const result = spawnSync('pwsh', ['-NoProfile', '-File', wrapper, 'start', '-Config', config], { encoding: 'utf8' })
+  const result = spawnSync('pwsh', ['-NoProfile', '-File', wrapper, 'start', '-Config', config], { encoding: 'utf8', env: testEnvironment() })
   expect(result.status, result.stderr).toBe(code)
   expect(existsSync(portMarker)).toBe(true)
   expect(existsSync(profileMarker)).toBe(false)
@@ -42,7 +47,7 @@ it.skipIf(process.platform !== 'win32')('passes the recovery flag to the control
   mkdirSync(join(directory, 'service', 'control', 'profiles', 'recovery-test'), { recursive: true })
   writeFileSync(marker, 'failed deployment')
   const wrapper = join(import.meta.dirname, '..', 'scripts', 'dsh-superagent.ps1')
-  const result = spawnSync('pwsh', ['-NoProfile', '-File', wrapper, 'start', '-Config', config, '-UseInstalled', '-RespectStop'], { encoding: 'utf8' })
+  const result = spawnSync('pwsh', ['-NoProfile', '-File', wrapper, 'start', '-Config', config, '-UseInstalled', '-RespectStop'], { encoding: 'utf8', env: testEnvironment() })
   expect(result.status, result.stderr).toBe(0)
   expect(JSON.parse(readFileSync(calls, 'utf8'))).toContain('--respect-stop')
   expect(existsSync(marker)).toBe(true)
@@ -55,7 +60,7 @@ it.skipIf(process.platform !== 'win32')('crash recovery starts the installed ver
   const config = join(directory, 'config.json')
   writeFileSync(config, JSON.stringify({ url: 'http://127.0.0.1:19382', home: directory }))
   writeFileSync(mock, `param($Action, $Config, [switch]$UseInstalled, [switch]$RespectStop)\nif ($Action -eq 'status') { '{"identity":"listener","manually_stopped":false,"home_matches":true,"listener":[],"pids":[],"foreign":[],"unlistening":[],"start":{"pid":99999999}}'; exit 1 }\nSet-Content -LiteralPath '${calls.replaceAll("'", "''")}' -Value "$Action|$UseInstalled|$RespectStop"\n`)
-  execFileSync('pwsh', ['-NoProfile', '-File', recoverScript, '-Config', config, '-ServiceScript', mock])
+  execFileSync('pwsh', ['-NoProfile', '-File', recoverScript, '-Config', config, '-ServiceScript', mock], { env: testEnvironment() })
   expect(readFileSync(calls, 'utf8').trim()).toBe('start|True|True')
   rmSync(calls)
   const markerDir = join(directory, 'service', 'control', 'lifecycle')
@@ -64,7 +69,7 @@ it.skipIf(process.platform !== 'win32')('crash recovery starts the installed ver
   const profileDir = join(directory, 'service', 'control', 'profiles', 'superagent')
   mkdirSync(profileDir, { recursive: true })
   writeFileSync(join(profileDir, 'deployment.maintenance'), 'unfinished deployment')
-  execFileSync('pwsh', ['-NoProfile', '-File', recoverScript, '-Config', config, '-ServiceScript', mock])
+  execFileSync('pwsh', ['-NoProfile', '-File', recoverScript, '-Config', config, '-ServiceScript', mock], { env: testEnvironment() })
   expect(readFileSync(calls, 'utf8').trim()).toBe('start|True|True')
 })
 
@@ -80,7 +85,7 @@ it.skipIf(process.platform !== 'win32')('does not recover on API errors while a 
     { identity: 'scan', manually_stopped: false, home_matches: true, listener: null, pids: [], foreign: [], unlistening: [], start: { pid: 99999999 } },
   ]) {
     writeFileSync(mock, `param($Action, $Config)\nif ($Action -eq 'status') { '${JSON.stringify(status)}'; exit 1 }\nSet-Content -LiteralPath '${calls.replaceAll("'", "''")}' -Value 'started'\n`)
-    execFileSync('pwsh', ['-NoProfile', '-File', recoverScript, '-Config', config, '-ServiceScript', mock])
+    execFileSync('pwsh', ['-NoProfile', '-File', recoverScript, '-Config', config, '-ServiceScript', mock], { env: testEnvironment() })
     expect(existsSync(calls)).toBe(false)
   }
 })

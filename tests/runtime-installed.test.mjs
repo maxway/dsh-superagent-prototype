@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 const wrapper = fileURLToPath(new URL('../scripts/dsh-superagent.ps1', import.meta.url))
 const allowedEnvironment = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'PROCESSOR_ARCHITECTURE'])
-const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => allowedEnvironment.has(key.toUpperCase())))
+const baseEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => allowedEnvironment.has(key.toUpperCase()))), LUMOS_API_KEY: 'test-only' }
 
 test('lifecycle actions reject a missing selected or default configuration', { skip: process.platform !== 'win32' }, () => {
   const root = mkdtempSync(join(tmpdir(), 'superagent-missing-config-'))

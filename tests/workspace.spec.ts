@@ -1,11 +1,10 @@
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reclaimWorkspace, ticketBranch, ticketRef, type GitRun } from '../src/executor/workspace.ts'
-import { gitEnv } from './fixtures/git.ts'
 
 vi.setConfig({ testTimeout: 30_000 })
 const exec = promisify(execFile)
@@ -13,11 +12,36 @@ const IDENTITY = ['-c', 'user.name=Test', '-c', 'user.email=test@example.com']
 const name = 'fix-abcdef123456'
 const id = 'ticket-1'
 let directory: string
-beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'workspace-')) })
+beforeEach(() => {
+  directory = mkdtempSync(join(tmpdir(), 'workspace-'))
+  mkdirSync(join(directory, 'git-home'))
+  mkdirSync(join(directory, 'git-template'))
+  mkdirSync(join(directory, 'git-hooks'))
+  writeFileSync(join(directory, 'git-config'), '')
+})
 afterEach(() => { rmSync(directory, { recursive: true, force: true }) })
 
-const git = async (cwd: string, ...args: string[]): Promise<string> =>
-  (await exec('git', args, { cwd, env: gitEnv(), timeout: 20_000, windowsHide: true })).stdout
+const gitEnv = (source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => ({
+  ...Object.fromEntries(Object.entries(source).filter(([key]) => {
+    const name = key.toUpperCase()
+    return !name.startsWith('GIT_') && !['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME'].includes(name)
+  })),
+  HOME: join(directory, 'git-home'),
+  USERPROFILE: join(directory, 'git-home'),
+  XDG_CONFIG_HOME: join(directory, 'git-home'),
+  GIT_ALLOW_PROTOCOL: 'file',
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_GLOBAL: join(directory, 'git-config'),
+  GIT_CONFIG_SYSTEM: join(directory, 'git-config'),
+  GIT_TEMPLATE_DIR: join(directory, 'git-template'),
+  GIT_CONFIG_COUNT: '1',
+  GIT_CONFIG_KEY_0: 'core.hooksPath',
+  GIT_CONFIG_VALUE_0: join(directory, 'git-hooks'),
+})
+const gitWithEnv = async (cwd: string, env: NodeJS.ProcessEnv, ...args: string[]): Promise<string> =>
+  (await exec('git', args, { cwd, env: gitEnv(env), timeout: 20_000, windowsHide: true })).stdout
+const git = async (cwd: string, ...args: string[]): Promise<string> => gitWithEnv(cwd, process.env, ...args)
 const run: GitRun = async (argv, cwd) => git(cwd, ...argv)
 
 async function repository() {
@@ -42,6 +66,50 @@ async function worktree(main: string, branch = ticketBranch(name), start = 'HEAD
 const target = (path: string) => ({ id, name, directory: path })
 const oid = async (cwd: string, ref: string) => (await git(cwd, 'rev-parse', '--verify', ref)).trim()
 const state = (value: string) => ({ state: value, reason: expect.any(String) })
+
+describe('Git fixture isolation', () => {
+  it('ignores inherited repository locations, configuration, rewrites, and template hooks', async () => {
+    const remote = join(directory, 'expected.git')
+    const decoy = join(directory, 'decoy.git')
+    const main = join(directory, 'isolated')
+    const hostileTemplate = join(directory, 'hostile-template')
+    const hostileHooks = join(hostileTemplate, 'hooks')
+    const hostileConfig = join(directory, 'hostile-config')
+    mkdirSync(hostileHooks, { recursive: true })
+    const hook = join(hostileHooks, 'pre-commit')
+    writeFileSync(hook, '#!/bin/sh\necho ran > hook-ran\n')
+    chmodSync(hook, 0o755)
+    writeFileSync(hostileConfig, `[core]\n\thooksPath = "${hostileHooks.replaceAll('\\', '/')}"\n[url "${decoy.replaceAll('\\', '/')}"]\n\tinsteadOf = ${remote.replaceAll('\\', '/')}\n`)
+    await git(directory, 'init', '--bare', remote)
+    await git(directory, 'init', '--bare', decoy)
+    const hostileEnv = {
+      ...process.env,
+      HOME: directory,
+      USERPROFILE: directory,
+      XDG_CONFIG_HOME: directory,
+      GIT_DIR: decoy,
+      GIT_WORK_TREE: directory,
+      GIT_INDEX_FILE: join(directory, 'hostile-index'),
+      GIT_CONFIG_GLOBAL: hostileConfig,
+      GIT_CONFIG_SYSTEM: hostileConfig,
+      GIT_TEMPLATE_DIR: hostileTemplate,
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: `url.${decoy.replaceAll('\\', '/')}.insteadOf`,
+      GIT_CONFIG_VALUE_0: remote.replaceAll('\\', '/'),
+    }
+    const isolatedGit = (...args: string[]) => gitWithEnv(main, hostileEnv, ...args)
+    await gitWithEnv(directory, hostileEnv, 'init', '-b', 'main', main)
+    writeFileSync(join(main, 'README.md'), 'isolated\n')
+    await isolatedGit('add', 'README.md')
+    await isolatedGit(...IDENTITY, 'commit', '-m', 'init')
+    await isolatedGit('push', remote, 'HEAD:refs/heads/main')
+    expect(existsSync(join(main, '.git'))).toBe(true)
+    expect(existsSync(join(main, '.git', 'hooks', 'pre-commit'))).toBe(false)
+    expect(existsSync(join(main, 'hook-ran'))).toBe(false)
+    expect((await git(directory, 'ls-remote', '--heads', remote, 'main')).trim()).toContain('refs/heads/main')
+    expect((await git(directory, 'ls-remote', '--heads', decoy, 'main')).trim()).toBe('')
+  })
+})
 
 describe('read-only workspace inventory', () => {
   it('reports and preserves a clean linked worktree and its local branch', async () => {
@@ -103,7 +171,7 @@ describe('read-only workspace inventory', () => {
     await reclaimWorkspace(checked, target(path), () => true)
     expect(existsSync(marker)).toBe(false)
     expect(commands.some(argv => argv[0] === 'status')).toBe(false)
-    await git(path, 'status', '--porcelain')
+    await git(path, 'hash-object', '--path=README.md', 'README.md')
     expect(existsSync(marker)).toBe(true)
   })
 

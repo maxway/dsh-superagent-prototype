@@ -17,6 +17,11 @@ let sleepers: ChildProcess[] = []
 let fallbackServer: Server
 let fallbackUrl: string
 let ownedUrls: Map<string, () => boolean>
+const allowedEnvironment = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'PROCESSOR_ARCHITECTURE'])
+const testEnvironment = () => ({
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => allowedEnvironment.has(key.toUpperCase()))),
+  HOME: home, USERPROFILE: home, DSH_HOME: home, LUMOS_API_KEY: 'test-only',
+})
 const control = (profile: string) => join(home, 'service', 'control', 'profiles', profile)
 const logs = () => join(home, 'service', 'logs')
 const program = (name: string, body: string) => writeFileSync(join(root, 'bin', name), `#!/bin/sh\n${body}\n`, { mode: 0o755 })
@@ -75,7 +80,7 @@ function runWithEnvironment(environment: NodeJS.ProcessEnv, ...args: string[]): 
   if (!url || (url !== activeServerUrl && !ownedUrls.get(url)?.())) throw new Error(`Test target is not an active owned endpoint: ${url}`)
   if (urlIndex < 0) args.push('--url', url)
   return new Promise(resolve => execFile(process.execPath, [join(root, 'scripts', 'dsh-superagent'), ...args, '--home', home],
-    { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '', ...environment },
+    { env: { ...testEnvironment(), PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '', ...environment },
       timeout: 20_000 },
     (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr })))
 }
@@ -123,7 +128,7 @@ const server = createServer((request, response) => {
 })
 server.listen(0, '127.0.0.1', () => writeFileSync(${JSON.stringify(portFile)}, String(server.address().port)))
 `)
-  const child = spawn(process.execPath, [entry, '--profile', profile, '--no-open'], { stdio: 'ignore', windowsHide: true })
+  const child = spawn(process.execPath, [entry, '--profile', profile, '--no-open'], { stdio: 'ignore', windowsHide: true, env: testEnvironment() })
   sleepers.push(child)
   let port = 0
   for (let attempt = 0; attempt < 100 && !port; attempt++) {
@@ -644,6 +649,8 @@ it.skipIf(process.platform !== 'win32')('proves a service created outside every 
   writeFileSync(entry, `import { existsSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
+const allowed = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'PROCESSOR_ARCHITECTURE'])
+for (const name of Object.keys(process.env)) if (!allowed.has(name.toUpperCase())) delete process.env[name]
 const ready = { health: { runtime: { state: 'ready', detail: '' }, assessment: { state: 'ready' } }, setup: { problem: null, feishuProblem: null } }
 const server = createServer((request, response) => {
   if (request.url?.startsWith('/orchestrator/api/state')) {
@@ -664,7 +671,7 @@ setTimeout(() => process.exit(0), 35_000)
   const controlScript = join(import.meta.dirname, '..', 'scripts', 'dsh-superagent')
   const module = pathToFileURL(controlScript).href
   const run = (args: string[]) => new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
-    execFile(process.execPath, args, { timeout: 60_000 }, (error, stdout, stderr) =>
+    execFile(process.execPath, args, { timeout: 60_000, env: testEnvironment() }, (error, stdout, stderr) =>
       resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr }))
   })
   let servicePid: number | undefined
@@ -815,7 +822,7 @@ it.skipIf(process.platform !== 'win32')('wraps the control script with a pinned 
   const config = join(root, 'service.json')
   writeFileSync(config, JSON.stringify({ checkout: root, home, profile, url: fallbackUrl, node: process.execPath }))
   const call = (args: string[], environment: NodeJS.ProcessEnv = {}) => new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
-    execFile('pwsh', ['-NoProfile', '-File', entry, ...args], { timeout: 30_000, env: { ...process.env, ...environment } },
+    execFile('pwsh', ['-NoProfile', '-File', entry, ...args], { timeout: 30_000, env: { ...testEnvironment(), ...environment } },
       (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr }))
   })
   const checked = await call(['-Action', 'status', '-Config', config])

@@ -12,11 +12,6 @@ const run = (command, args, options = {}) => spawnSync(command, args, { encoding
 const allowedEnvironment = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'PROCESSOR_ARCHITECTURE'])
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => allowedEnvironment.has(key.toUpperCase())))
 Object.assign(gitEnv, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: 'NUL', GIT_TERMINAL_PROMPT: '0', GIT_ALLOW_PROTOCOL: 'file' })
-function git(...args) {
-  const result = run('git', args, { env: gitEnv, cwd: gitEnv.HOME })
-  assert.equal(result.status, 0, result.stderr)
-  return result.stdout.trim()
-}
 const required = ['package.json', 'pnpm-lock.yaml', 'cordis.patch.yml', 'runtime-build.json', 'lib/index.js', 'lib/github-watch.js', 'lib/gitlab-watch.js', 'lib/feishu-watch.js', 'scripts/dsh-superagent', 'scripts/dsh-superagent.ps1', 'scripts/service-start.ps1', 'scripts/superagent-lifecycle-lock.ps1', 'scripts/launch-hidden.vbs', 'scripts/prepare-runtime.ps1', 'scripts/initialize-runtime.ps1', 'scripts/activate-runtime.ps1', 'scripts/runtime-activation-core.ps1', 'scripts/runtime-verify.ps1', 'scripts/runtime-paths.ps1']
 function makeRelease(path, service, commit, sha, importMarker) {
   const files = {}
@@ -32,7 +27,14 @@ function makeRelease(path, service, commit, sha, importMarker) {
   writeFileSync(join(path, 'runtime-prepared.json'), JSON.stringify({ commit, archiveSha256: sha, files }))
 }
 function fixture(root, pid) {
-  Object.assign(gitEnv, { HOME: root, USERPROFILE: root, TEMP: root, TMP: root, TMPDIR: root })
+  const gitTemplate = join(root, 'git-template')
+  mkdirSync(gitTemplate)
+  Object.assign(gitEnv, { HOME: root, USERPROFILE: root, TEMP: root, TMP: root, TMPDIR: root, GIT_TEMPLATE_DIR: gitTemplate, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: gitTemplate })
+  const git = (...args) => {
+    const result = run('git', args, { env: gitEnv, cwd: root })
+    assert.equal(result.status, 0, result.stderr)
+    return result.stdout.trim()
+  }
   const control = join(root, 'control'), work = join(root, 'work'), remote = join(root, 'remote.git')
   const source = join(root, 'source.git'), runtime = join(root, 'runtime'), home = join(root, 'home')
   const current = join(runtime, 'current'), old = join(runtime, 'releases', 'old'), template = join(root, 'template')
@@ -64,14 +66,14 @@ if (process.env.E2E_BUILD_READY) {
 }
 writeFileSync(process.argv[5] + '/artifact.zip', process.argv[3])
 `)
-  git('init', '-q', work)
+  git('init', '-q', `--template=${gitTemplate}`, work)
   git('-C', work, 'config', 'user.name', 'Test')
   git('-C', work, 'config', 'user.email', 'test@example.invalid')
   git('-C', work, 'add', '.')
   git('-C', work, 'commit', '-qm', 'fixture')
   const commit = git('-C', work, 'rev-parse', 'HEAD'), ref = git('-C', work, 'symbolic-ref', 'HEAD')
-  git('clone', '-q', '--bare', work, remote)
-  git('init', '-q', '--bare', source)
+  git('clone', '-q', '--bare', `--template=${gitTemplate}`, work, remote)
+  git('init', '-q', '--bare', `--template=${gitTemplate}`, source)
   git('-C', source, 'remote', 'add', 'local', remote)
   writeFileSync(join(control, 'prepare-runtime.ps1'), `param($Archive, $Sha256, $RuntimeRoot, $Node, $Pnpm)
 if ($env:E2E_FAIL_PREPARE) { exit 17 }

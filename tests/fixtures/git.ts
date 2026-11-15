@@ -1,9 +1,12 @@
 /** The environment of the git processes the tests start. */
-import { GIT_LOCATION } from '../../src/infra/environment.ts'
-
-/**
- * The process environment with `extra`, and without the variables that tell git which repository to act on (`GIT_LOCATION`):
- * the tests run inside `git rebase --exec` inherit GIT_DIR, and a `git init` there would reinitialize the repository under test.
- */
-export const gitEnv = (extra: Record<string, string> = {}): Record<string, string | undefined> =>
-  ({ ...process.env, ...Object.fromEntries(GIT_LOCATION.map(name => [name, undefined])), ...extra })
+/** Ignore inherited Git settings while allowing a test to explicitly supply its own. */
+const allowedEnvironment = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'TMPDIR', 'PROCESSOR_ARCHITECTURE'])
+export const gitEnv = (extra: Record<string, string> = {}): Record<string, string | undefined> => ({
+  ...Object.fromEntries(Object.entries(process.env).filter(([name]) => allowedEnvironment.has(name.toUpperCase()))),
+  GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_ALLOW_PROTOCOL: 'file',
+  GIT_TEMPLATE_DIR: '',
+  ...extra,
+})

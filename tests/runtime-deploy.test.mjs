@@ -15,15 +15,16 @@ const pathHelper = fileURLToPath(new URL('../scripts/runtime-paths.ps1', import.
 const allowedEnvironment = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'PROCESSOR_ARCHITECTURE'])
 const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => allowedEnvironment.has(key.toUpperCase())))
 const run = (command, args, options = {}) => spawnSync(command, args, { encoding: 'utf8', timeout: 30000, env: baseEnv, ...options })
-const git = (...args) => {
-  const env = { ...baseEnv }
-  Object.assign(env, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_ALLOW_PROTOCOL: 'file' })
-  const result = run('git', args, { env })
-  assert.equal(result.status, 0, result.stderr)
-  return result.stdout.trim()
-}
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'runtime-deploy-test-'))
+  const gitTemplate = join(root, 'git-template')
+  mkdirSync(gitTemplate)
+  const gitEnv = { ...baseEnv, HOME: root, USERPROFILE: root, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_ALLOW_PROTOCOL: 'file', GIT_TEMPLATE_DIR: gitTemplate, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: gitTemplate }
+  const git = (...args) => {
+    const result = run('git', args, { cwd: root, env: gitEnv })
+    assert.equal(result.status, 0, result.stderr)
+    return result.stdout.trim()
+  }
   const control = join(root, 'control')
   const work = join(root, 'work')
   const remote = join(root, 'remote.git')
@@ -62,14 +63,14 @@ if (process.env.BUILD_READY) {
 }
 writeFileSync(join(process.argv[5], 'artifact.zip'), process.argv[3])
 `)
-  git('init', '-q', work)
+  git('init', '-q', `--template=${gitTemplate}`, work)
   git('-C', work, 'config', 'user.name', 'Test')
   git('-C', work, 'config', 'user.email', 'test@example.invalid')
   git('-C', work, 'add', '.')
   git('-C', work, 'commit', '-qm', 'test')
   const commit = git('-C', work, 'rev-parse', 'HEAD')
-  git('clone', '-q', '--bare', work, remote)
-  git('init', '-q', '--bare', source)
+  git('clone', '-q', '--bare', `--template=${gitTemplate}`, work, remote)
+  git('init', '-q', '--bare', `--template=${gitTemplate}`, source)
   git('-C', source, 'remote', 'add', 'local', remote)
   const ref = git('-C', work, 'symbolic-ref', 'HEAD')
   writeFileSync(join(control, 'prepare-runtime.ps1'), `
@@ -106,7 +107,7 @@ $output | ConvertTo-Json -Compress
 }
 `)
   const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(control, 'deploy-runtime.ps1'), '-SourceRepo', source, '-Remote', 'local', '-Ref', ref, '-RuntimeRoot', runtime, '-Config', config, '-Node', process.execPath]
-  const env = { ...baseEnv, HOME: root, USERPROFILE: root, DSH_HOME: join(root, 'home') }
+  const env = { ...baseEnv, HOME: root, USERPROFILE: root, DSH_HOME: join(root, 'home'), LUMOS_API_KEY: 'test-only', GIT_CEILING_DIRECTORIES: root, GIT_OPTIONAL_LOCKS: '0' }
   const invoke = (extra = {}, customArgs = args) => run('pwsh', customArgs, { env: { ...env, ...extra } })
   const state = () => JSON.parse(readFileSync(join(runtime, 'control', 'deploy-runtime.json'), 'utf8'))
   return { root, control, runtime, args, env, invoke, state, commit, source, ref }
@@ -237,16 +238,15 @@ test('stopped status with exit code 1 permits deployment', () => {
   } finally { rmSync(instance.root, { recursive: true, force: true }) }
 })
 
-test('real stopped status permits isolated deployment preflight', { skip: process.platform !== 'win32' }, async () => {
+test('real status rejects an occupied isolated endpoint before deployment', { skip: process.platform !== 'win32' }, async () => {
   const instance = fixture()
+  const server = createServer()
   try {
-    const server = createServer()
     await new Promise((resolve, reject) => {
       server.once('error', reject)
       server.listen(0, '127.0.0.1', resolve)
     })
     const port = server.address().port
-    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
     const config = join(instance.root, 'config.json')
     const settings = JSON.parse(readFileSync(config, 'utf8'))
     settings.profile = `runtime-test-${randomUUID()}`
@@ -258,25 +258,31 @@ test('real stopped status permits isolated deployment preflight', { skip: proces
       copyFileSync(fileURLToPath(new URL(`../scripts/${name}`, import.meta.url)), join(scripts, name))
     }
     writeFileSync(join(instance.runtime, 'releases', 'old', 'package.json'), JSON.stringify({ type: 'module' }))
-    const assertStopped = result => {
+    const assertOccupied = result => {
       assert.equal(result.status, 1, result.stderr)
       const status = JSON.parse(result.stdout)
       assert.equal(status.profile, settings.profile)
       assert.equal(status.url, settings.url)
       assert.equal(status.identity, 'listener')
       assert.equal(status.home_matches, true)
-      for (const field of ['pids', 'listener', 'foreign', 'unlistening']) assert.deepEqual(status[field], [], field)
+      assert.deepEqual(status.pids, [])
+      assert.deepEqual(status.unlistening, [])
+      assert.ok(status.listener.includes(process.pid))
+      assert.ok(status.foreign.some(entry => entry.pid === process.pid))
     }
-    assertStopped(run(process.execPath, [join(scripts, 'dsh-superagent'), 'status', '--profile', settings.profile, '--home', settings.home, '--url', settings.url], { env: instance.env }))
-    assertStopped(run('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(scripts, 'dsh-superagent.ps1'), 'status', '-Config', config], { env: instance.env }))
+    assertOccupied(run(process.execPath, [join(scripts, 'dsh-superagent'), 'status', '--profile', settings.profile, '--home', settings.home, '--url', settings.url], { env: instance.env }))
+    assertOccupied(run('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(scripts, 'dsh-superagent.ps1'), 'status', '-Config', config], { env: instance.env }))
     const marker = join(instance.root, 'build-called')
     const result = instance.invoke({ BUILD_MARK: marker })
-    assert.equal(result.status, 0, result.stderr)
-    assert.equal(existsSync(marker), true)
-    assert.equal(instance.state().phase, 'completed')
-    assert.equal(instance.state().commit, instance.commit)
-    assert.equal(readFileSync(join(instance.runtime, 'activation-calls'), 'utf8').trim(), instance.state().release)
-  } finally { rmSync(instance.root, { recursive: true, force: true }) }
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /Service is running or status is uncertain/)
+    assert.equal(existsSync(marker), false)
+    assert.equal(existsSync(join(instance.runtime, 'control', 'deploy-runtime.json')), false)
+    assert.equal(existsSync(join(instance.runtime, 'activation-calls')), false)
+  } finally {
+    if (server.listening) await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    rmSync(instance.root, { recursive: true, force: true })
+  }
 })
 
 test('rejects a Node mismatch before building or activation', () => {

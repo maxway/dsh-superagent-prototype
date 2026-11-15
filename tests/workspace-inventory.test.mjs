@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -9,18 +9,34 @@ import { fileURLToPath } from 'node:url'
 
 const script = fileURLToPath(new URL('../scripts/workspace-inventory.mjs', import.meta.url))
 
+function gitEnvironment() {
+  return {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_'))),
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ALLOW_PROTOCOL: 'file',
+  }
+}
+
 function command(directory, ...args) {
-  return execFileSync('git', ['-C', directory, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  const isolation = join(directory, '.fixture-git')
+  return execFileSync('git', ['-c', `core.hooksPath=${join(isolation, 'hooks')}`, '-C', directory, ...args], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...gitEnvironment(), GIT_TEMPLATE_DIR: join(isolation, 'template') },
+  }).trim()
 }
 
 function scan(...args) {
-  const processResult = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', env: { ...process.env, GIT_DIR: 'incorrect', GIT_WORK_TREE: 'incorrect', GIT_INDEX_FILE: 'incorrect' } })
+  const processResult = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', env: { ...gitEnvironment(), GIT_DIR: 'incorrect', GIT_WORK_TREE: 'incorrect', GIT_INDEX_FILE: 'incorrect' } })
   return { status: processResult.status, output: JSON.parse(processResult.stdout) }
 }
 
 function fixture(run) {
   const root = mkdtempSync(join(tmpdir(), 'inventory test '))
   try {
+    mkdirSync(join(root, '.fixture-git', 'template'), { recursive: true })
+    mkdirSync(join(root, '.fixture-git', 'hooks'))
     command(root, 'init', '-q')
     command(root, 'config', 'user.email', 'test@example.invalid')
     command(root, 'config', 'user.name', 'Test')
@@ -39,6 +55,47 @@ function database(file, rows) {
     for (const [id, value] of rows) insert.run(id, typeof value === 'string' ? value : JSON.stringify(value))
   } finally { db.close() }
 }
+
+test('fixture Git commands ignore inherited repository and configuration overrides', () => fixture(decoy => {
+  const beforeRefs = command(decoy, 'show-ref')
+  const template = join(decoy, 'hostile-template')
+  const hooks = join(decoy, 'hostile-hooks')
+  const globalConfig = join(decoy, 'hostile.gitconfig')
+  mkdirSync(template)
+  mkdirSync(hooks)
+  writeFileSync(join(template, 'injected'), 'unexpected template')
+  writeFileSync(join(hooks, 'pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+  writeFileSync(globalConfig, `[core]\n\tbare = true\n\thooksPath = ${JSON.stringify(hooks.replaceAll('\\', '/'))}\n[init]\n\ttemplateDir = ${JSON.stringify(template.replaceAll('\\', '/'))}\n`)
+  const overrides = {
+    GIT_DIR: join(decoy, '.git'),
+    GIT_WORK_TREE: decoy,
+    GIT_INDEX_FILE: join(decoy, 'redirected-index'),
+    GIT_COMMON_DIR: join(decoy, '.git'),
+    GIT_CONFIG_GLOBAL: globalConfig,
+    GIT_CONFIG_SYSTEM: globalConfig,
+    GIT_TEMPLATE_DIR: template,
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'core.hooksPath',
+    GIT_CONFIG_VALUE_0: hooks,
+  }
+  const previous = Object.fromEntries(Object.keys(overrides).map(key => [key, process.env[key]]))
+  try {
+    Object.assign(process.env, overrides)
+    fixture(root => {
+      command(root, 'branch', 'agent/isolated')
+      assert.equal(realpathSync(command(root, 'rev-parse', '--show-toplevel')), realpathSync(root))
+      assert.equal(existsSync(join(root, '.git', 'injected')), false)
+      assert.equal(command(root, 'branch', '--list', 'agent/isolated'), 'agent/isolated')
+    })
+    assert.equal(command(decoy, 'show-ref'), beforeRefs)
+    assert.equal(existsSync(join(decoy, 'redirected-index')), false)
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}))
 
 test('associates exact ticket ids, branch names, paths and preserves all resources', () => fixture(root => {
   const location = join(root, 'work tree')
@@ -65,7 +122,7 @@ test('associates exact ticket ids, branch names, paths and preserves all resourc
 }))
 
 test('reports gone upstreams from local tracking data without claiming remote state', () => fixture(root => {
-  command(root, 'remote', 'add', 'origin', 'https://example.invalid/repository.git')
+  command(root, 'remote', 'add', 'origin', join(root, 'remote.git'))
   command(root, 'branch', 'agent/gone')
   command(root, 'branch', 'agent/present')
   command(root, 'branch', 'agent/unconfigured')

@@ -40,11 +40,12 @@ it('keeps the protected object and records a real conditional deletion', async (
   const directory = mkdtempSync(join(tmpdir(), 'workspace-journal-git-'))
   directories.push(directory)
   const exec = promisify(execFile)
-  const template = join(directory, 'template')
+  const template = join(directory, 'template'), hooks = join(directory, 'hooks')
   mkdirSync(template)
-  const env = { ...gitEnv(), HOME: directory, XDG_CONFIG_HOME: directory, GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_TEMPLATE_DIR: template,
-    GIT_CONFIG_COUNT: undefined, GIT_CONFIG_PARAMETERS: undefined, GIT_ASKPASS: '' }
+  mkdirSync(hooks)
+  const env = gitEnv({ HOME: directory, USERPROFILE: directory, XDG_CONFIG_HOME: directory, GIT_TERMINAL_PROMPT: '0',
+    GIT_TEMPLATE_DIR: template, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: hooks,
+    GIT_ASKPASS: '', GIT_ALLOW_PROTOCOL: '', GIT_ATTR_NOSYSTEM: '1' })
   const git = async (...args: string[]) => (await exec('git', args, { cwd: directory, env, windowsHide: true })).stdout.trim()
   await git('init', '-q')
   await git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-qm', 'initial')
@@ -54,6 +55,7 @@ it('keeps the protected object and records a real conditional deletion', async (
   try {
     const journal = new WorkspaceRefJournal(store, `repository:${directory}`)
     const run: LocalRefCleanupRun = async (args, cwd) => {
+      if (cwd !== directory) throw new Error('Unexpected Git directory')
       try { return { exitCode: 0, stdout: (await exec('git', args, { cwd, env, windowsHide: true })).stdout } }
       catch (error) {
         const failure = error as Error & { code?: number; stdout?: string }
